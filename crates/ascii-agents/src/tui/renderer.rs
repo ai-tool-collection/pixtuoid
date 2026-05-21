@@ -192,7 +192,7 @@ pub fn draw_scene<B: Backend>(
         let mut buf = RgbBuffer::filled(buf_w, buf_h, BG);
 
         // --- Background: top wall band + checkered floor below ---
-        let wall_h: u16 = 4; // top wall band
+        let wall_h: u16 = 8; // top wall band (tall enough for windows + posters)
         for y in 0..wall_h.min(buf_h) {
             for x in 0..buf_w {
                 buf.put(x, y, WALL);
@@ -208,19 +208,19 @@ pub fn draw_scene<B: Backend>(
         let floor_start = wall_h + 1;
         for y in floor_start..buf_h {
             for x in 0..buf_w {
-                // 4x2 px checker — readable as floor tiles from a distance.
                 let cell = ((x / 4) + ((y - floor_start) / 2)) % 2;
                 let c = if cell == 0 { FLOOR_A } else { FLOOR_B };
                 buf.put(x, y, c);
             }
         }
 
-        // --- Windows in the top wall band ---
+        // --- Windows + framed posters in the top wall band ---
         let window_w: u16 = 6;
-        let window_h: u16 = 2;
+        let window_h: u16 = 5;
         let window_y: u16 = 1;
         let stride: u16 = 16;
         let mut wx: u16 = 4;
+        let mut window_idx: u32 = 0;
         while wx + window_w < buf_w {
             for y in window_y..window_y + window_h {
                 for x in wx..wx + window_w {
@@ -230,14 +230,34 @@ pub fn draw_scene<B: Backend>(
                     }
                 }
             }
-            // Small horizontal mullion in the middle row.
+            // Horizontal mullion at mid-window.
             let mid = window_y + window_h / 2;
             for x in wx..wx + window_w {
                 if x < buf_w && mid < buf_h {
                     buf.put(x, mid, WINDOW_LIGHT_2);
                 }
             }
+            // Vertical mullion.
+            let vmid = wx + window_w / 2;
+            for y in window_y..window_y + window_h {
+                if vmid < buf_w && y < buf_h {
+                    buf.put(vmid, y, WINDOW_FRAME);
+                }
+            }
+            // Poster in every other gap, centered between this window and the next.
+            if window_idx % 2 == 0 {
+                let poster_x = wx + window_w + (stride - window_w) / 2 - 3;
+                let poster_y: u16 = 2;
+                if poster_x + 6 < buf_w {
+                    if let Some(anim) = pack.animation("poster") {
+                        if let Some(frame) = anim.frames.first() {
+                            blit_frame(frame, poster_x, poster_y, &mut buf);
+                        }
+                    }
+                }
+            }
             wx += stride;
+            window_idx += 1;
         }
 
         // --- Furniture + characters per desk slot ---

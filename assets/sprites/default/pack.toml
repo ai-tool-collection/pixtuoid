@@ -17,6 +17,8 @@ version = "2"
 "n" = "#3a2a1c"   # chair / plant darker
 "l" = "#4a8f3a"   # plant leaf
 "g" = "#c2734f"   # plant pot terracotta
+"P" = "#c8748f"   # poster bright
+"p" = "#7a4054"   # poster shadow
 
 [animations.idle]
 frames   = ["idle.sprite"]
@@ -44,4 +46,8 @@ frame_ms = 1000
 
 [animations.plant]
 frames   = ["plant.sprite"]
+frame_ms = 1000
+
+[animations.poster]
+frames   = ["poster.sprite"]
 frame_ms = 1000

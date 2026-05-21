@@ -14,6 +14,7 @@ pub fn load_default_pack() -> Result<Pack> {
     let chair = include_str!("../../../../assets/sprites/default/chair.sprite");
     let monitor = include_str!("../../../../assets/sprites/default/monitor.sprite");
     let plant = include_str!("../../../../assets/sprites/default/plant.sprite");
+    let poster = include_str!("../../../../assets/sprites/default/poster.sprite");
 
     load_pack_from_strings(
         pack_toml,
@@ -27,6 +28,7 @@ pub fn load_default_pack() -> Result<Pack> {
             ("chair.sprite", chair),
             ("monitor.sprite", monitor),
             ("plant.sprite", plant),
+            ("poster.sprite", poster),
         ],
     )
 }
