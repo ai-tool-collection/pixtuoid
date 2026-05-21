@@ -263,13 +263,20 @@ pub fn draw_scene<B: Backend>(
         // --- Furniture + characters per desk slot ---
         // Top-down layout: chair at top, character below it, desk in front of
         // character (occluding lower body), monitor on desk between character
-        // and viewer. Slots arranged horizontally with comfortable padding.
+        // and viewer. Slots arranged in a grid that adapts to terminal size:
+        // columns are limited by width, rows by floor-zone height.
         let slot_w: u16 = 18;
         let slot_left_padding: u16 = 4;
-        // Center the character vertically in the floor area.
         let floor_h = buf_h.saturating_sub(floor_start);
         let stack_h: u16 = 4 /*chair*/ + 12 /*character*/ + 6 /*desk*/;
-        let stack_top = floor_start + (floor_h.saturating_sub(stack_h)) / 2;
+        let row_gap: u16 = 3;
+        let row_h = stack_h + row_gap;
+        let cols_per_row = (buf_w.saturating_sub(slot_left_padding)) / slot_w;
+        let rows_per_screen = std::cmp::max(1u16, floor_h / row_h);
+        let visible_slots = rows_per_screen * cols_per_row;
+        // Center the entire grid vertically in the floor area.
+        let grid_h = rows_per_screen * stack_h + (rows_per_screen.saturating_sub(1)) * row_gap;
+        let grid_top = floor_start + floor_h.saturating_sub(grid_h) / 2;
 
         // Helper to safely blit a pack animation's first frame.
         let blit_static = |buf: &mut RgbBuffer, name: &str, dx: u16, dy: u16| {
@@ -280,13 +287,21 @@ pub fn draw_scene<B: Backend>(
             }
         };
 
-        let max_slots = (buf_w.saturating_sub(slot_left_padding)) / slot_w;
+        let slot_origin = |i: u16| -> (u16, u16) {
+            let row = i / cols_per_row;
+            let col = i % cols_per_row;
+            let sx = slot_left_padding + col * slot_w;
+            let sy = grid_top + row * row_h;
+            (sx, sy)
+        };
+
+        let max_slots = visible_slots;
         for slot in &agents {
             let i = slot.desk_index as u16;
             if i >= max_slots {
                 continue;
             }
-            let slot_x = slot_left_padding + i * slot_w;
+            let (slot_x, stack_top) = slot_origin(i);
             let shirt = agent_shirt(slot.agent_id.raw());
             let hair = agent_hair(slot.agent_id.raw());
 
@@ -328,17 +343,28 @@ pub fn draw_scene<B: Backend>(
             blit_monitor_state(&pack, &slot.state, monitor_x, monitor_y, &mut buf);
         }
 
-        // --- Decorative plant in each empty slot ---
+        // --- Decorative plant in each empty visible slot ---
         for i in 0..max_slots {
             let occupied = agents.iter().any(|a| a.desk_index as u16 == i);
             if occupied {
                 continue;
             }
-            let slot_x = slot_left_padding + i * slot_w;
-            // Plant sits on a desk surface too — at the same desk row.
-            blit_static(&mut buf, "desk", slot_x, stack_top + 4 + 12);
-            blit_static(&mut buf, "plant", slot_x + 5, stack_top + 4 + 8);
+            let (slot_x, slot_y) = slot_origin(i);
+            // Plant sits on a desk surface — same desk row as a normal slot.
+            blit_static(&mut buf, "desk", slot_x, slot_y + 4 + 12);
+            blit_static(&mut buf, "plant", slot_x + 5, slot_y + 4 + 8);
         }
+
+        // --- Overflow indicator if there are more agents than visible slots ---
+        let hidden = agents
+            .iter()
+            .filter(|a| a.desk_index as u16 >= max_slots)
+            .count();
+        let overflow_text = if hidden > 0 {
+            Some(format!("+{hidden} more agent{}", if hidden == 1 { "" } else { "s" }))
+        } else {
+            None
+        };
 
         // Convert buf → half-block cells → ratatui spans.
         let cells = half_block_cells(&buf);
@@ -364,8 +390,11 @@ pub fn draw_scene<B: Backend>(
             if i >= max_slots {
                 continue;
             }
-            let slot_x = scene_rect.x + slot_left_padding + i * slot_w;
-            let label_y = scene_rect.y + scene_rect.height.saturating_sub(1);
+            let (sx, sy) = slot_origin(i);
+            let slot_x = scene_rect.x + sx;
+            // Label sits just below the desk row of this slot, in cell coords
+            // (each cell = 2 px, so divide by 2).
+            let label_y = scene_rect.y + (sy + stack_h + 1) / 2;
             let style = Style::default().fg(Color::White);
             let label = Paragraph::new(Line::from(vec![Span::styled(
                 format!("{} {}", slot.label, summarize_state(&slot.state)),
@@ -375,17 +404,16 @@ pub fn draw_scene<B: Backend>(
                 label,
                 Rect {
                     x: slot_x,
-                    y: label_y,
+                    y: label_y.min(scene_rect.y + scene_rect.height.saturating_sub(1)),
                     width: slot_w,
                     height: 1,
                 },
             );
 
             if let ActivityState::Waiting { .. } = slot.state {
-                // Bubble above character's head — top of stack region.
                 let bubble_y = scene_rect
                     .y
-                    .saturating_add((stack_top / 2).saturating_sub(2));
+                    .saturating_add((sy / 2).saturating_sub(2));
                 let bubble = Paragraph::new(vec![
                     Line::from(Span::styled(
                         "┌─?─┐",
@@ -406,6 +434,24 @@ pub fn draw_scene<B: Backend>(
                     },
                 );
             }
+        }
+
+        // Overflow text in the corner of the scene.
+        if let Some(text) = overflow_text {
+            let para = Paragraph::new(Line::from(Span::styled(
+                text,
+                Style::default().fg(Color::Yellow),
+            )));
+            let w = 20.min(scene_rect.width);
+            f.render_widget(
+                para,
+                Rect {
+                    x: scene_rect.x + scene_rect.width.saturating_sub(w + 1),
+                    y: scene_rect.y,
+                    width: w,
+                    height: 1,
+                },
+            );
         }
 
         let _ = Pixel::None; // silence unused-import warning on some builds

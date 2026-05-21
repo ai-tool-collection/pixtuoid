@@ -20,7 +20,7 @@ use ascii_agents::tui::embedded_pack::load_default_pack;
 use ascii_agents::tui::renderer::draw_scene;
 
 const COLS: u16 = 96;
-const ROWS: u16 = 24;
+const ROWS: u16 = 36;
 const CELL_W: u32 = 8;
 const CELL_H: u32 = 16;
 
@@ -54,23 +54,19 @@ fn main() -> Result<()> {
 }
 
 fn sample_scene(now: Instant) -> SceneState {
-    let mut s = SceneState::new(6);
+    let mut s = SceneState::new(12);
     let agents = [
         ("idle", ActivityState::Idle, Duration::from_millis(0)),
         (
-            "typing",
+            "typing-rs",
             ActivityState::Active {
                 activity: Activity::Typing,
-                tool_use_id: Some("tu_demo".into()),
+                tool_use_id: Some("tu_a".into()),
                 detail: Some("Write: src/foo.rs".into()),
             },
             Duration::from_millis(60),
         ),
-        (
-            "idle2",
-            ActivityState::Idle,
-            Duration::from_millis(0),
-        ),
+        ("idle2", ActivityState::Idle, Duration::from_millis(0)),
         (
             "waiting",
             ActivityState::Waiting {
@@ -78,6 +74,17 @@ fn sample_scene(now: Instant) -> SceneState {
             },
             Duration::from_millis(0),
         ),
+        ("idle3", ActivityState::Idle, Duration::from_millis(0)),
+        (
+            "typing-py",
+            ActivityState::Active {
+                activity: Activity::Typing,
+                tool_use_id: Some("tu_b".into()),
+                detail: Some("Edit: main.py".into()),
+            },
+            Duration::from_millis(280),
+        ),
+        ("idle4", ActivityState::Idle, Duration::from_millis(0)),
     ];
     for (i, (key, state, offset)) in agents.iter().enumerate() {
         let id = AgentId::from_transcript_path(&format!("/demo/{key}.jsonl"));
