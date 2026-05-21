@@ -1,5 +1,6 @@
 pub mod embedded_pack;
 pub mod layout;
+pub mod pose;
 pub mod renderer;
 
 use std::sync::Arc;
