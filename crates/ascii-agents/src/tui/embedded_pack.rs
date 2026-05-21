@@ -10,6 +10,10 @@ pub fn load_default_pack() -> Result<Pack> {
     let typing_1 = include_str!("../../../../assets/sprites/default/typing_1.sprite");
     let typing_2 = include_str!("../../../../assets/sprites/default/typing_2.sprite");
     let waiting = include_str!("../../../../assets/sprites/default/waiting.sprite");
+    let desk = include_str!("../../../../assets/sprites/default/desk.sprite");
+    let chair = include_str!("../../../../assets/sprites/default/chair.sprite");
+    let monitor = include_str!("../../../../assets/sprites/default/monitor.sprite");
+    let plant = include_str!("../../../../assets/sprites/default/plant.sprite");
 
     load_pack_from_strings(
         pack_toml,
@@ -19,6 +23,10 @@ pub fn load_default_pack() -> Result<Pack> {
             ("typing_1.sprite", typing_1),
             ("typing_2.sprite", typing_2),
             ("waiting.sprite", waiting),
+            ("desk.sprite", desk),
+            ("chair.sprite", chair),
+            ("monitor.sprite", monitor),
+            ("plant.sprite", plant),
         ],
     )
 }

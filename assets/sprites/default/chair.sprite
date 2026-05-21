@@ -1,0 +1,6 @@
+# 8x4 top-down chair: backrest at top, seat below
+@frame 0
+. n n n n n n .
+. n n n n n n .
+. . n n n n . .
+. . n n n n . .

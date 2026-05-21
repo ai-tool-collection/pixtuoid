@@ -1,18 +1,14 @@
-# hands lifted to face level — keyboard up
+# top-down typing: hands at slightly different position for animation
 @frame 0
-. . . H H H H H H . . .
-. . H H H H H H H H . .
-. H H S S S S S S H H .
-. H S S S S S S S S H .
-. H S e S S S e S S H .
-. H S S S S S S S S H .
-. H S S S m m S S S H .
-. . H S S S S S S H . .
-. . S S S S S S S S . .
-. . B B B B B B B B . .
-. B B B B B B B B B B .
-. B B B B B B B B B B .
-. . B B B . . B B B . .
-. . B B B . . B B B . .
-. . B B . . . . B B . .
-. . B B . . . . B B . .
+. . H H H H H H . .
+. H H H H H H H H .
+H H S S S S S S H H
+H H e S S S e S H H
+H H S S S S S S H H
+H H S S m m S S H H
+. H S S S S S S H .
+. . S S S S S S . .
+. B B B B B B B B .
+. B B B B B B B B .
+. S B B B B B B S .
+. S S B B B B S S .

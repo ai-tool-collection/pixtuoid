@@ -1,0 +1,5 @@
+# 6x3 top-down monitor (screen-side facing character)
+@frame 0
+M M M M M M
+M c c c c M
+M M M M M M

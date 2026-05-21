@@ -1,8 +1,8 @@
 # ascii-agents
 
-A terminal-native, multi-agent pixel-art visualizer for AI coding agents. Each running session of [Claude Code](https://claude.com/claude-code) appears as an animated half-block sprite in an ASCII office — typing during tool calls, idle between actions, raising a speech bubble when waiting for permission.
+A terminal-native, multi-agent pixel-art visualizer for AI coding agents. Each running session of [Claude Code](https://claude.com/claude-code) appears as an animated half-block sprite in a top-down ASCII office — sitting at a desk with a monitor that lights up green while typing, yellow when waiting for permission, dim cyan when idle.
 
-![Snapshot of the TUI showing four pixel-art characters at desks, one with a speech bubble](docs/images/screenshot.png)
+![Top-down view of a pixel-art office with four characters at desks and one decorative plant](docs/images/screenshot.png)
 
 > Inspired by [`pablodelucca/pixel-agents`](https://github.com/pablodelucca/pixel-agents) (VS Code webview) and [`rullerzhou-afk/clawd-on-desk`](https://github.com/rullerzhou-afk/clawd-on-desk) (desktop pet). Different niche: pure terminal, no Electron, no browser, runs over SSH.
 

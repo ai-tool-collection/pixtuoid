@@ -1,23 +1,47 @@
 [pack]
 name    = "default"
-version = "1"
+version = "2"
 
 [palette]
 "." = "transparent"
-"H" = "#2a1a0e"
-"S" = "#f4c79a"
-"e" = "#1a1a1a"
-"m" = "#a04040"
-"B" = "#2e62cf"
+"H" = "#2a1a0e"   # hair (per-agent recolor target)
+"S" = "#f4c79a"   # skin
+"e" = "#1a1a1a"   # eyes
+"m" = "#a04040"   # mouth
+"O" = "#3a1414"   # open-mouth (waiting)
+"B" = "#2e62cf"   # shirt (per-agent recolor target)
+"M" = "#3a3a40"   # monitor frame
+"c" = "#7ed4e2"   # monitor screen (state-recolor target)
+"D" = "#8b5a2b"   # desk wood
+"d" = "#5a3818"   # desk shadow / edge
+"n" = "#3a2a1c"   # chair / plant darker
+"l" = "#4a8f3a"   # plant leaf
+"g" = "#c2734f"   # plant pot terracotta
 
 [animations.idle]
 frames   = ["idle.sprite"]
-frame_ms = 500
+frame_ms = 600
 
 [animations.typing]
 frames   = ["typing_0.sprite", "typing_1.sprite", "typing_2.sprite"]
-frame_ms = 120
+frame_ms = 140
 
 [animations.waiting]
 frames   = ["waiting.sprite"]
 frame_ms = 400
+
+[animations.desk]
+frames   = ["desk.sprite"]
+frame_ms = 1000
+
+[animations.chair]
+frames   = ["chair.sprite"]
+frame_ms = 1000
+
+[animations.monitor]
+frames   = ["monitor.sprite"]
+frame_ms = 1000
+
+[animations.plant]
+frames   = ["plant.sprite"]
+frame_ms = 1000

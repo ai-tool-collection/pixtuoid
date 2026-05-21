@@ -41,8 +41,13 @@ const HAIR_PRESETS: &[Rgb] = &[
 ];
 
 const BG: Rgb = Rgb(20, 22, 28);
-const DESK_TOP: Rgb = Rgb(110, 80, 50);
-const DESK_BOT: Rgb = Rgb(70, 50, 30);
+const WALL: Rgb = Rgb(40, 44, 60);
+const WALL_TRIM: Rgb = Rgb(64, 60, 50);
+const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
+const WINDOW_LIGHT: Rgb = Rgb(120, 160, 200);
+const WINDOW_LIGHT_2: Rgb = Rgb(160, 190, 220);
+const FLOOR_A: Rgb = Rgb(96, 70, 44);
+const FLOOR_B: Rgb = Rgb(78, 56, 34);
 
 pub fn setup_terminal() -> Result<Term> {
     enable_raw_mode()?;
@@ -61,6 +66,37 @@ pub fn teardown_terminal(term: &mut Term) -> Result<()> {
 
 fn agent_shirt(seed: u64) -> Rgb {
     SHIRT_PRESETS[(seed as usize) % SHIRT_PRESETS.len()]
+}
+
+const SCREEN_IDLE: Rgb = Rgb(70, 110, 140);
+const SCREEN_TYPING: Rgb = Rgb(80, 220, 110);
+const SCREEN_WAITING: Rgb = Rgb(240, 200, 60);
+
+/// Blit the monitor sprite with its screen recolored to reflect agent state.
+fn blit_monitor_state(
+    pack: &Pack,
+    state: &ActivityState,
+    dx: u16,
+    dy: u16,
+    buf: &mut RgbBuffer,
+) {
+    let Some(anim) = pack.animation("monitor") else { return; };
+    let Some(frame) = anim.frames.first() else { return; };
+    let base_c = base_rgb_for(&pack.palette, 'c');
+    let target = match state {
+        ActivityState::Idle => SCREEN_IDLE,
+        ActivityState::Active { .. } => SCREEN_TYPING,
+        ActivityState::Waiting { .. } => SCREEN_WAITING,
+    };
+    let mut out = frame.clone();
+    for px in out.pixels.iter_mut() {
+        if let Some(rgb) = *px {
+            if Some(rgb) == base_c {
+                *px = Some(target);
+            }
+        }
+    }
+    blit_frame(&out, dx, dy, buf);
 }
 
 fn agent_hair(seed: u64) -> Rgb {
@@ -155,47 +191,133 @@ pub fn draw_scene<B: Backend>(
         let buf_h = cell_h * 2;
         let mut buf = RgbBuffer::filled(buf_w, buf_h, BG);
 
-        // Desk row near the bottom (3 pixels tall = top + body + body).
-        let desk_y = buf_h.saturating_sub(6);
-        for x in 0..buf_w {
-            buf.put(x, desk_y, DESK_TOP);
-            buf.put(x, desk_y + 1, DESK_BOT);
-            buf.put(x, desk_y + 2, DESK_BOT);
+        // --- Background: top wall band + checkered floor below ---
+        let wall_h: u16 = 4; // top wall band
+        for y in 0..wall_h.min(buf_h) {
+            for x in 0..buf_w {
+                buf.put(x, y, WALL);
+            }
+        }
+        // Wall/floor trim line.
+        if buf_h > wall_h {
+            for x in 0..buf_w {
+                buf.put(x, wall_h, WALL_TRIM);
+            }
+        }
+        // Floor tiles (checkered) below the trim.
+        let floor_start = wall_h + 1;
+        for y in floor_start..buf_h {
+            for x in 0..buf_w {
+                // 4x2 px checker — readable as floor tiles from a distance.
+                let cell = ((x / 4) + ((y - floor_start) / 2)) % 2;
+                let c = if cell == 0 { FLOOR_A } else { FLOOR_B };
+                buf.put(x, y, c);
+            }
         }
 
-        // Each desk slot is 14 pixels wide.
-        let slot_w: u16 = 14;
+        // --- Windows in the top wall band ---
+        let window_w: u16 = 6;
+        let window_h: u16 = 2;
+        let window_y: u16 = 1;
+        let stride: u16 = 16;
+        let mut wx: u16 = 4;
+        while wx + window_w < buf_w {
+            for y in window_y..window_y + window_h {
+                for x in wx..wx + window_w {
+                    if y < buf_h && x < buf_w {
+                        let inner = x > wx && x < wx + window_w - 1;
+                        buf.put(x, y, if inner { WINDOW_LIGHT } else { WINDOW_FRAME });
+                    }
+                }
+            }
+            // Small horizontal mullion in the middle row.
+            let mid = window_y + window_h / 2;
+            for x in wx..wx + window_w {
+                if x < buf_w && mid < buf_h {
+                    buf.put(x, mid, WINDOW_LIGHT_2);
+                }
+            }
+            wx += stride;
+        }
+
+        // --- Furniture + characters per desk slot ---
+        // Top-down layout: chair at top, character below it, desk in front of
+        // character (occluding lower body), monitor on desk between character
+        // and viewer. Slots arranged horizontally with comfortable padding.
+        let slot_w: u16 = 18;
+        let slot_left_padding: u16 = 4;
+        // Center the character vertically in the floor area.
+        let floor_h = buf_h.saturating_sub(floor_start);
+        let stack_h: u16 = 4 /*chair*/ + 12 /*character*/ + 6 /*desk*/;
+        let stack_top = floor_start + (floor_h.saturating_sub(stack_h)) / 2;
+
+        // Helper to safely blit a pack animation's first frame.
+        let blit_static = |buf: &mut RgbBuffer, name: &str, dx: u16, dy: u16| {
+            if let Some(anim) = pack.animation(name) {
+                if let Some(frame) = anim.frames.first() {
+                    blit_frame(frame, dx, dy, buf);
+                }
+            }
+        };
+
+        let max_slots = (buf_w.saturating_sub(slot_left_padding)) / slot_w;
         for slot in &agents {
-            let slot_x = (slot.desk_index as u16) * slot_w + 2;
-            if slot_x + 12 > buf_w {
+            let i = slot.desk_index as u16;
+            if i >= max_slots {
                 continue;
             }
+            let slot_x = slot_left_padding + i * slot_w;
             let shirt = agent_shirt(slot.agent_id.raw());
             let hair = agent_hair(slot.agent_id.raw());
 
+            // 1. Chair (8 wide), centered behind character.
+            blit_static(&mut buf, "chair", slot_x + 4, stack_top);
+
+            // 2. Character animation (10 wide, 12 tall).
             let anim_name = match &slot.state {
                 ActivityState::Idle => "idle",
                 ActivityState::Active { .. } => "typing",
                 ActivityState::Waiting { .. } => "waiting",
             };
-            let anim = match pack
-                .animation(anim_name)
-                .or_else(|| pack.animation("idle"))
-            {
-                Some(a) => a,
-                None => continue,
-            };
-            let idx = frame_index_at(
-                slot.state_started_at,
-                now,
-                anim.frame_ms,
-                anim.frames.len(),
-            );
-            let frame = &anim.frames[idx];
-            let frame_rc = recolor_frame(frame, &pack.palette, shirt, hair);
-            // Sprite is 16 tall; sit on the desk by aligning bottom of sprite to desk_y.
-            let dst_y = desk_y.saturating_sub(16);
-            blit_frame(&frame_rc, slot_x, dst_y, &mut buf);
+            if let Some(anim) = pack.animation(anim_name).or_else(|| pack.animation("idle")) {
+                let idx = frame_index_at(
+                    slot.state_started_at,
+                    now,
+                    anim.frame_ms,
+                    anim.frames.len(),
+                );
+                let frame = &anim.frames[idx];
+                let frame_rc = recolor_frame(frame, &pack.palette, shirt, hair);
+                let char_y = if matches!(slot.state, ActivityState::Waiting { .. }) {
+                    // Waiting sprite is 14 tall (raised arm above head) — shift up.
+                    stack_top.saturating_add(1)
+                } else {
+                    stack_top + 3
+                };
+                blit_frame(&frame_rc, slot_x + 3, char_y, &mut buf);
+            }
+
+            // 3. Desk in front of character (16 wide, 6 tall, slightly oversized
+            //    so it occludes the character's lower body / hands).
+            let desk_y = stack_top + 4 + 12;
+            blit_static(&mut buf, "desk", slot_x, desk_y);
+
+            // 4. Monitor sitting on desk — color reflects current activity state.
+            let monitor_y = desk_y + 1;
+            let monitor_x = slot_x + 5;
+            blit_monitor_state(&pack, &slot.state, monitor_x, monitor_y, &mut buf);
+        }
+
+        // --- Decorative plant in each empty slot ---
+        for i in 0..max_slots {
+            let occupied = agents.iter().any(|a| a.desk_index as u16 == i);
+            if occupied {
+                continue;
+            }
+            let slot_x = slot_left_padding + i * slot_w;
+            // Plant sits on a desk surface too — at the same desk row.
+            blit_static(&mut buf, "desk", slot_x, stack_top + 4 + 12);
+            blit_static(&mut buf, "plant", slot_x + 5, stack_top + 4 + 8);
         }
 
         // Convert buf → half-block cells → ratatui spans.
@@ -216,12 +338,13 @@ pub fn draw_scene<B: Backend>(
         let scene_para = Paragraph::new(lines);
         f.render_widget(scene_para, scene_rect);
 
-        // Labels + speech bubbles overlaid above scene.
+        // Labels under each desk + speech bubble overlay for waiting state.
         for slot in &agents {
-            let slot_x = scene_rect.x + (slot.desk_index as u16) * slot_w + 2;
-            if slot_x + 12 > scene_rect.x + scene_rect.width {
+            let i = slot.desk_index as u16;
+            if i >= max_slots {
                 continue;
             }
+            let slot_x = scene_rect.x + slot_left_padding + i * slot_w;
             let label_y = scene_rect.y + scene_rect.height.saturating_sub(1);
             let style = Style::default().fg(Color::White);
             let label = Paragraph::new(Line::from(vec![Span::styled(
@@ -233,15 +356,16 @@ pub fn draw_scene<B: Backend>(
                 Rect {
                     x: slot_x,
                     y: label_y,
-                    width: 14,
+                    width: slot_w,
                     height: 1,
                 },
             );
 
             if let ActivityState::Waiting { .. } = slot.state {
+                // Bubble above character's head — top of stack region.
                 let bubble_y = scene_rect
                     .y
-                    .saturating_add(scene_rect.height.saturating_sub(12));
+                    .saturating_add((stack_top / 2).saturating_sub(2));
                 let bubble = Paragraph::new(vec![
                     Line::from(Span::styled(
                         "┌─?─┐",
