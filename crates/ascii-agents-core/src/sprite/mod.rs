@@ -76,6 +76,22 @@ impl RgbBuffer {
         let i = (y as usize) * (self.width as usize) + (x as usize);
         self.pixels[i] = rgb;
     }
+
+    /// Resize and fill in one shot, reusing the existing `pixels` allocation
+    /// when possible. Cheaper than `RgbBuffer::filled(...)` once per frame.
+    pub fn ensure_size(&mut self, width: u16, height: u16, fill: Rgb) {
+        let total = (width as usize) * (height as usize);
+        if self.width == width && self.height == height {
+            for p in &mut self.pixels {
+                *p = fill;
+            }
+            return;
+        }
+        self.width = width;
+        self.height = height;
+        self.pixels.clear();
+        self.pixels.resize(total, fill);
+    }
 }
 
 #[cfg(test)]

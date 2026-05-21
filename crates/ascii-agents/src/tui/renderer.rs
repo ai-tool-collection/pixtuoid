@@ -4,7 +4,7 @@ use std::time::Instant;
 use anyhow::Result;
 use ascii_agents_core::sprite::animator::frame_index_at;
 use ascii_agents_core::sprite::blit::{
-    blit_frame, blit_frame_outlined, draw_line, half_block_cells, HalfCell,
+    blit_frame, blit_frame_outlined, draw_line,
 };
 use ascii_agents_core::sprite::format::Pack;
 use ascii_agents_core::sprite::{Frame, Palette, Pixel, Rgb, RgbBuffer};
@@ -20,6 +20,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
+
+use crate::tui::frame_cache::FrameCache;
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -186,6 +188,8 @@ pub fn draw_scene<B: Backend>(
     scene: &SceneState,
     pack: &Pack,
     now: Instant,
+    mut buf: &mut RgbBuffer,
+    cache: &mut FrameCache,
 ) -> Result<()> {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     term.draw(|f| {
@@ -237,12 +241,14 @@ pub fn draw_scene<B: Backend>(
             return;
         }
 
-        // Composite the scene into a pixel buffer at 2x vertical resolution.
+        // Composite the scene into the pre-allocated pixel buffer at 2x
+        // vertical resolution. `ensure_size` reuses the existing allocation
+        // when dimensions match — no per-frame Vec alloc.
         let cell_w = scene_rect.width;
         let cell_h = scene_rect.height;
         let buf_w = cell_w;
         let buf_h = cell_h * 2;
-        let mut buf = RgbBuffer::filled(buf_w, buf_h, BG);
+        buf.ensure_size(buf_w, buf_h, BG);
 
         // --- Background: top wall band + checkered floor below ---
         let wall_h: u16 = 8; // top wall band (tall enough for windows + posters)
@@ -417,8 +423,13 @@ pub fn draw_scene<B: Backend>(
                     anim.frame_ms,
                     anim.frames.len(),
                 );
-                let frame = &anim.frames[idx];
-                let frame_rc = recolor_frame(frame, &pack.palette, shirt, hair);
+                // Cached recolor: same agent + same animation + same frame_idx
+                // → reuse the previously recolored Frame instead of cloning + rewriting.
+                let palette = &pack.palette;
+                let frames = &anim.frames;
+                let frame_rc = cache.get_or_make(slot.agent_id, anim_name, idx, || {
+                    recolor_frame(&frames[idx], palette, shirt, hair)
+                });
 
                 let base_x = slot_x as i32 + 3;
                 // Waiting sprite is 14 tall (raised arm) — shift up.
@@ -433,7 +444,7 @@ pub fn draw_scene<B: Backend>(
 
                 let char_x = (base_x + offset_x).max(0) as u16;
                 let char_y = (base_y + offset_y).max(0) as u16;
-                blit_frame_outlined(&frame_rc, char_x, char_y, &mut buf, OUTLINE);
+                blit_frame_outlined(frame_rc, char_x, char_y, buf, OUTLINE);
             }
 
             // 3. Desk in front of character (16 wide, 6 tall, slightly oversized
@@ -470,23 +481,32 @@ pub fn draw_scene<B: Backend>(
             None
         };
 
-        // Convert buf → half-block cells → ratatui spans.
-        let cells = half_block_cells(&buf);
-        let mut lines: Vec<Line> = Vec::with_capacity(cells.len());
-        for row in cells {
-            let mut spans: Vec<Span> = Vec::with_capacity(row.len());
-            for HalfCell { fg, bg } in row {
-                spans.push(Span::styled(
-                    "▀",
-                    Style::default()
-                        .fg(Color::Rgb(fg.0, fg.1, fg.2))
-                        .bg(Color::Rgb(bg.0, bg.1, bg.2)),
-                ));
+        // Write pixel buffer directly into ratatui's terminal Buffer as
+        // half-block cells. Avoids allocating Vec<Vec<HalfCell>> + Vec<Line>
+        // + ~2000 Spans per frame.
+        let term_buf = f.buffer_mut();
+        let w = buf.width as usize;
+        let h = buf.height as usize;
+        let cell_rows = h.div_ceil(2);
+        for cy in 0..cell_rows {
+            let py_top = cy * 2;
+            let py_bot = (py_top + 1).min(h.saturating_sub(1));
+            for cx in 0..w {
+                let x = scene_rect.x + cx as u16;
+                let y = scene_rect.y + cy as u16;
+                if x >= scene_rect.x + scene_rect.width
+                    || y >= scene_rect.y + scene_rect.height
+                {
+                    continue;
+                }
+                let fg = buf.pixels[py_top * w + cx];
+                let bg = buf.pixels[py_bot * w + cx];
+                let cell = &mut term_buf[(x, y)];
+                cell.set_symbol("▀");
+                cell.fg = Color::Rgb(fg.0, fg.1, fg.2);
+                cell.bg = Color::Rgb(bg.0, bg.1, bg.2);
             }
-            lines.push(Line::from(spans));
         }
-        let scene_para = Paragraph::new(lines);
-        f.render_widget(scene_para, scene_rect);
 
         // Labels under each desk + speech bubble overlay for waiting state.
         for slot in &agents {

@@ -11,6 +11,8 @@ use anyhow::Result;
 use ascii_agents_core::source::jsonl::JsonlWatcher;
 use ascii_agents_core::source::{Activity, AgentEvent};
 use ascii_agents_core::state::ActivityState;
+use ascii_agents::tui::frame_cache::FrameCache;
+use ascii_agents_core::sprite::{Rgb, RgbBuffer};
 use ascii_agents_core::{AgentId, AgentSlot, Reducer, SceneState, Transport};
 use image::{Rgb as ImgRgb, RgbImage};
 use ratatui::backend::TestBackend;
@@ -55,7 +57,9 @@ fn main() -> Result<()> {
 
     let backend = TestBackend::new(COLS, ROWS);
     let mut term = Terminal::new(backend)?;
-    draw_scene(&mut term, &scene, &pack, now)?;
+    let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
+    let mut cache = FrameCache::new();
+    draw_scene(&mut term, &scene, &pack, now, &mut buf, &mut cache)?;
 
     save_backend_as_png(&term, &out_path)?;
     println!("wrote {}", out_path.display());
