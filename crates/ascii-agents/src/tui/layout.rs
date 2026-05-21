@@ -15,7 +15,7 @@ pub struct Point {
 
 /// Kind of a lounge waypoint — determines what pose an Idle agent strikes
 /// when they arrive there. Plants are pure decor, not waypoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WaypointKind {
     Couch,
     Coffee,
@@ -109,34 +109,34 @@ impl Layout {
             });
         }
 
-        // Five waypoints evenly spread across the lounge band.
-        let waypoint_y = lounge_band.y + lounge_band.height / 2;
-        let wp_kinds = [
-            WaypointKind::Couch,
-            WaypointKind::Bookshelf,
-            WaypointKind::WaterCooler,
-            WaypointKind::StandupSpot,
-            WaypointKind::Coffee,
+        // Distribute waypoints across the lounge in (x_frac, y_frac) of the
+        // lounge band so the office reads like a real room — couch against
+        // the north wall, water cooler / coffee in the south, etc.
+        let wp_layout: &[(WaypointKind, u16, u16)] = &[
+            // (kind, x_frac/100, y_frac/100)
+            (WaypointKind::Couch,       20, 25),  // top-left wall
+            (WaypointKind::Bookshelf,   10, 70),  // left wall, lower
+            (WaypointKind::StandupSpot, 48, 22),  // center-top, whiteboard area
+            (WaypointKind::WaterCooler, 55, 75),  // center-bottom
+            (WaypointKind::Coffee,      85, 30),  // right-top corner
         ];
-        let waypoints: Vec<Waypoint> = wp_kinds
+        let waypoints: Vec<Waypoint> = wp_layout
             .iter()
-            .enumerate()
-            .map(|(i, &kind)| Waypoint {
+            .map(|(kind, xf, yf)| Waypoint {
                 pos: Point {
-                    x: buf_w * (i as u16 + 1) / (WAYPOINT_COUNT as u16 + 1),
-                    y: waypoint_y,
+                    x: buf_w * xf / 100,
+                    y: lounge_band.y + lounge_band.height * yf / 100,
                 },
-                kind,
+                kind: *kind,
             })
             .collect();
 
-        // Plants flank the lounge zone — one at each corner of the lounge
-        // band and one in the middle between couch and coffee.
-        let plant_y = lounge_band.y + lounge_band.height * 2 / 3;
+        // Plants in three corners of the lounge — not on a line, scattered
+        // to feel like real foliage placement.
         let plants = vec![
-            Point { x: 6, y: plant_y },
-            Point { x: buf_w / 2, y: plant_y },
-            Point { x: buf_w.saturating_sub(8), y: plant_y },
+            Point { x: buf_w * 35 / 100, y: lounge_band.y + lounge_band.height * 55 / 100 },
+            Point { x: buf_w * 70 / 100, y: lounge_band.y + lounge_band.height * 60 / 100 },
+            Point { x: buf_w * 95 / 100, y: lounge_band.y + lounge_band.height * 80 / 100 },
         ];
 
         Some(Self {
@@ -183,19 +183,24 @@ mod tests {
     }
 
     #[test]
-    fn compute_places_couch_and_coffee_waypoints() {
+    fn compute_places_all_waypoint_kinds() {
         let l = Layout::compute(120, 96, 1).expect("fits");
         assert_eq!(l.waypoints.len(), WAYPOINT_COUNT);
-        // Order: Couch, Bookshelf, WaterCooler, StandupSpot, Coffee
-        assert_eq!(l.waypoints[0].kind, WaypointKind::Couch);
-        assert_eq!(l.waypoints[1].kind, WaypointKind::Bookshelf);
-        assert_eq!(l.waypoints[2].kind, WaypointKind::WaterCooler);
-        assert_eq!(l.waypoints[3].kind, WaypointKind::StandupSpot);
-        assert_eq!(l.waypoints[4].kind, WaypointKind::Coffee);
+        let kinds: std::collections::HashSet<_> =
+            l.waypoints.iter().map(|w| w.kind).collect();
+        assert!(kinds.contains(&WaypointKind::Couch));
+        assert!(kinds.contains(&WaypointKind::Bookshelf));
+        assert!(kinds.contains(&WaypointKind::WaterCooler));
+        assert!(kinds.contains(&WaypointKind::StandupSpot));
+        assert!(kinds.contains(&WaypointKind::Coffee));
         for w in &l.waypoints {
             assert!(w.pos.y >= l.lounge_band.y);
             assert!(w.pos.y < l.lounge_band.y + l.lounge_band.height);
         }
+        // Waypoints should be at *different* y positions — not all in one row.
+        let ys: std::collections::HashSet<_> =
+            l.waypoints.iter().map(|w| w.pos.y).collect();
+        assert!(ys.len() >= 3, "waypoints should be at varied y, got {ys:?}");
     }
 
     #[test]

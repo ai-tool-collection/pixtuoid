@@ -44,22 +44,32 @@ const RUG_PALETTE: &[Rgb] = &[
     Rgb(0x40, 0x60, 0x4f),
     Rgb(0x6e, 0x4d, 0x2e),
 ];
-const SHIRT_PRESETS: &[Rgb] = &[
-    Rgb(0x2e, 0x62, 0xcf),
-    Rgb(0x16, 0xa0, 0x6e),
-    Rgb(0xb0, 0x32, 0xa8),
-    Rgb(0xc6, 0x6a, 0x1e),
-    Rgb(0x6c, 0x4f, 0x9e),
-    Rgb(0x9c, 0x27, 0x27),
-    Rgb(0x32, 0x82, 0x9b),
-    Rgb(0x80, 0x55, 0x32),
+/// Warm / extroverted shirt palette — used for higher-trip-chance agents.
+const SHIRT_PRESETS_WARM: &[Rgb] = &[
+    Rgb(0x9c, 0x27, 0x27),  // crimson
+    Rgb(0xc6, 0x6a, 0x1e),  // burnt orange
+    Rgb(0xb0, 0x32, 0xa8),  // magenta
+    Rgb(0xd0, 0x9c, 0x32),  // mustard
+];
+/// Cool / homebody shirt palette — used for lower-trip-chance agents.
+const SHIRT_PRESETS_COOL: &[Rgb] = &[
+    Rgb(0x2e, 0x62, 0xcf),  // royal blue
+    Rgb(0x16, 0xa0, 0x6e),  // forest green
+    Rgb(0x32, 0x82, 0x9b),  // teal
+    Rgb(0x6c, 0x4f, 0x9e),  // violet
 ];
 const HAIR_PRESETS: &[Rgb] = &[
-    Rgb(0x2a, 0x1a, 0x0e),
-    Rgb(0x52, 0x32, 0x10),
-    Rgb(0xc7, 0xa3, 0x4a),
-    Rgb(0x7a, 0x32, 0x10),
-    Rgb(0x3a, 0x3a, 0x3a),
+    Rgb(0x2a, 0x1a, 0x0e),  // near-black
+    Rgb(0x52, 0x32, 0x10),  // dark brown
+    Rgb(0xc7, 0xa3, 0x4a),  // blond
+    Rgb(0x7a, 0x32, 0x10),  // auburn
+    Rgb(0x3a, 0x3a, 0x3a),  // dark grey
+];
+const SKIN_PRESETS: &[Rgb] = &[
+    Rgb(0xf4, 0xc7, 0x9a),  // light peach (matches base palette S)
+    Rgb(0xe0, 0xa8, 0x70),  // medium
+    Rgb(0xb8, 0x80, 0x50),  // tan
+    Rgb(0x8a, 0x5a, 0x36),  // deep brown
 ];
 
 // --- Terminal lifecycle ---------------------------------------------------
@@ -80,23 +90,36 @@ pub fn teardown_terminal(term: &mut Term) -> Result<()> {
 // --- Per-agent recolor ----------------------------------------------------
 fn agent_palette(base: &Palette, agent: &AgentSlot) -> Palette {
     let seed = agent.agent_id.raw() as usize;
-    let shirt = SHIRT_PRESETS[seed % SHIRT_PRESETS.len()];
+    // Personality nudges aesthetic choice: extroverted (high trip_chance)
+    // agents pick from the warm shirt palette, homebodies from cool.
+    let p = pose::personality_for(agent.agent_id);
+    let shirts = if p.trip_chance_pct >= 30 {
+        SHIRT_PRESETS_WARM
+    } else {
+        SHIRT_PRESETS_COOL
+    };
+    let shirt = shirts[seed % shirts.len()];
     let hair = HAIR_PRESETS[(seed / 7) % HAIR_PRESETS.len()];
+    let skin = SKIN_PRESETS[(seed / 13) % SKIN_PRESETS.len()];
     base.with_override('B', Some(shirt))
         .with_override('H', Some(hair))
+        .with_override('S', Some(skin))
 }
 
 fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) -> Frame {
     let base_shirt = base_pal.get('B').flatten();
     let base_hair = base_pal.get('H').flatten();
+    let base_skin = base_pal.get('S').flatten();
     let agent_shirt = pal.get('B').flatten();
     let agent_hair = pal.get('H').flatten();
+    let agent_skin = pal.get('S').flatten();
     let pixels: Vec<Pixel> = frame
         .pixels
         .iter()
         .map(|p| match p {
             Some(rgb) if Some(*rgb) == base_shirt => agent_shirt,
             Some(rgb) if Some(*rgb) == base_hair => agent_hair,
+            Some(rgb) if Some(*rgb) == base_skin => agent_skin,
             other => *other,
         })
         .collect();
