@@ -26,6 +26,10 @@ pub enum Cmd {
         projects_root: Option<PathBuf>,
         #[arg(long, default_value_t = 8)]
         max_desks: usize,
+        /// Skip the TUI entirely — useful for CI / scripting.
+        /// Prints a JSON snapshot of SceneState every 200ms when it changes.
+        #[arg(long, default_value_t = false)]
+        headless: bool,
     },
     /// Install Claude Code hooks into ~/.claude/settings.json.
     InstallHooks {
@@ -48,6 +52,7 @@ impl Cli {
             socket: None,
             projects_root: None,
             max_desks: 8,
+            headless: false,
         });
         (level, cmd)
     }

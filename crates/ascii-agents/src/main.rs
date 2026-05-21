@@ -23,7 +23,8 @@ fn main() -> Result<()> {
             socket,
             projects_root,
             max_desks,
-        } => runtime::run(socket, projects_root, max_desks),
+            headless,
+        } => runtime::run(socket, projects_root, max_desks, headless),
         Cmd::InstallHooks {
             hook_path,
             settings,
