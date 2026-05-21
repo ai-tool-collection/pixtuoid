@@ -8,49 +8,64 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use ascii_agents::tui::embedded_pack::load_default_pack;
+use ascii_agents::tui::frame_cache::FrameCache;
+use ascii_agents::tui::renderer::draw_scene;
 use ascii_agents_core::source::jsonl::JsonlWatcher;
 use ascii_agents_core::source::{Activity, AgentEvent};
-use ascii_agents_core::state::ActivityState;
-use ascii_agents::tui::frame_cache::FrameCache;
 use ascii_agents_core::sprite::{Rgb, RgbBuffer};
+use ascii_agents_core::state::ActivityState;
 use ascii_agents_core::{AgentId, AgentSlot, Reducer, SceneState, Transport};
+use clap::Parser;
 use image::{Rgb as ImgRgb, RgbImage};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use ratatui::Terminal;
 use tokio::sync::{mpsc, RwLock};
 
-// Pull from the binary crate
-use ascii_agents::tui::embedded_pack::load_default_pack;
-use ascii_agents::tui::renderer::draw_scene;
-
 const COLS: u16 = 96;
 const ROWS: u16 = 36;
 const CELL_W: u32 = 8;
 const CELL_H: u32 = 16;
 
+#[derive(Debug, Parser)]
+#[command(about = "Render the TUI off-screen to a PNG for verification")]
+struct SnapshotArgs {
+    /// Output PNG path.
+    #[arg(default_value = "snapshot.png")]
+    out: PathBuf,
+
+    /// Capture real CC events by watching --projects-root for --listen-secs.
+    #[arg(long)]
+    live: bool,
+
+    /// CC project root to watch (only with --live).
+    #[arg(long, default_value_t = default_projects_root())]
+    projects_root: String,
+
+    /// How many seconds to listen for events (only with --live).
+    #[arg(long, default_value_t = 5)]
+    listen_secs: u64,
+}
+
+fn default_projects_root() -> String {
+    format!(
+        "{}/.claude/projects",
+        std::env::var("HOME").unwrap_or_else(|_| ".".into())
+    )
+}
+
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let live = args.iter().any(|a| a == "--live");
-    let projects_root = arg_value(&args, "--projects-root").unwrap_or_else(|| {
-        format!(
-            "{}/.claude/projects",
-            std::env::var("HOME").unwrap_or_else(|_| ".".into())
-        )
-    });
-    let listen_secs: u64 = arg_value(&args, "--listen-secs")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
-    let out_path = positional_path(&args);
+    let args = SnapshotArgs::parse();
 
     let pack = load_default_pack()?;
     let now = Instant::now();
 
-    let scene = if live {
+    let scene = if args.live {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        rt.block_on(capture_live_scene(&projects_root, listen_secs))?
+        rt.block_on(capture_live_scene(&args.projects_root, args.listen_secs))?
     } else {
         sample_scene(now)
     };
@@ -61,8 +76,8 @@ fn main() -> Result<()> {
     let mut cache = FrameCache::new();
     draw_scene(&mut term, &scene, &pack, now, &mut buf, &mut cache)?;
 
-    save_backend_as_png(&term, &out_path)?;
-    println!("wrote {}", out_path.display());
+    save_backend_as_png(&term, &args.out)?;
+    println!("wrote {}", args.out.display());
 
     // Also dump a text-only preview so you can eyeball without an image viewer.
     println!("\n--- text preview (symbols only) ---");
@@ -74,30 +89,6 @@ fn main() -> Result<()> {
         println!();
     }
     Ok(())
-}
-
-fn arg_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-}
-
-fn positional_path(args: &[String]) -> PathBuf {
-    for a in args.iter().skip(1) {
-        if a.starts_with("--") {
-            continue;
-        }
-        // Skip values that belong to recognized flags.
-        // (Crude — fine for this dev tool.)
-        if let Some(prev) = args.iter().position(|x| x == a).and_then(|i| i.checked_sub(1)).and_then(|i| args.get(i)) {
-            if prev == "--projects-root" || prev == "--listen-secs" {
-                continue;
-            }
-        }
-        return PathBuf::from(a);
-    }
-    PathBuf::from("snapshot.png")
 }
 
 async fn capture_live_scene(projects_root: &str, listen_secs: u64) -> Result<SceneState> {

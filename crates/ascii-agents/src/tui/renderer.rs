@@ -183,6 +183,67 @@ fn recolor_frame(frame: &Frame, base_palette: &Palette, shirt: Rgb, hair: Rgb) -
     out
 }
 
+/// Derived dimensions / coordinates for one frame. Computed once at the top
+/// of draw_scene and passed to the paint_* helpers so they share consistent
+/// geometry.
+#[derive(Debug, Clone, Copy)]
+struct Layout {
+    buf_w: u16,
+    buf_h: u16,
+    wall_h: u16,
+    floor_start: u16,
+    slot_w: u16,
+    slot_left_padding: u16,
+    stack_h: u16,
+    row_h: u16,
+    grid_top: u16,
+    cols_per_row: u16,
+    rows_per_screen: u16,
+    max_slots: u16,
+}
+
+impl Layout {
+    fn compute(scene_w: u16, scene_h: u16) -> Self {
+        let buf_w = scene_w;
+        let buf_h = scene_h * 2;
+        let wall_h: u16 = 8;
+        let floor_start = wall_h + 1;
+        let slot_w: u16 = 18;
+        let slot_left_padding: u16 = 4;
+        let stack_h: u16 = 4 + 12 + 6; // chair gap + character + desk
+        let row_gap: u16 = 3;
+        let row_h = stack_h + row_gap;
+        let floor_h = buf_h.saturating_sub(floor_start);
+        let cols_per_row = (buf_w.saturating_sub(slot_left_padding)) / slot_w;
+        let rows_per_screen = std::cmp::max(1u16, floor_h / row_h);
+        let grid_h = rows_per_screen * stack_h + rows_per_screen.saturating_sub(1) * row_gap;
+        let grid_top = floor_start + floor_h.saturating_sub(grid_h) / 2;
+        let max_slots = rows_per_screen * cols_per_row;
+        Layout {
+            buf_w,
+            buf_h,
+            wall_h,
+            floor_start,
+            slot_w,
+            slot_left_padding,
+            stack_h,
+            row_h,
+            grid_top,
+            cols_per_row,
+            rows_per_screen,
+            max_slots,
+        }
+    }
+
+    fn slot_origin(&self, i: u16) -> (u16, u16) {
+        let row = i / self.cols_per_row;
+        let col = i % self.cols_per_row;
+        let sx = self.slot_left_padding + col * self.slot_w;
+        let sy = self.grid_top + row * self.row_h;
+        (sx, sy)
+    }
+}
+
 pub fn draw_scene<B: Backend>(
     term: &mut Terminal<B>,
     scene: &SceneState,
@@ -241,17 +302,14 @@ pub fn draw_scene<B: Backend>(
             return;
         }
 
-        // Composite the scene into the pre-allocated pixel buffer at 2x
-        // vertical resolution. `ensure_size` reuses the existing allocation
-        // when dimensions match — no per-frame Vec alloc.
-        let cell_w = scene_rect.width;
-        let cell_h = scene_rect.height;
-        let buf_w = cell_w;
-        let buf_h = cell_h * 2;
+        // Compute one Layout for this frame and reuse the pixel buffer.
+        let layout = Layout::compute(scene_rect.width, scene_rect.height);
+        let buf_w = layout.buf_w;
+        let buf_h = layout.buf_h;
         buf.ensure_size(buf_w, buf_h, BG);
 
         // --- Background: top wall band + checkered floor below ---
-        let wall_h: u16 = 8; // top wall band (tall enough for windows + posters)
+        let wall_h = layout.wall_h;
         for y in 0..wall_h.min(buf_h) {
             for x in 0..buf_w {
                 buf.put(x, y, WALL);
@@ -264,7 +322,7 @@ pub fn draw_scene<B: Backend>(
             }
         }
         // Floor tiles (checkered) below the trim.
-        let floor_start = wall_h + 1;
+        let floor_start = layout.floor_start;
         for y in floor_start..buf_h {
             for x in 0..buf_w {
                 let cell = ((x / 4) + ((y - floor_start) / 2)) % 2;
@@ -320,22 +378,14 @@ pub fn draw_scene<B: Backend>(
         }
 
         // --- Furniture + characters per desk slot ---
-        // Top-down layout: chair at top, character below it, desk in front of
-        // character (occluding lower body), monitor on desk between character
-        // and viewer. Slots arranged in a grid that adapts to terminal size:
-        // columns are limited by width, rows by floor-zone height.
-        let slot_w: u16 = 18;
-        let slot_left_padding: u16 = 4;
-        let floor_h = buf_h.saturating_sub(floor_start);
-        let stack_h: u16 = 4 /*chair*/ + 12 /*character*/ + 6 /*desk*/;
-        let row_gap: u16 = 3;
-        let row_h = stack_h + row_gap;
-        let cols_per_row = (buf_w.saturating_sub(slot_left_padding)) / slot_w;
-        let rows_per_screen = std::cmp::max(1u16, floor_h / row_h);
-        let visible_slots = rows_per_screen * cols_per_row;
-        // Center the entire grid vertically in the floor area.
-        let grid_h = rows_per_screen * stack_h + (rows_per_screen.saturating_sub(1)) * row_gap;
-        let grid_top = floor_start + floor_h.saturating_sub(grid_h) / 2;
+        // Dimensions all live on `layout`; aliased here for readability.
+        let slot_w = layout.slot_w;
+        let slot_left_padding = layout.slot_left_padding;
+        let stack_h = layout.stack_h;
+        let row_h = layout.row_h;
+        let cols_per_row = layout.cols_per_row;
+        let rows_per_screen = layout.rows_per_screen;
+        let grid_top = layout.grid_top;
 
         // --- Cubicle partitions between adjacent slot columns ---
         // Vertical lines that separate workstations, drawn BEFORE the furniture
@@ -374,15 +424,9 @@ pub fn draw_scene<B: Backend>(
             }
         };
 
-        let slot_origin = |i: u16| -> (u16, u16) {
-            let row = i / cols_per_row;
-            let col = i % cols_per_row;
-            let sx = slot_left_padding + col * slot_w;
-            let sy = grid_top + row * row_h;
-            (sx, sy)
-        };
+        let slot_origin = |i: u16| -> (u16, u16) { layout.slot_origin(i) };
 
-        let max_slots = visible_slots;
+        let max_slots = layout.max_slots;
         for slot in &agents {
             let i = slot.desk_index as u16;
             if i >= max_slots {
