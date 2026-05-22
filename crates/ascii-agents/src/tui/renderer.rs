@@ -26,7 +26,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
-use crate::tui::layout::{Layout, Point, DESK_H, DESK_W};
+use crate::tui::layout::{Layout, Point, DESK_W};
 use crate::tui::pose::{self, Pose};
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -39,12 +39,6 @@ const PLANK_LINE: Rgb = Rgb(72, 48, 24);
 const WALL: Rgb = Rgb(56, 56, 70);
 const WALL_TRIM: Rgb = Rgb(80, 80, 100);
 const BASEBOARD: Rgb = Rgb(40, 40, 52);
-const RUG_PALETTE: &[Rgb] = &[
-    Rgb(0x4a, 0x55, 0x80),
-    Rgb(0x6a, 0x3f, 0x55),
-    Rgb(0x40, 0x60, 0x4f),
-    Rgb(0x6e, 0x4d, 0x2e),
-];
 /// Warm / extroverted shirt palette — used for higher-trip-chance agents.
 const SHIRT_PRESETS_WARM: &[Rgb] = &[
     Rgb(0x9c, 0x27, 0x27),  // crimson
@@ -307,25 +301,6 @@ fn octant_offset(turn: f32) -> (i32, i32) {
     }
 }
 
-fn paint_rug(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16, color: Rgb) {
-    let lighter = Rgb(
-        color.0.saturating_add(40),
-        color.1.saturating_add(40),
-        color.2.saturating_add(40),
-    );
-    for dy in 1..h.saturating_sub(1) {
-        for dx in 1..w.saturating_sub(1) {
-            let px = x + dx;
-            let py = y + dy;
-            if px >= buf.width || py >= buf.height {
-                continue;
-            }
-            let on_border = dy == 1 || dy + 2 == h || dx == 1 || dx + 2 == w;
-            buf.put(px, py, if on_border { lighter } else { color });
-        }
-    }
-}
-
 fn paint_lounge_decor(buf: &mut RgbBuffer, layout: &Layout, pack: &Pack) {
     use crate::tui::layout::WaypointKind;
 
@@ -582,27 +557,12 @@ pub fn draw_scene<B: Backend>(
         paint_wall_decor(buf, &layout, pack);
         paint_lounge_decor(buf, &layout, pack);
 
-        // Pass 1: rugs only. Each agent's home desk is at
-        // home_desks[agent.desk_index] — NOT at the agent's BTreeMap position.
-        // Iterating by agent (and looking up the desk) keeps rugs, desks,
-        // characters, and labels co-located.
-        for agent in &agents {
-            let Some(desk) = layout.home_desks.get(agent.desk_index) else { continue };
-            let rug = RUG_PALETTE[(agent.agent_id.raw() as usize / 11) % RUG_PALETTE.len()];
-            paint_rug(
-                buf,
-                desk.x.saturating_sub(1),
-                desk.y.saturating_sub(10),
-                DESK_W + 2,
-                DESK_H + 12,
-                rug,
-            );
-        }
-
-        // Pass 2: characters by pose. Painted BEFORE the desk so the desk
+        // Pass 1: characters by pose. Painted BEFORE the desk so the desk
         // can occlude the character's lower body — from a top-down POV the
         // viewer sees head + shoulders sticking up above the desk back
-        // edge, and the body is hidden behind the desk.
+        // edge, and the body is hidden behind the desk. Each agent's home
+        // desk is at home_desks[agent.desk_index] — NOT at the agent's
+        // BTreeMap position.
         //
         // Waypoint de-collision: when multiple Idle agents pick the same
         // wander destination in the same cycle, fan them out spatially so
@@ -660,7 +620,7 @@ pub fn draw_scene<B: Backend>(
             }
         }
 
-        // Pass 3: desks (+ screen glow). Painted AFTER the character so the
+        // Pass 2: desks (+ screen glow). Painted AFTER the character so the
         // desk occludes the character's lower body — top-down POV reads as
         // "person sitting BEHIND the desk", not "person standing on the
         // desk top". The screen glow now sits on top of everything, so it's
