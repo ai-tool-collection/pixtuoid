@@ -672,13 +672,18 @@ pub fn draw_scene<B: Backend>(
             }
         }
 
-        // Labels above each home desk. Same indexing fix as the passes above.
+        // Labels above each home desk. Same indexing fix as the passes
+        // above. State is conveyed visually (screen glow for Active,
+        // waiting bubble for Waiting) so the label only carries identity —
+        // budget the whole 16-char widget for the name, and keep the
+        // session-id disambiguation suffix when the base would overflow.
         for agent in &agents {
             let Some(desk) = layout.home_desks.get(agent.desk_index) else { continue };
             let lx = scene_rect.x + desk.x;
             let ly = scene_rect.y + (desk.y / 2).saturating_sub(1);
+            let display = truncate_label(&agent.label, (DESK_W + 4) as usize);
             let para = Paragraph::new(Span::styled(
-                format!("{} {}", agent.label, summarize_state(&agent.state)),
+                display.into_owned(),
                 Style::default().fg(Color::White),
             ));
             f.render_widget(
@@ -690,10 +695,50 @@ pub fn draw_scene<B: Backend>(
     Ok(())
 }
 
-fn summarize_state(state: &ActivityState) -> &'static str {
-    match state {
-        ActivityState::Idle => "idle",
-        ActivityState::Active { .. } => "working",
-        ActivityState::Waiting { .. } => "waiting",
+/// Fit a label into `budget` chars without losing the `·xxxx` session-id
+/// disambiguation suffix that the reducer appends to colliding cwds.
+/// Truncates from the base (left side of the `·`), not from the suffix —
+/// otherwise the disambig becomes useless ("TikTok-Android·a" tells us
+/// nothing the base alone wouldn't).
+fn truncate_label(label: &str, budget: usize) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    if label.chars().count() <= budget {
+        return Cow::Borrowed(label);
+    }
+    if let Some(sep_byte) = label.rfind('·') {
+        let suffix = &label[sep_byte..];
+        let suffix_len = suffix.chars().count();
+        if suffix_len < budget {
+            let base = &label[..sep_byte];
+            let base_take = budget - suffix_len;
+            let truncated: String = base.chars().take(base_take).collect();
+            return Cow::Owned(format!("{truncated}{suffix}"));
+        }
+    }
+    Cow::Owned(label.chars().take(budget).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_label_passes_short_labels_through() {
+        assert_eq!(truncate_label("hello", 16), "hello");
+    }
+
+    #[test]
+    fn truncate_label_preserves_disambig_suffix() {
+        // 19 chars > 16 budget → must drop chars from the base, NOT the suffix.
+        let out = truncate_label("TikTok-Android·a09a", 16);
+        assert_eq!(out.chars().count(), 16);
+        assert!(out.ends_with("·a09a"), "suffix lost: {out}");
+        assert!(out.starts_with("TikTok"), "base over-truncated: {out}");
+    }
+
+    #[test]
+    fn truncate_label_falls_back_to_plain_truncate_when_no_separator() {
+        let out = truncate_label("a-very-long-project-name", 8);
+        assert_eq!(out, "a-very-l");
     }
 }
