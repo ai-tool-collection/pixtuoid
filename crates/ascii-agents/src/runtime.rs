@@ -56,11 +56,23 @@ async fn run_async(
 
 async fn reducer_task(mut rx: TaggedReceiver, scene: Arc<RwLock<SceneState>>) {
     let mut reducer = Reducer::new();
-    while let Some((transport, ev)) = rx.recv().await {
-        let now = SystemTime::now();
-        tracing::info!(?transport, ?ev, "event");
-        let mut s = scene.write().await;
-        reducer.apply(&mut s, ev, now, transport);
+    // 1-Hz tick so exit-grace sweeps run even when no new events arrive.
+    let mut sweep_interval = tokio::time::interval(Duration::from_secs(1));
+    sweep_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                let Some((transport, ev)) = event else { break };
+                let now = SystemTime::now();
+                tracing::info!(?transport, ?ev, "event");
+                let mut s = scene.write().await;
+                reducer.apply(&mut s, ev, now, transport);
+            }
+            _ = sweep_interval.tick() => {
+                let mut s = scene.write().await;
+                reducer.tick(&mut s, SystemTime::now());
+            }
+        }
     }
 }
 

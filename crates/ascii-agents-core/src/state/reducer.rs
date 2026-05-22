@@ -39,6 +39,14 @@ impl Reducer {
         Self::default()
     }
 
+    /// Run the GC + exit-sweep without applying an event. Must be called
+    /// periodically (e.g. on each render tick) so that an exiting agent's
+    /// slot is reclaimed even when no new event arrives to drive `apply`.
+    pub fn tick(&mut self, scene: &mut SceneState, now: SystemTime) {
+        self.gc(now);
+        self.sweep_exited(scene, now);
+    }
+
     pub fn apply(
         &mut self,
         scene: &mut SceneState,
