@@ -199,24 +199,26 @@ impl Layout {
             y: mr.y + mr.height / 2,
         });
 
-        // Room walls — drywall lines separating the quadrants. Vertical
-        // wall between left rooms and right side, horizontal wall on the
-        // left side splitting meeting from pantry. Door gap in the middle
-        // of each wall so agents can walk between rooms (we don't render
-        // walking through walls — purely cosmetic for now).
+        // Room walls — only around the MEETING ROOM. Pantry is explicitly
+        // open space (no walls), and the right side (cubicles + lounge) is
+        // also open from each other.
+        //   * Vertical wall on meeting room's right side (from back wall
+        //     down to the bottom of the meeting room), with a doorway gap.
+        //   * Horizontal wall on meeting room's bottom side (separating it
+        //     from the open pantry below), with a doorway gap.
+        // Meeting room's left side = buffer edge (building edge, no wall
+        // needed). Top side = shared back wall with city-view windows.
         let mut room_walls = Vec::new();
-        // Vertical wall (left/right divider) with a doorway in the middle.
         let v_x = mid_x;
         let v_top = TOP_MARGIN_PX;
-        let v_bot = buf_h.saturating_sub(3);
-        let v_door_top = TOP_MARGIN_PX + usable_h * 28 / 100;
-        let v_door_bot = TOP_MARGIN_PX + usable_h * 38 / 100;
+        let v_bot = mid_y_split;
+        let v_door_top = TOP_MARGIN_PX + usable_h * 30 / 100;
+        let v_door_bot = TOP_MARGIN_PX + usable_h * 40 / 100;
         room_walls.push((Point { x: v_x, y: v_top }, Point { x: v_x, y: v_door_top }));
         room_walls.push((Point { x: v_x, y: v_door_bot }, Point { x: v_x, y: v_bot }));
-        // Horizontal wall (meeting / pantry divider, left side only).
         let h_y = mid_y_split;
-        let h_door_left = mid_x * 45 / 100;
-        let h_door_right = mid_x * 60 / 100;
+        let h_door_left = mid_x * 55 / 100;
+        let h_door_right = mid_x * 70 / 100;
         room_walls.push((Point { x: 0, y: h_y }, Point { x: h_door_left, y: h_y }));
         room_walls.push((Point { x: h_door_right, y: h_y }, Point { x: mid_x, y: h_y }));
 

@@ -1277,12 +1277,20 @@ pub fn draw_scene<B: Backend>(
             }
         }
 
-        // Meeting room sofas + table.
+        // Meeting room: two sofas facing each other across a small table.
+        // Top sofa renders normally (back at top, sitter faces down). Bottom
+        // sofa vertical-mirror so its back is at the bottom — sitter faces
+        // up, toward the table.
         if let Some(couch_anim) = pack.animation("couch").and_then(|a| a.frames.first()) {
-            for sofa in &layout.meeting_sofas {
+            for (i, sofa) in layout.meeting_sofas.iter().enumerate() {
                 let sx = sofa.x.saturating_sub(couch_anim.width / 2);
                 let sy = sofa.y.saturating_sub(couch_anim.height / 2);
-                blit_frame(couch_anim, sx, sy, buf);
+                if i == 0 {
+                    blit_frame(couch_anim, sx, sy, buf);
+                } else {
+                    let flipped = couch_anim.mirror_vertical();
+                    blit_frame(&flipped, sx, sy, buf);
+                }
             }
         }
         if let Some(table) = layout.meeting_table {

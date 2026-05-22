@@ -60,6 +60,21 @@ impl Frame {
         }
         Self { width: self.width, height: self.height, pixels }
     }
+
+    /// Flip rows top-to-bottom. Used to face a couch the opposite way
+    /// (e.g. for a meeting room with two sofas facing each other).
+    pub fn mirror_vertical(&self) -> Self {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let mut pixels = Vec::with_capacity(self.pixels.len());
+        for y in (0..h).rev() {
+            let row_start = y * w;
+            for x in 0..w {
+                pixels.push(self.pixels[row_start + x]);
+            }
+        }
+        Self { width: self.width, height: self.height, pixels }
+    }
 }
 
 #[derive(Debug, Clone)]
