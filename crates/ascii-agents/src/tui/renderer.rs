@@ -169,6 +169,8 @@ fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16) {
         // Skip every 4th window slot to vary the rhythm.
         if idx % 4 != 3 {
             paint_window(buf, x, WINDOW_Y, WINDOW_W, WINDOW_H, WINDOW_FRAME, WINDOW_GLASS, WINDOW_GLASS_2);
+            // Sunlight trapezoid spilling onto the floor below the window.
+            paint_window_light_spill(buf, x, WINDOW_W, TOP_WALL_H);
         }
         x += WINDOW_W + 8;
         idx += 1;
@@ -191,6 +193,41 @@ fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16) {
             buf.put(x, y, BASEBOARD);
         }
     }
+}
+
+/// Warm sunlight tint spilling onto the floor below a window. Trapezoid
+/// shape (widens by 1 px every 2 rows) blended with the existing floor so
+/// it reads as "light through window" not "yellow rectangle".
+fn paint_window_light_spill(buf: &mut RgbBuffer, window_x: u16, window_w: u16, top_y: u16) {
+    const WARM: Rgb = Rgb(255, 230, 160);
+    const DEPTH: u16 = 12;
+    const FADE_START: f32 = 0.32;
+    for dy in 0..DEPTH {
+        let widen = (dy / 2).min(3);
+        let start_x = window_x.saturating_sub(widen);
+        let end_x = (window_x + window_w + widen).min(buf.width);
+        let y = top_y + dy;
+        if y >= buf.height {
+            break;
+        }
+        let strength = FADE_START * (1.0 - dy as f32 / DEPTH as f32);
+        for x in start_x..end_x {
+            let cur = buf.get(x, y);
+            buf.put(
+                x,
+                y,
+                Rgb(
+                    blend(cur.0, WARM.0, strength),
+                    blend(cur.1, WARM.1, strength),
+                    blend(cur.2, WARM.2, strength),
+                ),
+            );
+        }
+    }
+}
+
+fn blend(a: u8, b: u8, t: f32) -> u8 {
+    ((a as f32) * (1.0 - t) + (b as f32) * t).round().clamp(0.0, 255.0) as u8
 }
 
 fn paint_window(
@@ -248,6 +285,18 @@ fn paint_clock(buf: &mut RgbBuffer, x: u16, y: u16, now: SystemTime) {
         let py = y + dy;
         if px < buf.width && py < buf.height {
             buf.put(px, py, *c);
+        }
+    }
+
+    // Tick marks at 12 / 3 / 6 / 9 o'clock — dark dots inset from the rim
+    // so the eye reads the clock as actually having an orientation.
+    const TICK: Rgb = Rgb(60, 60, 70);
+    let ticks: &[(u16, u16)] = &[(2, 1), (3, 2), (2, 3), (1, 2)];
+    for (tx, ty) in ticks {
+        let px = x + tx;
+        let py = y + ty;
+        if px < buf.width && py < buf.height {
+            buf.put(px, py, TICK);
         }
     }
 

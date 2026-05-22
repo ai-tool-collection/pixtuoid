@@ -14,6 +14,7 @@ version = "1"
 "B" = "#2e62cf"   # shirt (per-agent recolor target)
 "c" = "#7ed4e2"   # cyan accent (water cooler tank, coffee display)
 "j" = "#1c2a36"   # monitor screen when idle (powered, dark wallpaper)
+"w" = "#ececec"   # whiteboard surface (off-white)
 "M" = "#3a3a40"   # monitor frame
 "k" = "#1a1a22"   # keyboard
 "D" = "#8b5a2b"   # desk wood

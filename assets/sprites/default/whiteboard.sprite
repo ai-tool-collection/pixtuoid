@@ -1,9 +1,12 @@
-# 10x6 freestanding whiteboard for standup spot.
-# n = frame, c = white board surface (cyan-ish), q = marker scribble.
+# 14x8 freestanding whiteboard. Big white surface (w) with three lines of
+# marker squiggle (q) so it reads as "someone wrote on it" from across the
+# screen.
 @frame 0
-n n n n n n n n n n
-n c c c c c c c c n
-n c q c q q c q c n
-n c c q c c q c c n
-n c q q c q c c c n
-n n n n n n n n n n
+n n n n n n n n n n n n n n
+n w w w w w w w w w w w w n
+n w q q q w q q w q q q w n
+n w w w w w w w w w w w w n
+n w q q w q q q w q q w w n
+n w w w w w w w w w w w w n
+n w q q w q w q q w q w w n
+n n n n n n n n n n n n n n
