@@ -189,6 +189,7 @@ fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16, now: Syste
             WINDOW_FRAME,
             &look,
             idx as u16,
+            now,
         );
         if look.spill_strength > 0.0 {
             paint_window_light_spill(
@@ -230,6 +231,25 @@ fn paint_floor_and_walls(buf: &mut RgbBuffer, buf_w: u16, buf_h: u16, now: Syste
 /// `slant_per_row` shifts the spill horizontally per row going down —
 /// positive = rightward (morning sun in the east casts light right), negative
 /// = leftward (evening sun in the west casts light left).
+/// Per-dot twinkle: each city-window dot has its own ~600-1400ms cycle and
+/// each cycle rerolls on/off via a deterministic hash. Bias toward "on" so
+/// the skyline is mostly lit with the occasional dot blinking off.
+fn city_dot_twinkle(window_idx: u16, dx: u16, dy: u16, now: SystemTime) -> bool {
+    let now_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let dot_seed = (window_idx as u64).wrapping_mul(31)
+        ^ (dx as u64).wrapping_mul(131)
+        ^ (dy as u64).wrapping_mul(521);
+    let cycle_ms = 600 + (dot_seed % 800);
+    let phase = now_ms / cycle_ms;
+    let hash = dot_seed
+        .wrapping_add(phase)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    (hash % 10) < 8
+}
+
 fn paint_window_light_spill(
     buf: &mut RgbBuffer,
     window_x: u16,
@@ -467,7 +487,8 @@ fn mix_lab(a: Rgb, b: Rgb, t: f32) -> Rgb {
 /// Floor-to-ceiling window with frame, mullion, and a procedural city view
 /// inside the glass. Sky gradient at top blends with time-of-day glass
 /// colors; the lower portion shows building silhouettes whose "windows"
-/// (1-pixel dots) light up at night.
+/// (1-pixel dots) light up at night and twinkle on a per-dot cycle so the
+/// skyline reads as alive instead of stamped.
 fn paint_floor_to_ceiling_window(
     buf: &mut RgbBuffer,
     x: u16,
@@ -477,6 +498,7 @@ fn paint_floor_to_ceiling_window(
     frame: Rgb,
     look: &TimeOfDayLook,
     window_idx: u16,
+    now: SystemTime,
 ) {
     const BUILDING_DARK: Rgb = Rgb(20, 22, 32);
     const BUILDING_LIGHT: Rgb = Rgb(60, 65, 82);
@@ -520,8 +542,12 @@ fn paint_floor_to_ceiling_window(
             if in_building {
                 // Building wall (dark slab) with occasional lit window dots.
                 let bldg_y = glass_dy - (glass_h - building_h);
-                let is_lit = lit_dots.iter().any(|&(lx, ly)| lx == glass_dx && ly == bldg_y);
-                buf.put(px, py, if is_lit { lit_color } else { building });
+                let is_dot = lit_dots.iter().any(|&(lx, ly)| lx == glass_dx && ly == bldg_y);
+                if is_dot && city_dot_twinkle(window_idx, glass_dx, bldg_y, now) {
+                    buf.put(px, py, lit_color);
+                } else {
+                    buf.put(px, py, building);
+                }
             } else {
                 buf.put(px, py, sky_color);
             }
