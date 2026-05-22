@@ -1818,3 +1818,143 @@ pub fn render_to_rgb_buffer(
     let _ = agents; // pixel pass uses `agents` above; flush passes get fresh
                     // `scene` refs.
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ascii_agents_core::source::Activity;
+    use ascii_agents_core::sprite::Palette;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn make_slot(id: ascii_agents_core::AgentId, state: ActivityState) -> AgentSlot {
+        let now = SystemTime::UNIX_EPOCH;
+        AgentSlot {
+            agent_id: id,
+            source: Arc::from("claude-code"),
+            session_id: Arc::from("s"),
+            cwd: Arc::from(PathBuf::from("/x").as_path()),
+            label: Arc::from("x"),
+            state,
+            state_started_at: now,
+            created_at: now,
+            exiting_at: None,
+            desk_index: 0,
+        }
+    }
+
+    fn base_palette() -> Palette {
+        let mut p = Palette::new();
+        p.insert('B', Some(Rgb(10, 20, 30))); // shirt
+        p.insert('H', Some(Rgb(40, 50, 60))); // hair
+        p.insert('S', Some(Rgb(70, 80, 90))); // skin
+        p.insert('X', Some(Rgb(99, 99, 99))); // unrelated key
+        p
+    }
+
+    #[test]
+    fn agent_palette_is_deterministic_per_id() {
+        let id = ascii_agents_core::AgentId::from_transcript_path("/a.jsonl");
+        let base = base_palette();
+        let a = agent_palette(&base, &make_slot(id, ActivityState::Idle));
+        let b = agent_palette(&base, &make_slot(id, ActivityState::Idle));
+        assert_eq!(a.get('B'), b.get('B'));
+        assert_eq!(a.get('H'), b.get('H'));
+        assert_eq!(a.get('S'), b.get('S'));
+    }
+
+    #[test]
+    fn agent_palette_overrides_only_bhs_keys() {
+        let id = ascii_agents_core::AgentId::from_transcript_path("/a.jsonl");
+        let base = base_palette();
+        let p = agent_palette(&base, &make_slot(id, ActivityState::Idle));
+        // X is not a recolor target — must pass through unchanged.
+        assert_eq!(p.get('X'), Some(Some(Rgb(99, 99, 99))));
+        // B/H/S must be replaced — the base RGBs (10/20/30 etc.) are
+        // unlikely to be in any preset, so they should differ.
+        assert_ne!(p.get('B'), Some(Some(Rgb(10, 20, 30))));
+        assert_ne!(p.get('H'), Some(Some(Rgb(40, 50, 60))));
+        assert_ne!(p.get('S'), Some(Some(Rgb(70, 80, 90))));
+    }
+
+    #[test]
+    fn agent_palette_active_state_tints_skin_toward_glow() {
+        let id = ascii_agents_core::AgentId::from_transcript_path("/a.jsonl");
+        let base = base_palette();
+        let idle = agent_palette(&base, &make_slot(id, ActivityState::Idle));
+        let active = agent_palette(
+            &base,
+            &make_slot(
+                id,
+                ActivityState::Active {
+                    activity: Activity::Typing,
+                    tool_use_id: None,
+                    detail: None,
+                },
+            ),
+        );
+        // Same id ⇒ shirt + hair stable across states.
+        assert_eq!(idle.get('B'), active.get('B'));
+        assert_eq!(idle.get('H'), active.get('H'));
+        // Skin differs: Active tints toward green-ish GLOW_TINT(140,240,170).
+        // Verify the green channel went UP and red/blue moved toward the tint.
+        let (Some(Some(Rgb(_, ig, _))), Some(Some(Rgb(_, ag, _)))) =
+            (idle.get('S'), active.get('S'))
+        else {
+            panic!("S key missing")
+        };
+        assert!(
+            ag > ig,
+            "active skin green channel should exceed idle (active={ag}, idle={ig})"
+        );
+    }
+
+    #[test]
+    fn recolor_frame_substitutes_bhs_pixels() {
+        let base = base_palette();
+        // Build an agent palette where B/H/S are clearly distinguishable.
+        let mut agent_pal = base.clone();
+        agent_pal.insert('B', Some(Rgb(200, 0, 0))); // red shirt
+        agent_pal.insert('H', Some(Rgb(0, 200, 0))); // green hair
+        agent_pal.insert('S', Some(Rgb(0, 0, 200))); // blue skin
+
+        // Frame: 1 pixel per palette key + 1 unrelated pixel + 1 transparent.
+        let frame = Frame {
+            width: 5,
+            height: 1,
+            pixels: vec![
+                Some(Rgb(10, 20, 30)),  // matches base B → should become red
+                Some(Rgb(40, 50, 60)),  // matches base H → should become green
+                Some(Rgb(70, 80, 90)),  // matches base S → should become blue
+                Some(Rgb(123, 45, 67)), // unrelated     → unchanged
+                None,                   // transparent   → unchanged
+            ],
+        };
+
+        let out = recolor_frame(&frame, &agent_pal, &base);
+        assert_eq!(out.width, 5);
+        assert_eq!(out.height, 1);
+        assert_eq!(out.pixels[0], Some(Rgb(200, 0, 0)));
+        assert_eq!(out.pixels[1], Some(Rgb(0, 200, 0)));
+        assert_eq!(out.pixels[2], Some(Rgb(0, 0, 200)));
+        assert_eq!(out.pixels[3], Some(Rgb(123, 45, 67)));
+        assert_eq!(out.pixels[4], None);
+    }
+
+    #[test]
+    fn recolor_frame_handles_palette_with_no_overrides() {
+        // If agent palette equals base, frame must come back identical.
+        let base = base_palette();
+        let frame = Frame {
+            width: 3,
+            height: 1,
+            pixels: vec![
+                Some(Rgb(10, 20, 30)),
+                Some(Rgb(40, 50, 60)),
+                Some(Rgb(70, 80, 90)),
+            ],
+        };
+        let out = recolor_frame(&frame, &base, &base);
+        assert_eq!(out.pixels, frame.pixels);
+    }
+}

@@ -4,7 +4,7 @@ use crate::source::{Source, TaggedSender};
 
 /// Owns a set of `Source` implementations and spawns each as its own tokio
 /// task, multiplexing their events onto a single `TaggedSender`. The single-
-/// source case is just `SourceManager::new().add(Box::new(src)).spawn(tx)`.
+/// source case is just `SourceManager::new().with_source(Box::new(src)).spawn(tx)`.
 /// Adding a second CLI (Codex, Cursor, Gemini, …) is a one-line addition.
 #[derive(Default)]
 pub struct SourceManager {
@@ -16,7 +16,10 @@ impl SourceManager {
         Self::default()
     }
 
-    pub fn add(mut self, source: Box<dyn Source>) -> Self {
+    /// Register one more `Source`. Builder-style — chain to add several.
+    /// Named `with_source` (not `add`) to avoid clippy's
+    /// `should_implement_trait` confusing it with `std::ops::Add`.
+    pub fn with_source(mut self, source: Box<dyn Source>) -> Self {
         self.sources.push(source);
         self
     }

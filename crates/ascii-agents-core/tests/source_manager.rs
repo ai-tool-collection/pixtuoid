@@ -59,24 +59,23 @@ async fn manager_runs_multiple_sources_concurrently() {
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(8);
     let mgr = SourceManager::new()
-        .add(Box::new(src_a))
-        .add(Box::new(src_b));
+        .with_source(Box::new(src_a))
+        .with_source(Box::new(src_b));
     mgr.spawn(tx);
 
     let mut got_a = false;
     let mut got_b = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
-        match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
-            Ok(Some((_, AgentEvent::SessionStart { agent_id, .. }))) => {
-                if agent_id == id_a {
-                    got_a = true;
-                }
-                if agent_id == id_b {
-                    got_b = true;
-                }
+        if let Ok(Some((_, AgentEvent::SessionStart { agent_id, .. }))) =
+            tokio::time::timeout(Duration::from_millis(50), rx.recv()).await
+        {
+            if agent_id == id_a {
+                got_a = true;
             }
-            Ok(Some(_)) | Ok(None) | Err(_) => {}
+            if agent_id == id_b {
+                got_b = true;
+            }
         }
         if got_a && got_b {
             break;

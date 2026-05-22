@@ -67,7 +67,6 @@ fn clip_widget_rect(rect: Rect, bounds: Rect) -> Option<Rect> {
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
-
 // --- Terminal lifecycle ---------------------------------------------------
 pub fn setup_terminal() -> Result<Term> {
     enable_raw_mode()?;
@@ -89,7 +88,6 @@ pub fn teardown_terminal(term: &mut Term) -> Result<()> {
     term.show_cursor()?;
     Ok(())
 }
-
 
 // --- draw_scene ----------------------------------------------------------
 //

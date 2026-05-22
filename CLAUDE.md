@@ -41,6 +41,21 @@ cargo run --release --example snapshot -- /tmp/snap.png              # render TU
 
 The `test-renderer` feature is needed for the `e2e.rs` integration test. The dev workspace test alias is just `cargo test`.
 
+### Pre-push preflight
+
+`scripts/preflight.sh` mirrors `.github/workflows/ci.yml` (rustfmt + clippy with
+`-D warnings` + workspace tests). Run it locally to avoid the round-trip of
+"push → wait for CI → red → fix → push again."
+
+`.githooks/pre-push` calls it automatically. Activate the hook **once per
+clone**:
+
+```
+git config core.hooksPath .githooks
+```
+
+Bypass in an emergency with `git push --no-verify` or `SKIP_PREFLIGHT=1 git push`.
+
 ## Conventions
 
 - **TDD first.** Plan and existing tests are TDD-shaped — failing test → minimal impl → commit. Don't add code without a test that exercises it.

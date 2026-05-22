@@ -50,7 +50,7 @@ async fn run_async(
 
     tokio::spawn(reducer_task(rx, scene_tx, max_desks));
 
-    let _source_handles = SourceManager::new().add(Box::new(src)).spawn(tx);
+    let _source_handles = SourceManager::new().with_source(Box::new(src)).spawn(tx);
 
     if headless {
         headless_loop(scene_rx).await

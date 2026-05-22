@@ -199,10 +199,9 @@ fn render_produces_distinct_wall_band_and_floor_regions() {
 
     let wall = avg(0, wall_h);
     let floor = avg(floor_y0, h);
-    let dist = ((wall.0 - floor.0).powi(2)
-        + (wall.1 - floor.1).powi(2)
-        + (wall.2 - floor.2).powi(2))
-    .sqrt();
+    let dist =
+        ((wall.0 - floor.0).powi(2) + (wall.1 - floor.1).powi(2) + (wall.2 - floor.2).powi(2))
+            .sqrt();
     assert!(
         dist > 20.0,
         "wall band and floor regions look identical (dist={dist:.1}, wall={wall:?}, floor={floor:?})"
