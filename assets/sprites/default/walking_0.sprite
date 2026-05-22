@@ -1,4 +1,4 @@
-# 8x12 walker frame 0 — left foot forward.
+# 8x12 walker frame 0 — left foot stepping forward, right foot planted.
 @frame 0
 . n H H H H n .
 n H H H H H H n
@@ -10,5 +10,5 @@ H S e S S e S H
 B B B B B B B B
 B B B B B B B B
 . B B B B B B .
-. S B B B B . .
-S S . . . . . .
+. S B B B B S .
+S S . . . . S .
