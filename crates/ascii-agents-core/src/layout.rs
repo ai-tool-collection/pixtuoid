@@ -142,13 +142,19 @@ impl SceneLayout {
 
         let right_x = mid_x + 2;
         let right_w = buf_w.saturating_sub(right_x);
-        // Cubicle band now fills the full right column except for a thin
-        // walkway strip near the bottom. The old lounge_band was removed —
-        // its decor (lamp, plants, cat, overflow seats) was redistributed
-        // into the cubicles + corridor + pantry; merging the Coffee
-        // waypoint into Pantry covered both wander destinations cleanly.
-        let walkway_h = usable_h * 6 / 100;
-        let cubicle_h = usable_h - walkway_h;
+        // Reserve the last 3 px for the baseboard sprite (matches the
+        // BASEBOARD_H constant in the renderer's paint_floor_and_walls).
+        // Without this reservation, walkway_h overlapped the baseboard and
+        // the corridor itself was marked non-walkable — agents couldn't
+        // route through it, which is one of the root causes of "闪现".
+        const BASEBOARD_RESERVE: u16 = 3;
+        // Walkway floors at 8 px so the corridor is wide enough for the
+        // coarsened 4×4 path grid to see at least 2 walkable cell rows
+        // even after obstacle padding.
+        let walkway_h = (usable_h / 10).max(8);
+        let cubicle_h = usable_h
+            .saturating_sub(walkway_h)
+            .saturating_sub(BASEBOARD_RESERVE);
         let cubicle_band = Bounds {
             x: right_x,
             y: top_margin,
@@ -198,12 +204,23 @@ impl SceneLayout {
             y: mr.y + mr.height / 2,
         });
 
+        // Doorway widths are ABSOLUTE pixels — using percentages here makes
+        // the gap shrink to zero on smaller terminals, which after the
+        // 2-px wall obstacle padding leaves no walkable cell for A* and
+        // disconnects the meeting room from the rest of the office.
+        //
+        // Minimums: 14 px gives ≥10 px effective gap after padding, which
+        // is wide enough that the coarsened 4×4 router grid has at least
+        // one row of walkable cells through the doorway.
+        const DOOR_GAP_V: u16 = 14;
+        const DOOR_GAP_H: u16 = 14;
         let mut room_walls = Vec::new();
         let v_x = mid_x;
         let v_top = top_margin;
         let v_bot = mid_y_split;
-        let v_door_top = top_margin + usable_h * 30 / 100;
-        let v_door_bot = top_margin + usable_h * 40 / 100;
+        let v_door_center = top_margin + (v_bot - v_top) / 2;
+        let v_door_top = v_door_center.saturating_sub(DOOR_GAP_V / 2);
+        let v_door_bot = (v_door_center + DOOR_GAP_V / 2).min(v_bot);
         room_walls.push((
             Point { x: v_x, y: v_top },
             Point {
@@ -219,8 +236,9 @@ impl SceneLayout {
             Point { x: v_x, y: v_bot },
         ));
         let h_y = mid_y_split;
-        let h_door_left = mid_x * 55 / 100;
-        let h_door_right = mid_x * 70 / 100;
+        let h_door_center = mid_x * 60 / 100;
+        let h_door_left = h_door_center.saturating_sub(DOOR_GAP_H / 2);
+        let h_door_right = (h_door_center + DOOR_GAP_H / 2).min(mid_x);
         room_walls.push((
             Point { x: 0, y: h_y },
             Point {
@@ -248,28 +266,28 @@ impl SceneLayout {
             kind: WaypointKind::Couch,
         }];
         if let Some(pr) = pantry_room {
+            // y at 60% (not 40%) so the counter sits well below the
+            // meeting-room/pantry doorway — keeps the walkable strip
+            // through the doorway wide enough for the coarsened
+            // pathfinding grid to see it as passable.
             waypoints.push(Waypoint {
                 pos: Point {
                     x: pr.x + pr.width * 60 / 100,
-                    y: pr.y + pr.height * 40 / 100,
+                    y: pr.y + pr.height * 60 / 100,
                 },
                 kind: WaypointKind::Pantry,
             });
         }
 
-        // Plants scatter through cubicle aisles, the meeting room corner,
-        // and the pantry. No lounge band any more — these are pure decor
-        // accents that break up the cubicle blocks.
+        // Plants scatter through the cubicle corridor edges + pantry.
+        // No plants in the cubicle TOP strip — that area is too narrow
+        // (the gap between top wall and the viewing couch is just 7 px,
+        // not enough for a padded plant without blocking the room/door
+        // walkability paths). No plants in the meeting room interior
+        // either: sofas + table already fill most of the room, and any
+        // plant inside its walkable strips disconnects the door gap.
         let plants: Vec<(PlantKind, Point)> = vec![
-            // Cubicle area: a plant beside the viewing couch + one near
-            // the corridor at each side.
-            (
-                PlantKind::Tall,
-                Point {
-                    x: couch_x.saturating_sub(28),
-                    y: couch_y + 1,
-                },
-            ),
+            // Corridor edges — far from any door or room exit.
             (
                 PlantKind::Flower,
                 Point {
@@ -284,42 +302,17 @@ impl SceneLayout {
                     y: walkway.y.saturating_sub(4),
                 },
             ),
-            (
-                PlantKind::Ficus,
-                Point {
-                    x: cubicle_band.x + cubicle_band.width.saturating_sub(6),
-                    y: cubicle_band.y + 4,
-                },
-            ),
         ]
         .into_iter()
-        .chain(pantry_room.into_iter().flat_map(|pr| {
-            vec![
-                (
-                    PlantKind::Tall,
-                    Point {
-                        x: pr.x + pr.width * 10 / 100,
-                        y: pr.y + pr.height * 80 / 100,
-                    },
-                ),
-                (
-                    PlantKind::Succulent,
-                    Point {
-                        x: pr.x + pr.width * 90 / 100,
-                        y: pr.y + pr.height * 80 / 100,
-                    },
-                ),
-            ]
-        }))
-        .chain(meeting_room.into_iter().flat_map(|mr| {
-            vec![(
-                PlantKind::Tall,
-                Point {
-                    x: mr.x + mr.width.saturating_sub(4),
-                    y: mr.y + 4,
-                },
-            )]
-        }))
+        // No pantry plants — the room is small (≤ 26 px wide), and the
+        // plant + 1-px pad blocks the only horizontal bridge between the
+        // pantry interior and the cubicle area's bottom row. Leaving the
+        // pantry plant-free keeps the mask fully connected.
+        .chain(std::iter::empty::<(PlantKind, Point)>())
+        // The meeting room is intentionally plant-free: sofas + table fill
+        // most of the interior, leaving narrow walkable strips. Any plant
+        // placed inside one of those strips disconnects the room from the
+        // door gap.
         .collect();
 
         // Floor lamp now sits right next to the viewing couch so its halo

@@ -23,9 +23,12 @@ use crate::tui::layout::Point;
 /// 4 px gives a ~40×60 grid on a typical 160×240 buffer — A* finishes in
 /// well under 1 ms uncached.
 pub const CELL_SIZE: u16 = 4;
-/// Cell-walkable threshold (out of CELL_SIZE^2 pixels). Cells with at
-/// least this many walkable pixels are themselves walkable.
-const CELL_WALKABLE_MIN: u16 = 12;
+/// Cell-walkable threshold (out of CELL_SIZE^2 = 16 pixels). At 8 (50%) the
+/// coarsened grid can squeeze through 2-pixel-wide corridors, which is
+/// what the meeting-room interior needs after furniture obstacle padding.
+/// Tighter (e.g. 12 = 75%) made the meeting room unreachable; looser (e.g.
+/// 4 = 25%) lets paths graze furniture edges. 50% is the sweet spot.
+const CELL_WALKABLE_MIN: u16 = 8;
 
 /// Abstract pathfinder — implementations route from `from` to `to` over
 /// the supplied mask + overlay, returning a polyline (first = `from`,

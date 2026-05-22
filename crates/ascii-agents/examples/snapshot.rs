@@ -46,6 +46,13 @@ struct SnapshotArgs {
     /// How many seconds to listen for events (only with --live).
     #[arg(long, default_value_t = 5)]
     listen_secs: u64,
+
+    /// After rendering the scene normally, overlay every non-walkable
+    /// pixel in semi-transparent red so the restricted zones are visible.
+    /// Use this to verify that all open areas are connected (no isolated
+    /// pockets that would cause an A* fallback / character teleport).
+    #[arg(long)]
+    debug_walkable: bool,
 }
 
 fn default_projects_root() -> String {
@@ -86,6 +93,10 @@ fn main() -> Result<()> {
         &mut overlay,
     )?;
 
+    if args.debug_walkable {
+        debug_paint_walkable_overlay(&mut term, &scene)?;
+    }
+
     save_backend_as_png(&term, &args.out)?;
     println!("wrote {}", args.out.display());
 
@@ -101,6 +112,192 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Tint every non-walkable terminal cell red and print a connectedness
+/// report. A non-walkable cell = either of its two half-block pixels is
+/// blocked in the mask. Bright red FG = top pixel blocked; bright red BG
+/// = bottom pixel blocked.
+///
+/// Also runs a BFS from the door threshold and prints how many walkable
+/// pixels are reachable vs total — if the two numbers differ, the mask
+/// has an isolated region and A* will fall back to a straight line when
+/// crossing into it. That's the root cause of any remaining "闪现"
+/// (character teleport) the user sees.
+fn debug_paint_walkable_overlay(
+    term: &mut Terminal<TestBackend>,
+    scene: &SceneState,
+) -> Result<()> {
+    use ascii_agents::tui::layout::SceneLayout;
+
+    let size = term.size()?;
+    let scene_w = size.width;
+    let scene_h = size.height.saturating_sub(1);
+    let buf_w = scene_w;
+    let buf_h = scene_h * 2;
+    let Some(layout) = SceneLayout::compute(buf_w, buf_h, scene.max_desks) else {
+        println!("(debug_walkable) layout too small to compute");
+        return Ok(());
+    };
+
+    // BFS reachability from door_threshold (always inside the corridor,
+    // always walkable by construction).
+    let reach_mask = compute_reachable(&layout);
+    let w = layout.buf_w as usize;
+    let h = layout.buf_h as usize;
+    let mut reachable = 0usize;
+    let mut walkable_total = 0usize;
+    let mut sample_disconnects: Vec<(u16, u16)> = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            if layout.is_walkable(x as u16, y as u16) {
+                walkable_total += 1;
+                if reach_mask[y * w + x] {
+                    reachable += 1;
+                } else if sample_disconnects.len() < 10 {
+                    sample_disconnects.push((x as u16, y as u16));
+                }
+            }
+        }
+    }
+    let disconnected = walkable_total.saturating_sub(reachable);
+    println!(
+        "--- walkability report ---\n\
+        total walkable pixels   : {walkable_total}\n\
+        reachable from threshold: {reachable}\n\
+        disconnected pixels     : {disconnected}{}",
+        if disconnected == 0 {
+            "  ✓ all open areas connected"
+        } else {
+            "  ⚠ disconnected components present"
+        }
+    );
+    if !sample_disconnects.is_empty() {
+        print!("sample disconnected   : ");
+        for (i, (x, y)) in sample_disconnects.iter().enumerate() {
+            if i > 0 {
+                print!(", ");
+            }
+            print!("({x},{y})");
+        }
+        println!();
+        // Probe the door-threshold neighborhood + the suspected bridge
+        // pixel so we can spot which step of the chain is actually blocked.
+        let probe = |x: u16, y: u16, name: &str| {
+            let wk = layout.is_walkable(x, y);
+            let r = is_reachable(&reach_mask, &layout, x, y);
+            println!("  probe {name} ({x},{y}): walkable={wk} reachable={r}");
+        };
+        if let Some(t) = layout.door_threshold {
+            probe(t.x, t.y, "threshold");
+        }
+        probe(0, layout.top_margin, "MR top-left");
+        // Probe the row y=66 (pantry's last row above baseboard).
+        println!("row y=66 walkability:");
+        for x in 0..30u16 {
+            let w = layout.is_walkable(x, 66);
+            let r = is_reachable(&reach_mask, &layout, x, 66);
+            println!("  x={x}: walk={w} reach={r}");
+        }
+    }
+
+    // (reach_mask was computed above for the report.)
+
+    term.draw(|f| {
+        let term_buf = f.buffer_mut();
+        for cy in 0..scene_h {
+            for cx in 0..scene_w {
+                let py_top = cy * 2;
+                let py_bot = cy * 2 + 1;
+                let top_walk = layout.is_walkable(cx, py_top);
+                let bot_walk = layout.is_walkable(cx, py_bot);
+                let top_reach = top_walk && is_reachable(&reach_mask, &layout, cx, py_top);
+                let bot_reach = bot_walk && is_reachable(&reach_mask, &layout, cx, py_bot);
+
+                let top_color = if !top_walk {
+                    Some(Color::Rgb(230, 70, 70)) // obstacle = red
+                } else if !top_reach {
+                    Some(Color::Rgb(80, 120, 240)) // isolated = blue
+                } else {
+                    None
+                };
+                let bot_color = if !bot_walk {
+                    Some(Color::Rgb(230, 70, 70))
+                } else if !bot_reach {
+                    Some(Color::Rgb(80, 120, 240))
+                } else {
+                    None
+                };
+
+                if top_color.is_none() && bot_color.is_none() {
+                    continue;
+                }
+                let cell = &mut term_buf[(cx, cy)];
+                if let Some(c) = top_color {
+                    cell.fg = c;
+                }
+                if let Some(c) = bot_color {
+                    cell.bg = c;
+                }
+                cell.set_symbol("▀");
+            }
+        }
+    })?;
+    Ok(())
+}
+
+fn compute_reachable(layout: &ascii_agents::tui::layout::SceneLayout) -> Vec<bool> {
+    use std::collections::VecDeque;
+    let w = layout.buf_w as usize;
+    let h = layout.buf_h as usize;
+    let mut visited = vec![false; w * h];
+    let Some(start) = layout.door_threshold else {
+        return visited;
+    };
+    if !layout.is_walkable(start.x, start.y) {
+        return visited;
+    }
+    let (sx, sy) = (start.x as usize, start.y as usize);
+    visited[sy * w + sx] = true;
+    let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+    queue.push_back((sx, sy));
+    while let Some((x, y)) = queue.pop_front() {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let nx = x as i32 + dx;
+            let ny = y as i32 + dy;
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let (nx, ny) = (nx as usize, ny as usize);
+            if nx >= w || ny >= h || visited[ny * w + nx] {
+                continue;
+            }
+            if !layout.is_walkable(nx as u16, ny as u16) {
+                continue;
+            }
+            visited[ny * w + nx] = true;
+            queue.push_back((nx, ny));
+        }
+    }
+    visited
+}
+
+fn is_reachable(
+    mask: &[bool],
+    layout: &ascii_agents::tui::layout::SceneLayout,
+    x: u16,
+    y: u16,
+) -> bool {
+    let w = layout.buf_w as usize;
+    let h = layout.buf_h as usize;
+    let (xi, yi) = (x as usize, y as usize);
+    if xi >= w || yi >= h {
+        return false;
+    }
+    mask[yi * w + xi]
+}
+
+/// BFS from `layout.door_threshold` and count visited vs total walkable
+/// pixels. If the two differ, the mask has multiple connected components
+/// — that's the structural cause of A*'s "no path found" fallback, which
 async fn capture_live_scene(projects_root: &str, listen_secs: u64) -> Result<SceneState> {
     println!(
         "listening for real CC events under {} for {}s...",
