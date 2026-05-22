@@ -64,6 +64,9 @@ pub struct Layout {
     pub wall_decor: Vec<(WallDecor, Point)>,
     /// Floor lamp position in the lounge corner. Decor only.
     pub floor_lamp: Option<Point>,
+    /// Door anchor (top-left corner of the door sprite). Used both as the
+    /// `from` point for SessionStart walk-in animation and as decor.
+    pub door: Option<Point>,
 }
 
 pub const WAYPOINT_COUNT: usize = 3;
@@ -175,6 +178,19 @@ impl Layout {
             y: lounge_band.y + lounge_band.height * 50 / 100,
         });
 
+        // Office door at the right end of the back wall. Tall enough that
+        // the top half tucks into the wall band and the bottom half opens
+        // onto the cubicle floor. SessionStart walk-in animations originate
+        // from a point just below the door.
+        let door = if buf_w >= 12 {
+            Some(Point {
+                x: buf_w.saturating_sub(10),
+                y: TOP_MARGIN_PX.saturating_sub(10),
+            })
+        } else {
+            None
+        };
+
         // Wall decor — bookshelf + whiteboard *leaning against* the back
         // wall. Top-down view: the back of the furniture is tucked into
         // the wall sprite, so its top rows overlap the wall band (which is
@@ -202,6 +218,7 @@ impl Layout {
             plants,
             wall_decor,
             floor_lamp,
+            door,
         })
     }
 }

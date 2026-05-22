@@ -29,6 +29,11 @@ pub struct AgentSlot {
     pub label: String,
     pub state: ActivityState,
     pub state_started_at: SystemTime,
+    /// Wall-clock time the slot was first created. Distinct from
+    /// `state_started_at` (updated on every state change) so the renderer
+    /// can play a one-shot entry animation for the first few seconds of
+    /// an agent's life regardless of later state transitions.
+    pub created_at: SystemTime,
     pub desk_index: usize,
 }
 
@@ -80,6 +85,7 @@ mod tests {
                     label: format!("cc#{i}"),
                     state: ActivityState::Idle,
                     state_started_at: now,
+                    created_at: now,
                     desk_index: i,
                 },
             );

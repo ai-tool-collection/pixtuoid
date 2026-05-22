@@ -176,6 +176,7 @@ impl Reducer {
                         label,
                         state: ActivityState::Idle,
                         state_started_at: now,
+                        created_at: now,
                         desk_index,
                     },
                 );

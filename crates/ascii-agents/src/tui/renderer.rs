@@ -1076,6 +1076,11 @@ pub fn draw_scene<B: Backend>(
         let clock_x = buf_w / 2 - 2;
         paint_clock(buf, clock_x, 1, now);
         paint_wall_decor(buf, &layout, pack);
+        if let Some(door_pos) = layout.door {
+            if let Some(frame) = pack.animation("door").and_then(|a| a.frames.first()) {
+                blit_frame(frame, door_pos.x, door_pos.y, buf);
+            }
+        }
         paint_lounge_decor(buf, &layout, pack, now);
 
         // Shadow pass — soft floor shadows under desks + lounge furniture

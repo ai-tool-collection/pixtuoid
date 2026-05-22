@@ -102,9 +102,28 @@ pub enum Pose {
     AimlessAt { dest: Point },
 }
 
+/// Milliseconds of one-shot walk-from-door entry animation. Overrides the
+/// normal state→pose mapping for any newly-spawned agent so SessionStart
+/// reads as "someone just walked into the office".
+pub const ENTRY_ANIMATION_MS: u64 = 4000;
+
 /// Returns `None` if the slot's desk_index is out of range for `layout`.
 pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose> {
     let desk = *layout.home_desks.get(slot.desk_index)?;
+
+    // Entry animation overrides everything for the first ENTRY_ANIMATION_MS
+    // after creation — agent walks in from the door to their desk.
+    if let Some(door) = layout.door {
+        let since_spawn = now
+            .duration_since(slot.created_at)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
+        if since_spawn < ENTRY_ANIMATION_MS {
+            let t = (since_spawn * 1000 / ENTRY_ANIMATION_MS).min(1000) as u16;
+            let frame = ((since_spawn / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
+            return Some(Pose::Walking { from: door, to: desk, t_x1000: t, frame });
+        }
+    }
 
     let elapsed = now
         .duration_since(slot.state_started_at)
@@ -185,6 +204,9 @@ mod tests {
         let id = AgentId::from_transcript_path("/p/a.jsonl");
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let now = started + Duration::from_millis(age_ms);
+        // created_at well before `started` so the entry-animation override
+        // doesn't fire in tests that probe regular state→pose mapping.
+        let created = started - Duration::from_secs(60);
         let s = AgentSlot {
             agent_id: id,
             source: "claude-code".into(),
@@ -193,6 +215,7 @@ mod tests {
             label: "cc".into(),
             state,
             state_started_at: started,
+            created_at: created,
             desk_index: 0,
         };
         (s, now)
@@ -377,6 +400,33 @@ mod tests {
             matches!((e, lp), (Pose::SeatedIdle, Pose::SeatedIdle)),
             "1s into any cycle should be SeatedIdle. got early={e:?} loop={lp:?}"
         );
+    }
+
+    #[test]
+    fn entry_animation_overrides_normal_pose_for_first_4s() {
+        let id = AgentId::from_transcript_path("/p/entry.jsonl");
+        let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        // created_at == now0, so since_spawn = 1500ms at probe time
+        let s = AgentSlot {
+            agent_id: id,
+            source: "claude-code".into(),
+            session_id: "abc".into(),
+            cwd: PathBuf::from("/repo"),
+            label: "cc".into(),
+            state: ActivityState::Idle,
+            state_started_at: now0,
+            created_at: now0,
+            desk_index: 0,
+        };
+        let probe = now0 + Duration::from_millis(1500);
+        let l = layout();
+        match derive(&s, probe, &l).expect("pose") {
+            Pose::Walking { t_x1000, .. } => {
+                // 1500/4000 = 0.375 → t_x1000 ~= 375
+                assert!((300..=450).contains(&t_x1000), "t_x1000={t_x1000}");
+            }
+            other => panic!("expected Walking entry, got {other:?}"),
+        }
     }
 
     #[test]

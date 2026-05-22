@@ -165,6 +165,7 @@ fn sample_scene(now: SystemTime) -> SceneState {
                 label: key.to_string(),
                 state: state.clone(),
                 state_started_at: now - *age,
+                created_at: now - *age,
                 desk_index: i,
             },
         );
