@@ -23,7 +23,7 @@ pub fn merge_install(doc: Value, hook_command: &str) -> Value {
         Some(o) => o,
         None => {
             *hooks = Value::Object(Map::new());
-            hooks.as_object_mut().unwrap()
+            hooks.as_object_mut().expect("just stored Value::Object")
         }
     };
 
@@ -35,7 +35,7 @@ pub fn merge_install(doc: Value, hook_command: &str) -> Value {
             Some(a) => a,
             None => {
                 *list = Value::Array(vec![]);
-                list.as_array_mut().unwrap()
+                list.as_array_mut().expect("just stored Value::Array")
             }
         };
         // Drop any prior ascii-agents entries so we re-add the current one.

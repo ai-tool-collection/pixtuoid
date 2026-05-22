@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use ascii_agents::tui::embedded_pack::load_default_pack;
+use ascii_agents::tui::frame_cache::FrameCache;
 use ascii_agents::tui::renderer::draw_scene;
 use ascii_agents_core::source::jsonl::JsonlWatcher;
 use ascii_agents_core::source::{Activity, AgentEvent};
@@ -71,7 +72,8 @@ fn main() -> Result<()> {
     let mut term = Terminal::new(backend)?;
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
     let pack = load_default_pack()?;
-    draw_scene(&mut term, &scene, &pack, now, &mut buf)?;
+    let mut cache = FrameCache::new();
+    draw_scene(&mut term, &scene, &pack, now, &mut buf, &mut cache)?;
 
     save_backend_as_png(&term, &args.out)?;
     println!("wrote {}", args.out.display());

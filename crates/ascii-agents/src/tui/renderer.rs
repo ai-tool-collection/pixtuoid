@@ -22,7 +22,7 @@ use crossterm::terminal::{
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
@@ -86,6 +86,7 @@ pub fn teardown_terminal(term: &mut Term) -> Result<()> {
 }
 
 // --- Per-agent recolor ----------------------------------------------------
+use crate::tui::frame_cache::FrameCache;
 fn agent_palette(base: &Palette, agent: &AgentSlot) -> Palette {
     let seed = agent.agent_id.raw() as usize;
     // Personality nudges aesthetic choice: extroverted (high trip_chance)
@@ -810,20 +811,22 @@ fn walking_position(from: Point, to: Point, t_x1000: u16) -> Point {
 /// they're moving.
 fn paint_character_at(
     buf: &mut RgbBuffer,
-    anim_name: &str,
+    anim_name: &'static str,
     frame_idx: usize,
     anchor: Point,
     agent: &AgentSlot,
     pack: &Pack,
     flip_x: bool,
+    cache: &mut FrameCache,
 ) {
-    let base_pal = pack.palette.clone();
-    let pal = agent_palette(&base_pal, agent);
     let Some(anim) = pack.animation(anim_name) else { return };
     let Some(frame) = anim.frames.get(frame_idx).or_else(|| anim.frames.first()) else { return };
-    let recolored = recolor_frame(frame, &pal, &base_pal);
-    let final_frame = if flip_x { recolored.mirror_horizontal() } else { recolored };
-    blit_frame(&final_frame, anchor.x, anchor.y, buf);
+    let cached = cache.get_or_make(agent.agent_id, anim_name, frame_idx, flip_x, || {
+        let pal = agent_palette(&pack.palette, agent);
+        let recolored = recolor_frame(frame, &pal, &pack.palette);
+        if flip_x { recolored.mirror_horizontal() } else { recolored }
+    });
+    blit_frame(cached, anchor.x, anchor.y, buf);
 }
 
 /// Small entry mat painted on the floor just inside the office door —
@@ -918,10 +921,7 @@ fn paint_shadow(buf: &mut RgbBuffer, cx: u16, cy: u16, half_w: u16, half_h: u16,
 }
 
 /// Office chair painted BEHIND the character — a darkened version of the
-/// agent's shirt color, so the character's transparent edge pixels reveal
-/// the chair as a "halo" of upholstery. Brings back the per-agent color
-/// identifier that the removed rug used to provide, in a more naturalistic
-/// way (top-down chair back behind the sitter).
+/// agent's shirt color. Reads as a top-down chair back behind the sitter.
 fn paint_chair_behind(buf: &mut RgbBuffer, anchor: Point, agent: &AgentSlot, pack: &Pack) {
     let pal = agent_palette(&pack.palette, agent);
     let Some(shirt) = pal.get('B').flatten() else { return };
@@ -1097,6 +1097,7 @@ pub fn draw_scene<B: Backend>(
     pack: &Pack,
     now: SystemTime,
     buf: &mut RgbBuffer,
+    cache: &mut FrameCache,
 ) -> Result<()> {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     term.draw(|f| {
@@ -1231,17 +1232,17 @@ pub fn draw_scene<B: Backend>(
                 Pose::SeatedIdle => {
                     let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
                     paint_chair_behind(buf, anchor, agent, pack);
-                    paint_character_at(buf, "seated_sleeping", 0, anchor, agent, pack, false);
+                    paint_character_at(buf, "seated_sleeping", 0, anchor, agent, pack, false, cache);
                     paint_sleep_z(buf, anchor, now, agent.agent_id.raw());
                 }
                 Pose::SeatedTyping { frame } => {
                     let anchor = with_breath(seated_anchor(desk), agent.agent_id, now);
                     paint_chair_behind(buf, anchor, agent, pack);
-                    paint_character_at(buf, "typing", frame, anchor, agent, pack, false);
+                    paint_character_at(buf, "typing", frame, anchor, agent, pack, false, cache);
                 }
                 Pose::StandingAtDesk => {
                     let anchor = with_breath(standing_at_desk_anchor(desk), agent.agent_id, now);
-                    paint_character_at(buf, "standing", 0, anchor, agent, pack, false);
+                    paint_character_at(buf, "standing", 0, anchor, agent, pack, false, cache);
                     if matches!(agent.state, ActivityState::Waiting { .. }) {
                         paint_waiting_bubble(buf, anchor);
                     }
@@ -1270,7 +1271,7 @@ pub fn draw_scene<B: Backend>(
                             agent.agent_id,
                             now,
                         );
-                        paint_character_at(buf, anim_name, 0, anchor, agent, pack, false);
+                        paint_character_at(buf, anim_name, 0, anchor, agent, pack, false, cache);
                         if matches!(kind, crate::tui::layout::WaypointKind::Couch) {
                             paint_sleep_z(buf, anchor, now, agent.agent_id.raw());
                         }
@@ -1278,14 +1279,14 @@ pub fn draw_scene<B: Backend>(
                 }
                 Pose::AimlessAt { dest } => {
                     let anchor = with_breath(waypoint_anchor(dest), agent.agent_id, now);
-                    paint_character_at(buf, "standing", 0, anchor, agent, pack, false);
+                    paint_character_at(buf, "standing", 0, anchor, agent, pack, false, cache);
                 }
                 Pose::Walking { from, to, t_x1000, frame } => {
                     let pos = walking_position(from, to, t_x1000);
                     let flip = to.x < from.x;
                     let walker_anchor = walking_anchor(pos);
                     paint_walking_dust(buf, walker_anchor, frame);
-                    paint_character_at(buf, "walking", frame, walker_anchor, agent, pack, flip);
+                    paint_character_at(buf, "walking", frame, walker_anchor, agent, pack, flip, cache);
                 }
             }
         }

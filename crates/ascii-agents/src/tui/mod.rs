@@ -1,4 +1,5 @@
 pub mod embedded_pack;
+pub mod frame_cache;
 pub mod layout;
 pub mod pose;
 pub mod renderer;
@@ -18,13 +19,15 @@ pub async fn run_tui(scene: Arc<RwLock<SceneState>>) -> Result<()> {
     let pack = embedded_pack::load_default_pack()?;
     let mut term = setup_terminal()?;
     let mut rgb_buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
+    let mut frame_cache = frame_cache::FrameCache::new();
 
     let tick = Duration::from_millis(33); // ~30 fps
     let result: Result<()> = (async {
         loop {
             let now = SystemTime::now();
             let snapshot = { scene.read().await.clone() };
-            draw_scene(&mut term, &snapshot, &pack, now, &mut rgb_buf)?;
+            frame_cache.evict_missing(&snapshot);
+            draw_scene(&mut term, &snapshot, &pack, now, &mut rgb_buf, &mut frame_cache)?;
 
             let start = Instant::now();
             if event::poll(tick)? {
