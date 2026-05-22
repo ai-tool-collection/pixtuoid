@@ -5,6 +5,7 @@
 //! sprites, terminal flush). Layout and pose are pure functions tested in
 //! isolation; this file is the integrator.
 
+use std::collections::HashMap;
 use std::io::{stdout, Stdout};
 use std::time::SystemTime;
 
@@ -407,6 +408,24 @@ fn couch_seat_anchor(wp: Point) -> Point {
     }
 }
 
+/// X-offset applied to a waypoint anchor when multiple agents land at the
+/// same destination in the same cycle. rank 0 = first arrival (no offset);
+/// later arrivals step aside. Couch is 14 wide so it can comfortably seat
+/// two; coffee + water cooler are single-use so the queue stands well off
+/// to the side.
+fn waypoint_rank_offset_x(kind: crate::tui::layout::WaypointKind, rank: usize) -> i16 {
+    use crate::tui::layout::WaypointKind;
+    match (kind, rank) {
+        (_, 0) => 0,
+        (WaypointKind::Couch, 1) => 6,
+        (WaypointKind::Couch, 2) => -6,
+        (WaypointKind::Couch, _) => 0,
+        (_, 1) => 9,
+        (_, 2) => -9,
+        (_, _) => 0,
+    }
+}
+
 fn walking_position(from: Point, to: Point, t_x1000: u16) -> Point {
     let t = t_x1000 as i32;
     let dx = to.x as i32 - from.x as i32;
@@ -572,6 +591,12 @@ pub fn draw_scene<B: Backend>(
         }
 
         // Pass 2: characters by pose.
+        //
+        // Waypoint de-collision: when multiple Idle agents pick the same
+        // wander destination in the same cycle, fan them out spatially so
+        // they don't stack into a single sprite. BTreeMap iteration order
+        // gives a stable rank per (wp_idx) across frames.
+        let mut wp_rank: HashMap<usize, usize> = HashMap::new();
         for agent in &agents {
             let Some(desk) = layout.home_desks.get(agent.desk_index).copied() else { continue };
             let Some(p) = pose::derive(agent, now, &layout) else { continue };
@@ -591,7 +616,10 @@ pub fn draw_scene<B: Backend>(
                 }
                 Pose::AtWaypoint { wp, kind } => {
                     if let Some(wp_obj) = layout.waypoints.get(wp) {
-                        let (anim_name, anchor) = match kind {
+                        let rank = *wp_rank.entry(wp).or_insert(0);
+                        wp_rank.insert(wp, rank + 1);
+                        let dx = waypoint_rank_offset_x(kind, rank);
+                        let (anim_name, anchor_base) = match kind {
                             crate::tui::layout::WaypointKind::Couch => {
                                 ("sitting_couch", couch_seat_anchor(wp_obj.pos))
                             }
@@ -601,6 +629,10 @@ pub fn draw_scene<B: Backend>(
                             crate::tui::layout::WaypointKind::WaterCooler => {
                                 ("standing", waypoint_anchor(wp_obj.pos))
                             }
+                        };
+                        let anchor = Point {
+                            x: anchor_base.x.saturating_add_signed(dx),
+                            y: anchor_base.y,
                         };
                         paint_character_at(buf, anim_name, 0, anchor, agent, pack, false);
                     }
