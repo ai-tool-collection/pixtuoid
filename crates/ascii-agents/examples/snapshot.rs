@@ -91,6 +91,7 @@ fn main() -> Result<()> {
         &mut cache,
         &mut router,
         &mut overlay,
+        &mut ascii_agents::tui::pose::PoseHistory::new(),
         None,
     )?;
 

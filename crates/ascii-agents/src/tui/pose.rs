@@ -195,19 +195,101 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose
     }
 }
 
+/// Per-agent rendered position cache. Updated each frame by
+/// `derive_with_routing`, consulted on state transitions so an agent
+/// who was mid-walk when their state flipped can complete the walk
+/// visually instead of teleporting back to their desk.
+#[derive(Debug, Default, Clone)]
+pub struct PoseHistory {
+    last: std::collections::HashMap<AgentId, (Point, SystemTime)>,
+}
+
+impl PoseHistory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Record where an agent was visually placed this frame.
+    pub fn record(&mut self, agent_id: AgentId, anchor: Point, now: SystemTime) {
+        self.last.insert(agent_id, (anchor, now));
+    }
+    /// Latest recorded position if it's at most `max_age_ms` old.
+    pub fn recent(&self, agent_id: AgentId, max_age_ms: u64, now: SystemTime) -> Option<Point> {
+        let (pt, when) = self.last.get(&agent_id).copied()?;
+        let age = now.duration_since(when).ok()?.as_millis() as u64;
+        if age <= max_age_ms {
+            Some(pt)
+        } else {
+            None
+        }
+    }
+}
+
+/// Duration of the snap-back walk used when state-driven pose would
+/// instantly place the agent back at their desk. 600ms is short enough
+/// to feel responsive (the user wants to see the tool fire) but long
+/// enough to read as motion, not a pop.
+const SNAP_BACK_MS: u64 = 600;
+/// Minimum manhattan distance (px) from current rendered position to
+/// the desk before we bother animating the snap-back. Below this the
+/// teleport is invisible and animating wastes a frame.
+const SNAP_BACK_MIN_DIST: i32 = 8;
+
 /// Routed variant of `derive`. For Walking poses, asks `router` for an
 /// A*-routed polyline (composed against the layout's static mask + the
 /// per-frame `overlay`) and converts the global t (0..1000) into a
 /// per-segment Walking pose so the character traces the path
 /// corner-by-corner instead of cutting through obstacles or other agents.
+///
+/// `history` is consulted on state transitions: if the agent's pose
+/// flipped from a wander walk (or from AtWaypoint) to a desk-bound
+/// pose (SeatedTyping / SeatedIdle / StandingAtDesk), we override the
+/// instant teleport with a brief walk from the recorded previous
+/// position to the desk.
 pub fn derive_with_routing(
     slot: &AgentSlot,
     now: SystemTime,
     layout: &Layout,
     router: &mut dyn Router,
     overlay: &OccupancyOverlay,
+    history: &mut PoseHistory,
 ) -> Option<Pose> {
-    let pose = derive(slot, now, layout)?;
+    let raw = derive(slot, now, layout)?;
+    // Snap-back override: state-driven poses (SeatedTyping etc.) at the
+    // desk would teleport the agent if they were mid-wander when state
+    // changed. Replace them with a Walking pose from the previous
+    // rendered position over SNAP_BACK_MS.
+    let desk_pose = matches!(
+        raw,
+        Pose::SeatedIdle | Pose::SeatedTyping { .. } | Pose::StandingAtDesk
+    );
+    let since_state = now
+        .duration_since(slot.state_started_at)
+        .unwrap_or(Duration::ZERO)
+        .as_millis() as u64;
+    let pose = if desk_pose && since_state < SNAP_BACK_MS {
+        if let Some(prev) = history.recent(slot.agent_id, 300, now) {
+            let desk = *layout.home_desks.get(slot.desk_index)?;
+            let dist =
+                (prev.x as i32 - desk.x as i32).abs() + (prev.y as i32 - desk.y as i32).abs();
+            if dist >= SNAP_BACK_MIN_DIST {
+                let t = (since_state * 1000 / SNAP_BACK_MS).min(1000) as u16;
+                let frame = ((since_state / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
+                Pose::Walking {
+                    from: prev,
+                    to: desk,
+                    t_x1000: t,
+                    frame,
+                }
+            } else {
+                raw
+            }
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
+
     let Pose::Walking {
         from,
         to,
@@ -215,6 +297,16 @@ pub fn derive_with_routing(
         frame,
     } = pose
     else {
+        // Record AtWaypoint / AimlessAt positions too — they're a valid
+        // "previous position" for a subsequent snap-back walk.
+        let pt = match &pose {
+            Pose::AtWaypoint { wp, .. } => layout.waypoints.get(*wp).map(|w| w.pos),
+            Pose::AimlessAt { dest } => Some(*dest),
+            _ => None,
+        };
+        if let Some(p) = pt {
+            history.record(slot.agent_id, p, now);
+        }
         return Some(pose);
     };
     // Per-agent path personality: perturb the routing destination by a
@@ -236,6 +328,9 @@ pub fn derive_with_routing(
         *last = to;
     }
     if path.len() <= 2 {
+        // Straight-line walk — record the interpolated position for
+        // next frame's snap-back lookup.
+        history.record(slot.agent_id, walking_position(from, to, t_x1000), now);
         return Some(pose);
     }
     // Map global t to a (segment_idx, t_within_segment) using cumulative
@@ -258,6 +353,10 @@ pub fn derive_with_routing(
                 .checked_div(leg)
                 .map(|t| t.min(1000) as u16)
                 .unwrap_or(1000);
+            // Record the walker's current position for the next frame's
+            // snap-back lookup.
+            let cur_pos = walking_position(path[i], path[i + 1], seg_t);
+            history.record(slot.agent_id, cur_pos, now);
             return Some(Pose::Walking {
                 from: path[i],
                 to: path[i + 1],
@@ -269,12 +368,24 @@ pub fn derive_with_routing(
     }
     // Past the last segment — snap to final.
     let last = path.len() - 1;
+    history.record(slot.agent_id, path[last], now);
     Some(Pose::Walking {
         from: path[last - 1],
         to: path[last],
         t_x1000: 1000,
         frame,
     })
+}
+
+/// Pure linear interpolation along the segment from `from` to `to`. The
+/// rendering side has its own `walking_position` in renderer.rs that
+/// also applies vertical breathing; this one is for history-tracking
+/// only (we want the deterministic position, not the breath offset).
+fn walking_position(from: Point, to: Point, t_x1000: u16) -> Point {
+    let t = t_x1000 as i32;
+    let x = (from.x as i32 + (to.x as i32 - from.x as i32) * t / 1000).max(0) as u16;
+    let y = (from.y as i32 + (to.y as i32 - from.y as i32) * t / 1000).max(0) as u16;
+    Point { x, y }
 }
 
 fn octile_distance(a: Point, b: Point) -> u32 {

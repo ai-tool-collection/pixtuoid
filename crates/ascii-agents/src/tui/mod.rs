@@ -24,6 +24,7 @@ pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
     let mut frame_cache = frame_cache::FrameCache::new();
     let mut router: AStarRouter = AStarRouter::new();
     let mut overlay = OccupancyOverlay::new();
+    let mut history = pose::PoseHistory::new();
     // Track the static-mask signature so the router drops its cache when the
     // obstacle set changes (terminal resize, agent count crosses the
     // visible-desk threshold). Dynamic occupancy churn is handled inside
@@ -57,6 +58,7 @@ pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
                 &mut frame_cache,
                 &mut router,
                 &mut overlay,
+                &mut history,
                 mouse_pos,
             )?;
 

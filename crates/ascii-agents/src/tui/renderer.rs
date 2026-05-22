@@ -1132,12 +1132,14 @@ fn paint_shadow(buf: &mut RgbBuffer, cx: u16, cy: u16, half_w: u16, half_h: u16,
 /// desk. Returns the top-left anchor of the character sprite. Uses
 /// `derive_with_routing` so labels track agents along their A* path
 /// instead of jumping the straight-line midpoint.
+#[allow(clippy::too_many_arguments)]
 fn character_anchor(
     agent: &AgentSlot,
     layout: &Layout,
     now: SystemTime,
     router: &mut dyn Router,
     overlay: &OccupancyOverlay,
+    history: &mut pose::PoseHistory,
 ) -> Option<Point> {
     use crate::tui::layout::WaypointKind;
     if agent.desk_index >= layout.home_desks.len() {
@@ -1158,7 +1160,7 @@ fn character_anchor(
         });
     }
     let desk = *layout.home_desks.get(agent.desk_index)?;
-    let pose = pose::derive_with_routing(agent, now, layout, router, overlay)?;
+    let pose = pose::derive_with_routing(agent, now, layout, router, overlay, history)?;
     let anchor = match pose {
         Pose::SeatedIdle | Pose::SeatedTyping { .. } => seated_anchor(desk),
         Pose::StandingAtDesk => standing_at_desk_anchor(desk),
@@ -1451,6 +1453,7 @@ pub fn draw_scene<B: Backend>(
     cache: &mut FrameCache,
     router: &mut dyn Router,
     overlay: &mut OccupancyOverlay,
+    history: &mut pose::PoseHistory,
     mouse_pos: Option<(u16, u16)>,
 ) -> Result<()> {
     let term_size = term.size()?;
@@ -1485,21 +1488,27 @@ pub fn draw_scene<B: Backend>(
     // when the zone actually changes (layout resize).
     router.set_preferred_zone(layout.corridor);
 
-    // Pure pixel pass — no ratatui types touched.
-    render_to_rgb_buffer(scene, &layout, pack, now, buf, cache, router, overlay);
+    // Pure pixel pass — no ratatui types touched. Pixel pass writes
+    // into PoseHistory for every walking/waypoint agent so the next
+    // frame's snap-back lookup is fresh.
+    render_to_rgb_buffer(
+        scene, &layout, pack, now, buf, cache, router, overlay, history,
+    );
 
     // Hit-test the cursor against each agent's current sprite footprint
     // so the tooltip + focus ring know who's under the pointer. Cell-
     // accurate (one terminal cell = 2 vertical pixels in the half-block
     // buffer).
-    let hovered =
-        mouse_pos.and_then(|(mx, my)| hit_test_agent(scene, &layout, now, router, overlay, mx, my));
+    let hovered = mouse_pos
+        .and_then(|(mx, my)| hit_test_agent(scene, &layout, now, router, overlay, history, mx, my));
 
     // Terminal-flush pass — half-block + widgets, inside ratatui's draw.
     term.draw(|f| {
         paint_footer(f, full_rect);
         flush_buffer_to_term(f, buf, scene_rect);
-        paint_label_widgets(f, scene, &layout, now, router, overlay, scene_rect, hovered);
+        paint_label_widgets(
+            f, scene, &layout, now, router, overlay, history, scene_rect, hovered,
+        );
         paint_bulletin_notice(f, scene, &layout, scene_rect);
         if let (Some(agent_id), Some((mx, my))) = (hovered, mouse_pos) {
             paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect);
@@ -1536,6 +1545,7 @@ pub fn render_to_rgb_buffer(
     cache: &mut FrameCache,
     router: &mut dyn Router,
     overlay: &mut OccupancyOverlay,
+    history: &mut pose::PoseHistory,
 ) {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     let buf_w = layout.buf_w;
@@ -1807,7 +1817,8 @@ pub fn render_to_rgb_buffer(
         let Some(desk) = layout.home_desks.get(agent.desk_index).copied() else {
             continue;
         };
-        let Some(p) = pose::derive_with_routing(agent, now, layout, router, overlay) else {
+        let Some(p) = pose::derive_with_routing(agent, now, layout, router, overlay, history)
+        else {
             continue;
         };
         match p {
@@ -2011,6 +2022,7 @@ fn paint_label_widgets(
     now: SystemTime,
     router: &mut dyn Router,
     overlay: &OccupancyOverlay,
+    history: &mut pose::PoseHistory,
     scene_rect: Rect,
     hovered: Option<AgentId>,
 ) {
@@ -2020,7 +2032,7 @@ fn paint_label_widgets(
         *label_counts.entry(&*agent.label).or_insert(0) += 1;
     }
     for agent in &agents {
-        let Some(anchor) = character_anchor(agent, layout, now, router, overlay) else {
+        let Some(anchor) = character_anchor(agent, layout, now, router, overlay, history) else {
             continue;
         };
         let lx = scene_rect.x + anchor.x.saturating_sub(2);
@@ -2076,12 +2088,14 @@ fn paint_label_widgets(
 /// The character sprite is 8×12 pixels, which in cell space is 8 cells
 /// wide × 6 cells tall (one cell = 2 vertical pixels). We test against
 /// that exact bounding box anchored on the agent's `character_anchor`.
+#[allow(clippy::too_many_arguments)]
 fn hit_test_agent(
     scene: &SceneState,
     layout: &Layout,
     now: SystemTime,
     router: &mut dyn Router,
     overlay: &OccupancyOverlay,
+    history: &mut pose::PoseHistory,
     mx: u16,
     my: u16,
 ) -> Option<AgentId> {
@@ -2091,7 +2105,7 @@ fn hit_test_agent(
     // Height-in-cells: sprite is 12 px tall = 6 cells.
     const SPRITE_H_CELLS: u16 = 6;
     for agent in scene.agents.values() {
-        let Some(anchor) = character_anchor(agent, layout, now, router, overlay) else {
+        let Some(anchor) = character_anchor(agent, layout, now, router, overlay, history) else {
             continue;
         };
         let cell_x = anchor.x;
