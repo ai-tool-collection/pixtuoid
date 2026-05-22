@@ -77,7 +77,8 @@ pub const DESK_H: u16 = 6;
 pub const DESK_GAP_X: u16 = 6;
 /// Vertical gap between cubicle rows. Sized to clear the seated sprite's
 /// 8 px head-above-desk so row N+1's desk doesn't paint over row N's character.
-pub const DESK_GAP_Y: u16 = 10;
+/// Tightened from 10 → 8 to fit more rows in the cubicle band.
+pub const DESK_GAP_Y: u16 = 8;
 /// Vertical reserve above the cubicle band, in buf pixels. The renderer paints
 /// the top wall band (14 px tall, with windows + a clock) into this region.
 /// Tightened from 28 to 20 px so the cubicles sit closer to the wall — at 28
@@ -96,11 +97,23 @@ impl Layout {
             return None;
         }
 
-        // Vertical split: TOP_MARGIN_PX reserved for the wall band, then the
-        // remaining height splits 50/15/35 between cubicles / walkway / lounge.
+        // Vertical split: TOP_MARGIN_PX reserved for the wall band, then
+        // the remaining height splits between cubicle band (dynamic),
+        // walkway (fixed 10%), lounge (the rest).
+        //
+        // The cubicle band grows from its 50% floor up to a 72% cap as
+        // more agents need rendering — so 6+ sessions still get a desk
+        // each instead of being clipped to the top row.
         let usable_h = buf_h - TOP_MARGIN_PX;
-        let cubicle_h = usable_h * 50 / 100;
-        let walkway_h = usable_h * 15 / 100;
+        let col_w_tmp = DESK_W + DESK_GAP_X;
+        let row_h_tmp = DESK_H + DESK_GAP_Y;
+        let cols_tmp = ((buf_w - DESK_GAP_X) / col_w_tmp).max(1);
+        let needed_rows = ((num_agents as u16 + cols_tmp - 1) / cols_tmp).max(1);
+        let desired_cubicle_h = needed_rows * row_h_tmp;
+        let min_cubicle_h = usable_h * 50 / 100;
+        let max_cubicle_h = usable_h * 72 / 100;
+        let cubicle_h = desired_cubicle_h.max(min_cubicle_h).min(max_cubicle_h);
+        let walkway_h = usable_h * 10 / 100;
         let lounge_h = usable_h - cubicle_h - walkway_h;
         let cubicle_band = Rect {
             x: 0,
