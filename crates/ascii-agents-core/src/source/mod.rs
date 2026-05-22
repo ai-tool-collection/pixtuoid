@@ -161,3 +161,4 @@ pub mod claude_code;
 pub mod decoder;
 pub mod hook;
 pub mod jsonl;
+pub mod manager;

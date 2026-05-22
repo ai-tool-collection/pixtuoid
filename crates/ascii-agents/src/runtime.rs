@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use ascii_agents_core::source::claude_code::ClaudeCodeSource;
+use ascii_agents_core::source::manager::SourceManager;
 use ascii_agents_core::state::ActivityState;
 use ascii_agents_core::{AgentEvent, Reducer, SceneState, TaggedReceiver, Transport};
 use tokio::sync::{mpsc, watch};
@@ -49,12 +50,7 @@ async fn run_async(
 
     tokio::spawn(reducer_task(rx, scene_tx, max_desks));
 
-    let src_box: Box<dyn ascii_agents_core::source::Source> = Box::new(src);
-    tokio::spawn(async move {
-        if let Err(e) = src_box.run(tx).await {
-            tracing::error!("source died: {e}");
-        }
-    });
+    let _source_handles = SourceManager::new().add(Box::new(src)).spawn(tx);
 
     if headless {
         headless_loop(scene_rx).await

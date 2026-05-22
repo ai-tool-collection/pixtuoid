@@ -130,6 +130,85 @@ fn render_changes_when_time_advances_by_hours() {
     );
 }
 
+/// Catches "render bypassed entirely" / "all black" / "stuck on one color"
+/// regressions. Hash equality checks compare to themselves; this check
+/// asserts the absolute pixel range looks like a real rendered scene.
+#[test]
+fn render_produces_distinct_wall_band_and_floor_regions() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_716_286_800);
+    let scene = fixture_scene(now);
+    let backend = TestBackend::new(96, 36);
+    let mut term = Terminal::new(backend).expect("terminal");
+    let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
+    let pack = load_default_pack().expect("pack");
+    let mut cache = FrameCache::new();
+    let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
+    let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();
+    draw_scene(
+        &mut term,
+        &scene,
+        &pack,
+        now,
+        &mut buf,
+        &mut cache,
+        &mut router,
+        &mut overlay,
+        &mut ascii_agents::tui::pose::PoseHistory::new(),
+        None,
+    )
+    .expect("render");
+
+    // Non-trivial color diversity — guards against an "all black" render or
+    // a paint pass that collapsed every pixel to one color.
+    let mut colors = std::collections::HashSet::new();
+    for px in &buf.pixels {
+        colors.insert((px.0, px.1, px.2));
+    }
+    assert!(
+        colors.len() > 32,
+        "expected non-trivial color diversity, got {} distinct colors",
+        colors.len()
+    );
+
+    // Region check: the upper quarter (wall band) and lower half (floor) of
+    // the buffer should have distinctly different average colors. Avoids
+    // a regression where the wall band paint pass is skipped, leaving the
+    // wall band painted in floor colors (or vice versa).
+    let w = buf.width as usize;
+    let h = buf.height as usize;
+    let wall_h = h / 4;
+    let floor_y0 = h / 2;
+
+    let avg = |y0: usize, y1: usize| -> (f64, f64, f64) {
+        let mut r = 0u64;
+        let mut g = 0u64;
+        let mut b = 0u64;
+        let mut n = 0u64;
+        for y in y0..y1 {
+            for x in 0..w {
+                let p = buf.pixels[y * w + x];
+                r += p.0 as u64;
+                g += p.1 as u64;
+                b += p.2 as u64;
+                n += 1;
+            }
+        }
+        let n = n.max(1) as f64;
+        (r as f64 / n, g as f64 / n, b as f64 / n)
+    };
+
+    let wall = avg(0, wall_h);
+    let floor = avg(floor_y0, h);
+    let dist = ((wall.0 - floor.0).powi(2)
+        + (wall.1 - floor.1).powi(2)
+        + (wall.2 - floor.2).powi(2))
+    .sqrt();
+    assert!(
+        dist > 20.0,
+        "wall band and floor regions look identical (dist={dist:.1}, wall={wall:?}, floor={floor:?})"
+    );
+}
+
 #[test]
 fn render_changes_when_an_agent_state_changes() {
     // Active vs all-idle should produce different pixels (screen glow,

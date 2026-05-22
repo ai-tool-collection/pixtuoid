@@ -2,37 +2,39 @@ pub mod embedded_pack;
 pub mod frame_cache;
 pub mod layout;
 pub mod pathfind;
+pub mod pixel_painter;
 pub mod pose;
 pub mod renderer;
+pub mod tui_renderer;
 
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
-use ascii_agents_core::sprite::{Rgb, RgbBuffer};
-use ascii_agents_core::walkable::OccupancyOverlay;
+use ascii_agents_core::layout::SceneLayout;
+use ascii_agents_core::Renderer;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 
-use pathfind::{AStarRouter, Router};
-use renderer::{draw_scene, setup_terminal, teardown_terminal};
+use renderer::{setup_terminal, teardown_terminal};
+use tui_renderer::TuiRenderer;
 
 use crate::runtime::SceneRx;
 
 pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
     let pack = embedded_pack::load_default_pack()?;
-    let mut term = setup_terminal()?;
-    let mut rgb_buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
-    let mut frame_cache = frame_cache::FrameCache::new();
-    let mut router: AStarRouter = AStarRouter::new();
-    let mut overlay = OccupancyOverlay::new();
-    let mut history = pose::PoseHistory::new();
+    let term = setup_terminal()?;
+    let mut renderer = TuiRenderer::new(term);
     // Track the static-mask signature so the router drops its cache when the
     // obstacle set changes (terminal resize, agent count crosses the
     // visible-desk threshold). Dynamic occupancy churn is handled inside
     // the router via overlay signature.
     let mut last_layout_sig: Option<(u16, u16, usize)> = None;
-    // Mouse cell coordinates of the most recent move event. `None` when the
-    // pointer is outside the terminal or before any mouse event has fired.
-    let mut mouse_pos: Option<(u16, u16)> = None;
+
+    // The Renderer trait carries `layout` as a parameter for renderers that
+    // need it (web canvas, PNG). `TuiRenderer` ignores it (recomputes per
+    // frame from terminal size), but the trait method demands one — supply
+    // a tiny placeholder.
+    let placeholder_layout = SceneLayout::compute(64, 32, 1)
+        .ok_or_else(|| anyhow::anyhow!("placeholder layout failed"))?;
 
     let tick = Duration::from_millis(33); // ~30 fps
     let result: Result<()> = (async {
@@ -40,27 +42,20 @@ pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
             let now = SystemTime::now();
             // O(1) pointer read — no lock, no clone of SceneState's contents.
             let snapshot = scene_rx.borrow_and_update().clone();
-            frame_cache.evict_missing(&snapshot);
-            let sig = (rgb_buf.width, rgb_buf.height, snapshot.max_desks);
+            renderer.evict_missing(&snapshot);
+            let sig = (
+                renderer.buf().width,
+                renderer.buf().height,
+                snapshot.max_desks,
+            );
             if last_layout_sig != Some(sig) {
-                router.invalidate();
+                renderer.invalidate_routes();
                 last_layout_sig = Some(sig);
             }
-            // draw_scene rebuilds `overlay` internally from current agent
-            // positions before computing routed poses, so the router
-            // routes around live agents and characters don't overlap.
-            draw_scene(
-                &mut term,
-                &snapshot,
-                &pack,
-                now,
-                &mut rgb_buf,
-                &mut frame_cache,
-                &mut router,
-                &mut overlay,
-                &mut history,
-                mouse_pos,
-            )?;
+            // TuiRenderer::render rebuilds the overlay internally from
+            // current agent positions before computing routed poses, so the
+            // router routes around live agents and characters don't overlap.
+            renderer.render(&snapshot, &placeholder_layout, &pack, now)?;
 
             let start = Instant::now();
             // Drain every event that arrived during this tick. Mouse moves
@@ -87,7 +82,7 @@ pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
                                 | MouseEventKind::Drag(_)
                                 | MouseEventKind::Down(_)
                         ) {
-                            mouse_pos = Some((m.column, m.row));
+                            renderer.set_mouse_pos(Some((m.column, m.row)));
                         }
                     }
                     _ => {}
@@ -107,6 +102,6 @@ pub async fn run_tui(mut scene_rx: SceneRx) -> Result<()> {
     })
     .await;
 
-    teardown_terminal(&mut term)?;
+    teardown_terminal(&mut renderer.terminal)?;
     result
 }
