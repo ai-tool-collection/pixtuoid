@@ -34,6 +34,10 @@ pub struct AgentSlot {
     /// can play a one-shot entry animation for the first few seconds of
     /// an agent's life regardless of later state transitions.
     pub created_at: SystemTime,
+    /// Set when the reducer has received `SessionEnd` for this agent but
+    /// is keeping the slot alive long enough for the exit animation to
+    /// play. The reducer sweeps expired slots on subsequent events.
+    pub exiting_at: Option<SystemTime>,
     pub desk_index: usize,
 }
 
@@ -86,6 +90,7 @@ mod tests {
                     state: ActivityState::Idle,
                     state_started_at: now,
                     created_at: now,
+                    exiting_at: None,
                     desk_index: i,
                 },
             );

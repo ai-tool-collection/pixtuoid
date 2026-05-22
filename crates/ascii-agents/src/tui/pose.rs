@@ -111,6 +111,22 @@ pub const ENTRY_ANIMATION_MS: u64 = 4000;
 pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &Layout) -> Option<Pose> {
     let desk = *layout.home_desks.get(slot.desk_index)?;
 
+    // Exit takes priority — once SessionEnd fires we always walk to the
+    // door regardless of entry-window or normal state.
+    if let (Some(exit_time), Some(door)) = (slot.exiting_at, layout.door) {
+        let since_exit = now
+            .duration_since(exit_time)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
+        if since_exit < ENTRY_ANIMATION_MS {
+            let t = (since_exit * 1000 / ENTRY_ANIMATION_MS).min(1000) as u16;
+            let frame = ((since_exit / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
+            return Some(Pose::Walking { from: desk, to: door, t_x1000: t, frame });
+        }
+        // Past exit window: nothing to render, slot will be GC'd shortly.
+        return None;
+    }
+
     // Entry animation overrides everything for the first ENTRY_ANIMATION_MS
     // after creation — agent walks in from the door to their desk.
     if let Some(door) = layout.door {
@@ -216,6 +232,7 @@ mod tests {
             state,
             state_started_at: started,
             created_at: created,
+            exiting_at: None,
             desk_index: 0,
         };
         (s, now)
@@ -416,6 +433,7 @@ mod tests {
             state: ActivityState::Idle,
             state_started_at: now0,
             created_at: now0,
+            exiting_at: None,
             desk_index: 0,
         };
         let probe = now0 + Duration::from_millis(1500);

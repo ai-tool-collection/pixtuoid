@@ -15,6 +15,10 @@ pub enum Transport {
 /// Window in which a Hook event suppresses a later Jsonl event with the same tool_use_id.
 pub const HOOK_WINS_WINDOW: Duration = Duration::from_millis(500);
 
+/// How long to keep an exiting agent's slot alive after `SessionEnd` so the
+/// walkout-to-door animation has time to play before the slot is removed.
+pub const EXIT_GRACE_WINDOW: Duration = Duration::from_millis(4500);
+
 #[derive(Debug, Default)]
 pub struct Reducer {
     /// Track recent hook-derived events so JSONL duplicates can be dropped.
@@ -43,6 +47,7 @@ impl Reducer {
         from: Transport,
     ) {
         self.gc(now);
+        self.sweep_exited(scene, now);
         let id = event.agent_id();
 
         // Subagent-leak suppression: if this AgentId currently has any Task
@@ -177,6 +182,7 @@ impl Reducer {
                         state: ActivityState::Idle,
                         state_started_at: now,
                         created_at: now,
+                        exiting_at: None,
                         desk_index,
                     },
                 );
@@ -216,8 +222,14 @@ impl Reducer {
                 }
             }
             AgentEvent::SessionEnd { agent_id } => {
-                scene.agents.remove(&agent_id);
-                self.active_tasks.remove(&agent_id);
+                // Don't drop the slot yet — mark it as exiting so the
+                // renderer can play the door-walkout animation. The slot
+                // is GC'd by `sweep_exited` once the animation completes.
+                if let Some(slot) = scene.agents.get_mut(&agent_id) {
+                    if slot.exiting_at.is_none() {
+                        slot.exiting_at = Some(now);
+                    }
+                }
             }
         }
     }
@@ -229,6 +241,25 @@ impl Reducer {
             now.duration_since(*ts)
                 .is_ok_and(|d| d < HOOK_WINS_WINDOW)
         });
+    }
+
+    /// Remove agents whose exit animation has finished. Called at the top
+    /// of every event apply, so any subsequent event naturally triggers
+    /// the cleanup of expired slots.
+    fn sweep_exited(&mut self, scene: &mut SceneState, now: SystemTime) {
+        let expired: Vec<AgentId> = scene
+            .agents
+            .iter()
+            .filter_map(|(id, slot)| {
+                slot.exiting_at
+                    .filter(|t| now.duration_since(*t).is_ok_and(|d| d > EXIT_GRACE_WINDOW))
+                    .map(|_| *id)
+            })
+            .collect();
+        for id in expired {
+            scene.agents.remove(&id);
+            self.active_tasks.remove(&id);
+        }
     }
 }
 
