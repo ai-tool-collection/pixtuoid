@@ -5,3 +5,4 @@ Cargo.lock.bak
 *.swp
 .claude/settings.local.json
 /*.png
+.venv/

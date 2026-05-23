@@ -2,8 +2,8 @@
 """Crop a snapshot PNG into per-quadrant images for visual inspection.
 
 Usage:
-    python3 scripts/crop-snapshot.py /tmp/snap.png          # default 2× scale
-    python3 scripts/crop-snapshot.py /tmp/snap.png --scale 3
+    .venv/bin/python3 scripts/crop-snapshot.py /tmp/snap.png          # 2× scale
+    .venv/bin/python3 scripts/crop-snapshot.py /tmp/snap.png --scale 3
 
 Outputs four files next to the input:
     <name>_meeting.png   — top-left (meeting room + sofas)
@@ -11,7 +11,8 @@ Outputs four files next to the input:
     <name>_cubicle.png   — top-right (cubicle pods)
     <name>_corridor.png  — bottom-right (walkway + baseboard)
 
-Requires: pip3 install Pillow  (see requirements-dev.txt)
+Setup (once):
+    python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 """
 
 import argparse
