@@ -195,6 +195,19 @@ impl SceneLayout {
         let pod_rows = total_pods.div_ceil(pod_cols).min(pod_rows);
         let n = num_agents.min(MAX_VISIBLE_DESKS);
         let mut home_desks = Vec::with_capacity(n);
+        // Clamp: a desk must fit entirely inside the cubicle band.
+        // Without this, the last intra-pod row of a bottom pod can
+        // extend past cubicle_band into the walkway (the pod_rows
+        // formula counts strides between origins but not the final
+        // pod's tail height).
+        let desk_y_max = cubicle_band.y + cubicle_band.height - DESK_H;
+        let push_desk = |desks: &mut Vec<Point>, x: u16, y: u16| -> bool {
+            if desks.len() >= n || y > desk_y_max {
+                return desks.len() >= n;
+            }
+            desks.push(Point { x, y });
+            false
+        };
         'outer: for pod_r in 0..pod_rows {
             for pod_c in 0..pod_cols {
                 let pod_origin_x = right_x + INTER_POD_AISLE_X / 2 + pod_c * pod_stride_x;
@@ -204,13 +217,14 @@ impl SceneLayout {
                     + pod_r * pod_stride_y;
                 for r in 0..POD_SIDE {
                     for c in 0..POD_SIDE {
-                        if home_desks.len() >= n {
+                        let full = push_desk(
+                            &mut home_desks,
+                            pod_origin_x + c * (DESK_W + INTRA_POD_GAP_X),
+                            pod_origin_y + r * (DESK_H + INTRA_POD_GAP_Y),
+                        );
+                        if full {
                             break 'outer;
                         }
-                        home_desks.push(Point {
-                            x: pod_origin_x + c * (DESK_W + INTRA_POD_GAP_X),
-                            y: pod_origin_y + r * (DESK_H + INTRA_POD_GAP_Y),
-                        });
                     }
                 }
             }
@@ -238,13 +252,14 @@ impl SceneLayout {
                     + pod_r * pod_stride_y;
                 for r in 0..POD_SIDE {
                     for i in 0..partial_col_count {
-                        if home_desks.len() >= n {
+                        let full = push_desk(
+                            &mut home_desks,
+                            partial_col_x(i),
+                            pod_origin_y + r * (DESK_H + INTRA_POD_GAP_Y),
+                        );
+                        if full {
                             break 'partial_x;
                         }
-                        home_desks.push(Point {
-                            x: partial_col_x(i),
-                            y: pod_origin_y + r * (DESK_H + INTRA_POD_GAP_Y),
-                        });
                     }
                 }
             }
@@ -261,24 +276,21 @@ impl SceneLayout {
             'partial_y: for pod_c in 0..pod_cols {
                 let pod_origin_x = right_x + INTER_POD_AISLE_X / 2 + pod_c * pod_stride_x;
                 for c in 0..POD_SIDE {
-                    if home_desks.len() >= n {
+                    let full = push_desk(
+                        &mut home_desks,
+                        pod_origin_x + c * (DESK_W + INTRA_POD_GAP_X),
+                        partial_y,
+                    );
+                    if full {
                         break 'partial_y;
                     }
-                    home_desks.push(Point {
-                        x: pod_origin_x + c * (DESK_W + INTRA_POD_GAP_X),
-                        y: partial_y,
-                    });
                 }
             }
-            // Corner desks where partial-cols meet partial-row.
             for i in 0..partial_col_count {
-                if home_desks.len() >= n {
+                let full = push_desk(&mut home_desks, partial_col_x(i), partial_y);
+                if full {
                     break;
                 }
-                home_desks.push(Point {
-                    x: partial_col_x(i),
-                    y: partial_y,
-                });
             }
         }
 
@@ -612,21 +624,12 @@ impl SceneLayout {
         let used_before_floor = home_desks.len() + meeting_sofas.len();
         let overflow_count = num_agents.saturating_sub(used_before_floor).min(8);
         let mut floor_seats: Vec<Point> = Vec::with_capacity(overflow_count);
-        if let Some(pr) = pantry_room {
-            for slot in 0..overflow_count.min(2) {
-                floor_seats.push(Point {
-                    x: pr.x + pr.width * (25 + slot as u16 * 40) / 100,
-                    y: pr.y + pr.height * 60 / 100,
-                });
-            }
-        }
-        // Remaining overflow falls along the walkway/corridor edges —
-        // sitters working on the floor in the main aisle. Spread across
-        // the corridor width so they don't pile up.
-        let remaining = overflow_count.saturating_sub(floor_seats.len());
-        for slot in 0..remaining {
-            let c = (slot as u16) % 4;
-            let along_x = cubicle_band.x + cubicle_band.width * (10 + c * 25) / 100;
+        // All overflow floor seats go along the corridor — the pantry is
+        // too crowded (counter + bistro table + chairs) and placing
+        // floor-sitters there causes them to render on top of furniture.
+        for slot in 0..overflow_count {
+            let c = (slot as u16) % 6;
+            let along_x = cubicle_band.x + cubicle_band.width * (8 + c * 16) / 100;
             floor_seats.push(Point {
                 x: along_x,
                 y: walkway.y + walkway.height / 2,
