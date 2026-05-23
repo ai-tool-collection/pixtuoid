@@ -1219,4 +1219,81 @@ mod tests {
             "seated char must sort before desk: char={char_feet_anchor}, desk={desk_anchor_y}"
         );
     }
+
+    // --- compute_door_frame_idx -------------------------------------------
+
+    fn entry_slot(created_at_ms_ago: u64, now: SystemTime) -> AgentSlot {
+        let id = ascii_agents_core::AgentId::from_transcript_path("/door.jsonl");
+        let mut s = make_slot(id, ActivityState::Idle);
+        s.created_at = now - std::time::Duration::from_millis(created_at_ms_ago);
+        s
+    }
+
+    fn exit_slot(exit_ms_ago: u64, now: SystemTime) -> AgentSlot {
+        let id = ascii_agents_core::AgentId::from_transcript_path("/exit.jsonl");
+        let mut s = make_slot(id, ActivityState::Idle);
+        s.created_at = now - std::time::Duration::from_secs(300);
+        s.exiting_at = Some(now - std::time::Duration::from_millis(exit_ms_ago));
+        s
+    }
+
+    #[test]
+    fn door_frame_closed_when_no_agents() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        assert_eq!(compute_door_frame_idx(&[], now), 0);
+    }
+
+    #[test]
+    fn door_frame_just_spawned_is_half_open() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        // 50 ms into the 200 ms opening ramp — first half = frame 1.
+        let slot = entry_slot(50, now);
+        assert_eq!(compute_door_frame_idx(&[slot], now), 1);
+    }
+
+    #[test]
+    fn door_frame_after_opening_ramp_is_fully_open() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        // 150 ms (still inside opening ramp but past midpoint) → frame 2.
+        let s1 = entry_slot(150, now);
+        assert_eq!(compute_door_frame_idx(&[s1], now), 2);
+        // 2 s into the 4 s window → fully open.
+        let s2 = entry_slot(2_000, now);
+        assert_eq!(compute_door_frame_idx(&[s2], now), 2);
+    }
+
+    #[test]
+    fn door_frame_closing_then_closed_at_end_of_entry() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        // 150 ms left in the entry window → closing ramp first half → frame 1.
+        let mid_close = entry_slot(pose::ENTRY_ANIMATION_MS - 150, now);
+        assert_eq!(compute_door_frame_idx(&[mid_close], now), 1);
+        // 50 ms left → closing ramp final half → frame 0 (closed).
+        let near_end = entry_slot(pose::ENTRY_ANIMATION_MS - 50, now);
+        assert_eq!(compute_door_frame_idx(&[near_end], now), 0);
+    }
+
+    #[test]
+    fn door_frame_expired_entry_contributes_nothing() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        // Older than the 4 s entry window → no contribution.
+        let old = entry_slot(pose::ENTRY_ANIMATION_MS + 1, now);
+        assert_eq!(compute_door_frame_idx(&[old], now), 0);
+    }
+
+    #[test]
+    fn door_frame_exit_window_uses_4500ms_total() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        // 2 s into a 4.5 s exit window → mid-flight → fully open.
+        let exiting = exit_slot(2_000, now);
+        assert_eq!(compute_door_frame_idx(&[exiting], now), 2);
+    }
+
+    #[test]
+    fn door_frame_takes_max_across_agents() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let opening = entry_slot(50, now); // frame 1
+        let open = entry_slot(2_000, now); // frame 2
+        assert_eq!(compute_door_frame_idx(&[opening, open], now), 2);
+    }
 }
