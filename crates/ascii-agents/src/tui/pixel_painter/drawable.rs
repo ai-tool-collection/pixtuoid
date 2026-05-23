@@ -25,7 +25,10 @@ use ascii_agents_core::AgentSlot;
 use super::effects::{
     paint_coffee_steam, paint_screen_glow, paint_sleep_z, paint_waiting_bubble, paint_walking_dust,
 };
-use super::{paint_character_at, paint_coffee_table, paint_pantry_chair, paint_pantry_table};
+use super::{
+    paint_area_rug, paint_character_at, paint_coffee_table, paint_pantry_chair,
+    paint_pantry_table, paint_side_table,
+};
 use crate::tui::frame_cache::FrameCache;
 use crate::tui::layout::{Layout, Point, DESK_H, DESK_W};
 
@@ -64,15 +67,32 @@ pub(super) enum DrawableKind<'a> {
         pos: Point,
     },
     /// Pantry counter (with coffee steam attached so steam rides above
-    /// the counter in z-order).
+    /// the counter in z-order). `use_large` picks the detailed 32×10
+    /// kitchen sprite vs. the 20×8 compact fallback — derived from
+    /// `layout.pantry_counter_size` at queue time.
     WaypointPantry {
         pos: Point,
+        use_large: bool,
     },
     MeetingSofa {
         pos: Point,
         mirrored: bool,
     },
     MeetingTable {
+        pos: Point,
+    },
+    /// Area rug — warm patterned rectangle that anchors a seating
+    /// arrangement visually. Used for the meeting room (large) and
+    /// the lounge (smaller). Painted BEFORE the furniture in z-order
+    /// (anchor_y at top of rug) so chairs / couches sit on top.
+    AreaRug {
+        pos: Point,
+        width: u16,
+        height: u16,
+    },
+    /// Lounge side table (5×3 wood + magazine) next to the viewing
+    /// couch. Centred at `pos`.
+    LoungeSideTable {
         pos: Point,
     },
     PantryTable {
@@ -230,30 +250,50 @@ pub(super) fn paint_drawable(
             }
         }
         DrawableKind::WaypointCouch { pos } => {
-            if let Some(f) = pack.animation("couch").and_then(|a| a.frames.first()) {
+            // Lounge couch reuses the meeting_sofa sprite (16×7) so
+            // both seating areas have the same readable 3-cushion
+            // silhouette. Flipped vertically so the back faces NORTH
+            // (toward the windows the viewer is looking at).
+            if let Some(f) = pack
+                .animation("meeting_sofa")
+                .and_then(|a| a.frames.first())
+            {
                 let cx = pos.x.saturating_sub(f.width / 2);
                 let cy = pos.y.saturating_sub(f.height / 2);
                 let flipped = f.mirror_vertical();
                 blit_frame(&flipped, cx, cy, buf);
             }
         }
-        DrawableKind::WaypointPantry { pos } => {
-            if let Some(f) = pack.animation("pantry").and_then(|a| a.frames.first()) {
+        DrawableKind::WaypointPantry { pos, use_large } => {
+            // Pick the big detailed kitchen sprite when the pantry is
+            // large enough; fall back to the compact 20×8 layout on
+            // narrow terminals.
+            let anim_name = if *use_large { "pantry" } else { "pantry_small" };
+            if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 let cx = pos.x.saturating_sub(f.width / 2);
                 let cy = pos.y.saturating_sub(f.height / 2);
                 blit_frame(f, cx, cy, buf);
             }
+            // Large sprite: coffee machine at sprite cols 11-18 of
+            // a 32-wide sprite → world x ≈ pos.x - 2.
+            // Small sprite: coffee at sprite cols 9-11 of a 20-wide
+            // sprite → world x = pos.x + 1.
+            let steam_dx: i16 = if *use_large { -2 } else { 1 };
+            let steam_x = (pos.x as i32 + steam_dx as i32).max(0) as u16;
             paint_coffee_steam(
                 buf,
                 Point {
-                    x: pos.x + 4,
+                    x: steam_x,
                     y: pos.y.saturating_sub(2),
                 },
                 now,
             );
         }
         DrawableKind::MeetingSofa { pos, mirrored } => {
-            if let Some(f) = pack.animation("couch").and_then(|a| a.frames.first()) {
+            if let Some(f) = pack
+                .animation("meeting_sofa")
+                .and_then(|a| a.frames.first())
+            {
                 let sx = pos.x.saturating_sub(f.width / 2);
                 let sy = pos.y.saturating_sub(f.height / 2);
                 if *mirrored {
@@ -266,6 +306,12 @@ pub(super) fn paint_drawable(
         }
         DrawableKind::MeetingTable { pos } => {
             paint_coffee_table(buf, pos.x, pos.y, 11, 5);
+        }
+        DrawableKind::AreaRug { pos, width, height } => {
+            paint_area_rug(buf, pos.x, pos.y, *width, *height);
+        }
+        DrawableKind::LoungeSideTable { pos } => {
+            paint_side_table(buf, pos.x, pos.y);
         }
         DrawableKind::PantryTable { pos } => {
             paint_pantry_table(buf, pos.x, pos.y);
@@ -324,6 +370,7 @@ pub(super) fn paint_drawable(
                 WallDecor::BulletinBoard => "bulletin_board",
                 WallDecor::ExitSign => "exit_sign",
                 WallDecor::Whiteboard => "whiteboard",
+                WallDecor::MeetingScreen => "meeting_screen",
             };
             if let Some(f) = pack.animation(anim_name).and_then(|a| a.frames.first()) {
                 blit_frame(f, pos.x, pos.y, buf);

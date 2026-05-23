@@ -132,33 +132,42 @@ pub(super) fn paint_walking_dust(buf: &mut RgbBuffer, walker_anchor: Point, fram
     }
 }
 
-/// Small "..." speech bubble painted above a Waiting character (typically
-/// a permission prompt). Yellow dots on a dark pill.
+/// Yellow "?" painted above a Waiting character. Designed so every pair
+/// of buffer rows is identical — that way each half-block terminal cell
+/// is either fully yellow or fully transparent, never a yellow/dark
+/// half-split (which read as "yellow with a black side" before).
 pub(super) fn paint_waiting_bubble(buf: &mut RgbBuffer, anchor: Point) {
-    const BUBBLE_FG: Rgb = Rgb(240, 200, 80);
-    const BUBBLE_BG: Rgb = Rgb(30, 30, 40);
-    let bx = anchor.x;
-    let by = anchor.y.saturating_sub(4);
-    let dots: &[(u16, u16, Rgb)] = &[
-        (0, 0, BUBBLE_BG),
-        (1, 0, BUBBLE_BG),
-        (2, 0, BUBBLE_BG),
-        (3, 0, BUBBLE_BG),
-        (4, 0, BUBBLE_BG),
-        (0, 1, BUBBLE_BG),
-        (2, 1, BUBBLE_FG),
-        (4, 1, BUBBLE_BG),
-        (0, 2, BUBBLE_BG),
-        (1, 2, BUBBLE_BG),
-        (2, 2, BUBBLE_FG),
-        (3, 2, BUBBLE_BG),
-        (4, 2, BUBBLE_BG),
+    const FG: Rgb = Rgb(255, 215, 70);
+    const GLYPH: &[&[u8]] = &[
+        b".YYYY.",
+        b".YYYY.",
+        b"....YY",
+        b"....YY",
+        b".YYYY.",
+        b".YYYY.",
+        b".YY...",
+        b".YY...",
+        b"......",
+        b"......",
+        b".YY...",
+        b".YY...",
     ];
-    for (dx, dy, c) in dots {
-        let px = bx + dx;
-        let py = by + dy;
-        if px < buf.width && py < buf.height {
-            buf.put(px, py, *c);
+    let bx = anchor.x;
+    // Snap to even buffer row so the glyph's paired rows line up with
+    // half-block terminal cells — otherwise the (y, y+1) pairing
+    // straddles cell boundaries and the "no half-split" guarantee from
+    // the symmetric glyph design is lost.
+    let by = anchor.y.saturating_sub(13) & !1u16;
+    for (dy, row) in GLYPH.iter().enumerate() {
+        for (dx, byte) in row.iter().enumerate() {
+            if *byte != b'Y' {
+                continue;
+            }
+            let px = bx + dx as u16;
+            let py = by + dy as u16;
+            if px < buf.width && py < buf.height {
+                buf.put(px, py, FG);
+            }
         }
     }
 }

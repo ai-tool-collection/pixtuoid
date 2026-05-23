@@ -53,6 +53,14 @@ struct SnapshotArgs {
     /// pockets that would cause an A* fallback / character teleport).
     #[arg(long)]
     debug_walkable: bool,
+
+    /// Override the snapshot terminal width (cells). Default 96.
+    #[arg(long)]
+    cols: Option<u16>,
+
+    /// Override the snapshot terminal height (cells). Default 36.
+    #[arg(long)]
+    rows: Option<u16>,
 }
 
 fn default_projects_root() -> String {
@@ -75,7 +83,9 @@ fn main() -> Result<()> {
         sample_scene(now)
     };
 
-    let backend = TestBackend::new(COLS, ROWS);
+    let cols = args.cols.unwrap_or(COLS);
+    let rows = args.rows.unwrap_or(ROWS);
+    let backend = TestBackend::new(cols, rows);
     let mut term = Terminal::new(backend)?;
     let mut buf = RgbBuffer::filled(0, 0, Rgb(0, 0, 0));
     let pack = load_default_pack()?;
@@ -99,14 +109,14 @@ fn main() -> Result<()> {
         debug_paint_walkable_overlay(&mut term, &scene)?;
     }
 
-    save_backend_as_png(&term, &args.out)?;
+    save_backend_as_png(&term, &args.out, cols, rows)?;
     println!("wrote {}", args.out.display());
 
     // Also dump a text-only preview so you can eyeball without an image viewer.
     println!("\n--- text preview (symbols only) ---");
     let buf = term.backend().buffer();
-    for y in 0..ROWS {
-        for x in 0..COLS {
+    for y in 0..rows {
+        for x in 0..cols {
             print!("{}", buf[(x, y)].symbol());
         }
         println!();
@@ -398,14 +408,19 @@ fn sample_scene(now: SystemTime) -> SceneState {
     s
 }
 
-fn save_backend_as_png(term: &Terminal<TestBackend>, path: &PathBuf) -> Result<()> {
+fn save_backend_as_png(
+    term: &Terminal<TestBackend>,
+    path: &PathBuf,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
     let buf = term.backend().buffer();
-    let img_w = COLS as u32 * CELL_W;
-    let img_h = ROWS as u32 * CELL_H;
+    let img_w = cols as u32 * CELL_W;
+    let img_h = rows as u32 * CELL_H;
     let mut img = RgbImage::new(img_w, img_h);
 
-    for y in 0..ROWS {
-        for x in 0..COLS {
+    for y in 0..rows {
+        for x in 0..cols {
             let cell = &buf[(x, y)];
             let symbol = cell.symbol();
             let fg = color_to_rgb(cell.fg, ImgRgb([220, 220, 220]));

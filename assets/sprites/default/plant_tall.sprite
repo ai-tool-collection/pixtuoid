@@ -1,11 +1,14 @@
-# 4x9 tall snake plant / dracaena — narrow vertical leaves in a small pot.
+# 6x10 leafy office plant — fuller silhouette than the old 4-wide stick
+# so it reads as "plant" from across the room. `l` light leaf, `L` dark
+# leaf for depth, `n` dark pot rim, `d` darker dirt centre.
 @frame 0
-. l l .
-l L l l
-l l L l
-l L l l
-l l L .
-. l L .
-. L l .
-. g g .
-. g g .
+. l L l . .
+l L l L l .
+L l l L L l
+l L L l l L
+. l l L l .
+. . L l . .
+. . L L . .
+n n n n n n
+n d d d d n
+n n n n n n

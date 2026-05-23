@@ -52,6 +52,9 @@ pub enum WallDecor {
     Whiteboard,
     BulletinBoard,
     ExitSign,
+    /// Wall-mounted meeting-room display — paints above the meeting
+    /// room interior so participants can pretend they're presenting.
+    MeetingScreen,
 }
 
 /// Variety of potted plants — each renders a different sprite. Spread
@@ -91,12 +94,11 @@ impl PodDecor {
 
     /// Width / height in buffer pixels — used for both rendering offset
     /// (centred placement) and walkable-mask obstacle dimensions. Sprite
-    /// sizes are fixed: PlantTall=4×9, Whiteboard=14×11 (wall-mount
-    /// only, not in the aisle pool), Tv=10×10, PhoneBooth=6×12,
-    /// StandingDesk=8×8.
+    /// sizes are fixed: PlantTall=6×10, Whiteboard=14×11, Tv=10×10,
+    /// PhoneBooth=6×12, StandingDesk=8×8.
     pub fn size(self) -> (u16, u16) {
         match self {
-            PodDecor::PlantTall => (4, 9),
+            PodDecor::PlantTall => (6, 10),
             PodDecor::Whiteboard => (14, 11),
             PodDecor::Tv => (10, 10),
             PodDecor::PhoneBooth => (6, 12),
@@ -129,6 +131,9 @@ pub struct SceneLayout {
     /// point and marks it as an obstacle in the walkable mask.
     pub pod_decor: Vec<(PodDecor, Point)>,
     pub floor_lamp: Option<Point>,
+    /// Lounge side table (5×3 wood + magazine) placed next to the
+    /// viewing couch on the side opposite the floor lamp.
+    pub lounge_side_table: Option<Point>,
     pub door: Option<Point>,
     pub door_threshold: Option<Point>,
     pub floor_seats: Vec<Point>,
@@ -140,6 +145,12 @@ pub struct SceneLayout {
     pub top_margin: u16,
     pub pantry_table: Option<Point>,
     pub pantry_chairs: Vec<Point>,
+    /// Footprint (width, height) of the pantry counter sprite. (32, 10)
+    /// when the pantry is large enough for the detailed kitchen run;
+    /// (20, 8) fallback for narrow terminals where the wide sprite
+    /// wouldn't fit. The renderer reads this to pick which sprite to
+    /// paint (`pantry` vs `pantry_small`).
+    pub pantry_counter_size: (u16, u16),
     pub corridor: Option<Bounds>,
     pub walkable: WalkableMask,
 }
@@ -205,7 +216,9 @@ impl SceneLayout {
             height: usable_h - usable_h / 2,
         });
 
-        let right_x = mid_x + 2;
+        // Vertical walls are 1 px (edge-on, fake-3D perspective). The
+        // cubicle band starts immediately after the partition line.
+        let right_x = mid_x + 1;
         let right_w = buf_w.saturating_sub(right_x);
         // Reserve the last 3 px for the baseboard sprite (matches the
         // BASEBOARD_H constant in the renderer's paint_floor_and_walls).
@@ -277,15 +290,89 @@ impl SceneLayout {
             }
         }
 
+        // Partial pod columns at the RIGHT edge — for each leftover
+        // strip after `pod_cols` full pods wide enough for a single
+        // desk column + half-aisle, append another 1×POD_SIDE partial
+        // column. Resolves the "office looks empty on the right" issue
+        // at wide buffers where a full 2nd pod doesn't fit but multiple
+        // single-desk columns do.
+        let main_pod_used_w = INTER_POD_AISLE_X / 2 + pod_cols * pod_stride_x;
+        let residual_w = right_w.saturating_sub(main_pod_used_w);
+        let partial_col_stride = DESK_W + INTER_POD_AISLE_X / 2;
+        let partial_col_count = (residual_w / partial_col_stride).min(4);
+        let partial_col_at_right = partial_col_count > 0;
+        let partial_col_x = |i: u16| -> u16 {
+            right_x + main_pod_used_w + INTER_POD_AISLE_X / 2 + i * partial_col_stride
+        };
+        if partial_col_at_right {
+            'partial_x: for pod_r in 0..pod_rows {
+                let pod_origin_y = cubicle_band.y
+                    + INTER_POD_AISLE_Y / 2
+                    + couch_to_desk_extra
+                    + pod_r * pod_stride_y;
+                for r in 0..POD_SIDE {
+                    for i in 0..partial_col_count {
+                        if home_desks.len() >= n {
+                            break 'partial_x;
+                        }
+                        home_desks.push(Point {
+                            x: partial_col_x(i),
+                            y: pod_origin_y + r * (DESK_H + INTRA_POD_GAP_Y),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Partial pod ROW at the BOTTOM edge — same idea but vertical.
+        // Adds POD_SIDE × pod_cols extra desks (+ the partial column's
+        // single desk if it also fits).
+        let main_pod_used_h =
+            INTER_POD_AISLE_Y / 2 + couch_to_desk_extra + pod_rows * pod_stride_y;
+        let residual_h = cubicle_h.saturating_sub(main_pod_used_h);
+        let partial_row_at_bottom = residual_h >= DESK_H + INTER_POD_AISLE_Y / 2;
+        if partial_row_at_bottom {
+            let partial_y = cubicle_band.y + main_pod_used_h + INTER_POD_AISLE_Y / 2;
+            'partial_y: for pod_c in 0..pod_cols {
+                let pod_origin_x = right_x + INTER_POD_AISLE_X / 2 + pod_c * pod_stride_x;
+                for c in 0..POD_SIDE {
+                    if home_desks.len() >= n {
+                        break 'partial_y;
+                    }
+                    home_desks.push(Point {
+                        x: pod_origin_x + c * (DESK_W + INTRA_POD_GAP_X),
+                        y: partial_y,
+                    });
+                }
+            }
+            // Corner desks where partial-cols meet partial-row.
+            for i in 0..partial_col_count {
+                if home_desks.len() >= n {
+                    break;
+                }
+                home_desks.push(Point {
+                    x: partial_col_x(i),
+                    y: partial_y,
+                });
+            }
+        }
+
         // Decor in the aisles BETWEEN pods. For each pod_cols × pod_rows
         // grid we get `(pod_rows-1) * pod_cols` horizontal-aisle slots
         // and `pod_rows * (pod_cols-1)` vertical-aisle slots. Each slot
         // picks one item from `PodDecor::ALL` via a deterministic hash
         // so the office layout looks varied but stable across renders.
         let mut pod_decor: Vec<(PodDecor, Point)> = Vec::new();
-        let pick_decor = |slot_seed: u64| -> PodDecor {
-            let n = PodDecor::ALL.len() as u64;
-            PodDecor::ALL[(slot_seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) % n) as usize]
+        // Cycle through ALL with a per-slot counter so every decor type
+        // appears at least once before any repeats. Beats the prior
+        // golden-ratio hash which (empirically) never picked Tv or
+        // PhoneBooth at common buffer sizes — slots were stuck on
+        // PlantTall / Whiteboard / StandingDesk.
+        let mut slot_idx: usize = 0;
+        let mut push_slot = |pod_decor: &mut Vec<(PodDecor, Point)>, x: u16, y: u16| {
+            let kind = PodDecor::ALL[slot_idx % PodDecor::ALL.len()];
+            slot_idx += 1;
+            pod_decor.push((kind, Point { x, y }));
         };
         // Vertical-aisle slots (between column pod_c and pod_c+1, one
         // per pod row).
@@ -296,17 +383,9 @@ impl SceneLayout {
                     + INTER_POD_AISLE_Y / 2
                     + couch_to_desk_extra
                     + pod_r * pod_stride_y;
-                // Aisle centre = right edge of pod + half-aisle.
                 let aisle_cx = pod_origin_x + pod_w + INTER_POD_AISLE_X / 2;
                 let aisle_cy = pod_origin_y + pod_h / 2;
-                let seed = (pod_r as u64) * 31 + (pod_c as u64) * 17 + 1;
-                pod_decor.push((
-                    pick_decor(seed),
-                    Point {
-                        x: aisle_cx,
-                        y: aisle_cy,
-                    },
-                ));
+                push_slot(&mut pod_decor, aisle_cx, aisle_cy);
             }
         }
         // Horizontal-aisle slots (between row pod_r and pod_r+1, one
@@ -318,17 +397,9 @@ impl SceneLayout {
                     + INTER_POD_AISLE_Y / 2
                     + couch_to_desk_extra
                     + pod_r * pod_stride_y;
-                // Aisle centre = bottom edge of pod + half-aisle.
                 let aisle_cx = pod_origin_x + pod_w / 2;
                 let aisle_cy = pod_origin_y + pod_h + INTER_POD_AISLE_Y / 2;
-                let seed = (pod_r as u64) * 41 + (pod_c as u64) * 23 + 2;
-                pod_decor.push((
-                    pick_decor(seed),
-                    Point {
-                        x: aisle_cx,
-                        y: aisle_cy,
-                    },
-                ));
+                push_slot(&mut pod_decor, aisle_cx, aisle_cy);
             }
         }
 
@@ -413,16 +484,26 @@ impl SceneLayout {
             },
             kind: WaypointKind::Couch,
         }];
+        // Counter footprint depends on pantry width — 32×10 detailed
+        // kitchen on default terminals, 20×8 compact fallback for narrow
+        // ones. The threshold (36 = 32 sprite + 4 px margins) keeps the
+        // walkable strip around the counter wide enough for routing.
+        let pantry_counter_size: (u16, u16) = match pantry_room {
+            Some(pr) if pr.width >= 36 => (32, 10),
+            _ => (20, 8),
+        };
         if let Some(pr) = pantry_room {
-            // y at 60% (not 40%) so the counter sits well below the
-            // meeting-room/pantry doorway — keeps the walkable strip
-            // through the doorway wide enough for the coarsened
-            // pathfinding grid to see it as passable.
+            // For the large counter: x centered, y at 65% so the sprite
+            // sits well below the meeting-room/pantry doorway. For the
+            // small fallback: keep the original 60% x / 60% y placement
+            // so the existing connectivity holds at narrow buffer sizes.
+            let (wx, wy) = if pantry_counter_size.0 >= 32 {
+                (pr.x + pr.width / 2, pr.y + pr.height * 65 / 100)
+            } else {
+                (pr.x + pr.width * 60 / 100, pr.y + pr.height * 60 / 100)
+            };
             waypoints.push(Waypoint {
-                pos: Point {
-                    x: pr.x + pr.width * 60 / 100,
-                    y: pr.y + pr.height * 60 / 100,
-                },
+                pos: Point { x: wx, y: wy },
                 kind: WaypointKind::Pantry,
             });
         }
@@ -474,16 +555,41 @@ impl SceneLayout {
         // pantry interior and the cubicle area's bottom row. Leaving the
         // pantry plant-free keeps the mask fully connected.
         .chain(std::iter::empty::<(PlantKind, Point)>())
-        // The meeting room is intentionally plant-free: sofas + table fill
-        // most of the interior, leaving narrow walkable strips. Any plant
-        // placed inside one of those strips disconnects the room from the
-        // door gap.
+        // Two meeting-room corner plants on the west wall, well clear of
+        // the door (which is on the east wall) and the central
+        // sofa/table column. Only added when the meeting room is large
+        // enough (≥ 30 px wide) that the plant + pad doesn't squeeze the
+        // walkable strip below routable width.
+        .chain(meeting_room.into_iter().flat_map(|mr| {
+            if mr.width < 30 || mr.height < 30 {
+                Vec::new()
+            } else {
+                vec![
+                    (PlantKind::Tall, Point { x: mr.x + 5, y: mr.y + 6 }),
+                    (
+                        PlantKind::Flower,
+                        Point {
+                            x: mr.x + 5,
+                            y: mr.y + mr.height.saturating_sub(7),
+                        },
+                    ),
+                ]
+            }
+        }))
         .collect();
 
         // Floor lamp now sits right next to the viewing couch so its halo
         // bathes the seating area at night.
         let floor_lamp = Some(Point {
             x: couch_x + 9,
+            y: couch_y + 2,
+        });
+
+        // Lounge side table on the OPPOSITE side from the floor lamp
+        // (west of the couch). 5×3 small wood block with a magazine
+        // on top.
+        let lounge_side_table = Some(Point {
+            x: couch_x.saturating_sub(10),
             y: couch_y + 2,
         });
 
@@ -560,6 +666,18 @@ impl SceneLayout {
                     y: v_door_bot + 2,
                 },
             ),
+            // Meeting-room wall screen — centred horizontally in the
+            // meeting room, hung so its bottom sits on the last wall
+            // band row right above the meeting room interior.
+            (
+                WallDecor::MeetingScreen,
+                Point {
+                    x: meeting_room
+                        .map(|mr| mr.x + mr.width / 2 - 7)
+                        .unwrap_or(0),
+                    y: top_margin.saturating_sub(6),
+                },
+            ),
         ];
 
         let used_before_floor = home_desks.len() + meeting_sofas.len();
@@ -628,9 +746,11 @@ impl SceneLayout {
             &waypoints,
             &plants,
             floor_lamp,
+            lounge_side_table,
             &wall_decor,
             &pod_decor,
             &room_walls,
+            pantry_counter_size,
         );
 
         Some(Self {
@@ -644,6 +764,7 @@ impl SceneLayout {
             wall_decor,
             pod_decor,
             floor_lamp,
+            lounge_side_table,
             door,
             door_threshold,
             floor_seats,
@@ -655,6 +776,7 @@ impl SceneLayout {
             top_margin,
             pantry_table,
             pantry_chairs,
+            pantry_counter_size,
             corridor,
             walkable,
         })
@@ -679,9 +801,11 @@ fn build_walkable_mask(
     waypoints: &[Waypoint],
     plants: &[(PlantKind, Point)],
     floor_lamp: Option<Point>,
+    lounge_side_table: Option<Point>,
     wall_decor: &[(WallDecor, Point)],
     pod_decor: &[(PodDecor, Point)],
     room_walls: &[(Point, Point)],
+    pantry_counter_size: (u16, u16),
 ) -> WalkableMask {
     let mut mask = WalkableMask::new_open(buf_w, buf_h);
 
@@ -695,12 +819,20 @@ fn build_walkable_mask(
     let baseboard_top = buf_h.saturating_sub(3);
     mask.mark_blocked(0, baseboard_top, buf_w, 3, 0);
 
+    // Interior walls. Stardew-style fake-3D perspective:
+    //   • horizontal walls (E-W) show their FACE — 4 px tall so the
+    //     wall reads as having mass when viewed from the north room.
+    //   • vertical walls (N-S) are seen EDGE-ON — 1 px thin partition.
+    // Render thicknesses must stay in sync; see `WALL_THICK_*_PX` in
+    // the renderer.
+    const WALL_THICK_V: u16 = 1;
+    const WALL_THICK_H: u16 = 4;
     for (start, end) in room_walls {
         if start.x == end.x {
             mask.mark_blocked(
                 start.x,
                 start.y.min(end.y),
-                2,
+                WALL_THICK_V,
                 start.y.abs_diff(end.y) + 1,
                 OBSTACLE_PAD_PX,
             );
@@ -709,7 +841,7 @@ fn build_walkable_mask(
                 start.x.min(end.x),
                 start.y,
                 start.x.abs_diff(end.x) + 1,
-                2,
+                WALL_THICK_H,
                 OBSTACLE_PAD_PX,
             );
         }
@@ -728,10 +860,10 @@ fn build_walkable_mask(
 
     for sofa in meeting_sofas {
         mask.mark_blocked(
-            sofa.x.saturating_sub(7),
+            sofa.x.saturating_sub(8),
             sofa.y.saturating_sub(3),
-            14,
-            6,
+            16,
+            7,
             OBSTACLE_PAD_PX,
         );
     }
@@ -767,8 +899,8 @@ fn build_walkable_mask(
 
     for wp in waypoints {
         let (w, h) = match wp.kind {
-            WaypointKind::Couch => (14, 6),
-            WaypointKind::Pantry => (20, 8),
+            WaypointKind::Couch => (16, 7),
+            WaypointKind::Pantry => pantry_counter_size,
             WaypointKind::PhoneBooth => (6, 12),
             WaypointKind::StandingDesk => (8, 8),
         };
@@ -791,6 +923,12 @@ fn build_walkable_mask(
 
     if let Some(lamp) = floor_lamp {
         mask.mark_blocked(lamp.x.saturating_sub(2), lamp.y.saturating_sub(3), 4, 6, 1);
+    }
+
+    if let Some(t) = lounge_side_table {
+        // 7×4 footprint centred on `t`; pad=1 since it's small and
+        // sits in the wide open lounge floor with plenty of clearance.
+        mask.mark_blocked(t.x.saturating_sub(3), t.y.saturating_sub(2), 7, 4, 1);
     }
 
     for (kind, pos) in wall_decor {

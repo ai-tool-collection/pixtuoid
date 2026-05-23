@@ -101,6 +101,78 @@ pub(super) fn paint_coffee_table(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, 
     }
 }
 
+/// Meeting-room area rug — warm Persian-tone rectangle painted under
+/// the coffee table. Border ring in a darker shade so the rug reads as
+/// having a fringe/binding rather than a flat blob. Centred on `cx,cy`.
+pub(super) fn paint_area_rug(buf: &mut RgbBuffer, cx: u16, cy: u16, w: u16, h: u16) {
+    const RUG_FIELD: Rgb = Rgb(140, 60, 50);
+    const RUG_TRIM: Rgb = Rgb(90, 40, 35);
+    const RUG_ACCENT: Rgb = Rgb(190, 130, 80);
+    let half_w = w as i32 / 2;
+    let half_h = h as i32 / 2;
+    for dy in 0..h as i32 {
+        for dx in 0..w as i32 {
+            let px = cx as i32 - half_w + dx;
+            let py = cy as i32 - half_h + dy;
+            if px < 0 || py < 0 || px >= buf.width as i32 || py >= buf.height as i32 {
+                continue;
+            }
+            let on_border = dx == 0 || dx == w as i32 - 1 || dy == 0 || dy == h as i32 - 1;
+            let on_inner_border = dx == 1 || dx == w as i32 - 2 || dy == 1 || dy == h as i32 - 2;
+            let color = if on_border {
+                RUG_TRIM
+            } else if on_inner_border {
+                RUG_ACCENT
+            } else {
+                RUG_FIELD
+            };
+            buf.put(px as u16, py as u16, color);
+        }
+    }
+}
+
+/// Lounge side table — 7×4 wood block next to the viewing couch
+/// (opposite side from the floor lamp). Bumped from 5×3 to clear the
+/// skill's ~5-cell-wide subzone threshold. Carries a 3-cell magazine
+/// stack on top so the silhouette reads as "side table with a book".
+pub(super) fn paint_side_table(buf: &mut RgbBuffer, cx: u16, cy: u16) {
+    const TOP: Rgb = Rgb(132, 88, 52);
+    const TRIM: Rgb = Rgb(78, 52, 28);
+    const MAG: Rgb = Rgb(98, 122, 178);
+    const MAG_TRIM: Rgb = Rgb(50, 60, 92);
+    let w: i32 = 7;
+    let h: i32 = 4;
+    for dy in 0..h {
+        for dx in 0..w {
+            let px = cx as i32 - w / 2 + dx;
+            let py = cy as i32 - h / 2 + dy;
+            if px < 0 || py < 0 || px >= buf.width as i32 || py >= buf.height as i32 {
+                continue;
+            }
+            let on_bottom = dy == h - 1;
+            buf.put(px as u16, py as u16, if on_bottom { TRIM } else { TOP });
+        }
+    }
+    // Magazine stack on top — 3 cells wide × 2 tall, slightly inset from
+    // the table's top edge so it reads as "object placed on the table"
+    // not "edge of table."
+    let mag_pixels: &[((i32, i32), Rgb)] = &[
+        ((-1, -1), MAG),
+        ((0, -1), MAG),
+        ((1, -1), MAG),
+        ((-1, 0), MAG_TRIM),
+        ((0, 0), MAG_TRIM),
+        ((1, 0), MAG_TRIM),
+    ];
+    for ((dx, dy), c) in mag_pixels {
+        let px = cx as i32 + dx;
+        let py = cy as i32 + dy;
+        if px >= 0 && py >= 0 && (px as u16) < buf.width && (py as u16) < buf.height {
+            buf.put(px as u16, py as u16, *c);
+        }
+    }
+}
+
 /// Pantry bistro table — round-ish wood top (rounded corners by skipping
 /// the 4 corner pixels) painted with the same warm wood palette as the
 /// coffee table so they read as the same furniture family.
@@ -342,27 +414,42 @@ pub fn render_to_rgb_buffer(
     if let Some(corridor) = layout.corridor {
         paint_corridor_runner(buf, corridor);
     }
-    // Room dividers — drywall lines between meeting / pantry / right-side
-    // (cubicles + lounge). Painted before decor so wall-leaning items
-    // (e.g. wall_decor) sit on top.
-    const WALL_COLOR: Rgb = Rgb(82, 84, 100);
+    // Room dividers. Stardew-style fake-3D perspective:
+    //   • horizontal walls (E-W) show the wall face — 4 px tall with
+    //     a light top trim (lit cap) and dark bottom trim (shadow).
+    //   • vertical walls (N-S) are seen edge-on — drawn as a single
+    //     1-px partition line.
+    // Must match `WALL_THICK_V` / `WALL_THICK_H` in build_walkable_mask.
+    const WALL_THICK_V_PX: u16 = 1;
+    const WALL_THICK_H_PX: u16 = 4;
+    const WALL_BODY: Rgb = Rgb(72, 74, 90);
+    const WALL_TRIM_LIGHT: Rgb = Rgb(110, 112, 128);
+    const WALL_TRIM_DARK: Rgb = Rgb(40, 42, 54);
     for (start, end) in &layout.room_walls {
         if start.x == end.x {
             for y in start.y..=end.y.min(buf_h - 1) {
-                for dx in 0..2 {
+                for dx in 0..WALL_THICK_V_PX {
                     let x = start.x + dx;
                     if x < buf_w {
-                        buf.put(x, y, WALL_COLOR);
+                        buf.put(x, y, WALL_BODY);
                     }
                 }
             }
         } else {
             for x in start.x..=end.x.min(buf_w - 1) {
-                for dy in 0..2 {
+                for dy in 0..WALL_THICK_H_PX {
                     let y = start.y + dy;
-                    if y < buf_h {
-                        buf.put(x, y, WALL_COLOR);
+                    if y >= buf_h {
+                        continue;
                     }
+                    let color = if dy == 0 {
+                        WALL_TRIM_LIGHT
+                    } else if dy == WALL_THICK_H_PX - 1 {
+                        WALL_TRIM_DARK
+                    } else {
+                        WALL_BODY
+                    };
+                    buf.put(x, y, color);
                 }
             }
         }
@@ -473,6 +560,26 @@ pub fn render_to_rgb_buffer(
         });
     }
 
+    // Meeting-room area rug — sized to span both sofas + the coffee
+    // table with a small margin. Anchored at the TOP so y-sort paints
+    // it before the furniture sitting on top of it.
+    if let (Some(table), Some(&top_sofa), Some(&bot_sofa)) = (
+        layout.meeting_table,
+        layout.meeting_sofas.first(),
+        layout.meeting_sofas.get(1),
+    ) {
+        let rug_w = 18u16;
+        let rug_h = (bot_sofa.y - top_sofa.y + 8).min(layout.buf_h - table.y + 8);
+        drawables.push(Drawable {
+            anchor_y: table.y.saturating_sub(rug_h / 2),
+            kind: DrawableKind::AreaRug {
+                pos: table,
+                width: rug_w,
+                height: rug_h,
+            },
+        });
+    }
+
     // Meeting sofas (couch sprite 14×5, centered → bottom = sofa.y + 2).
     for (i, &sofa) in layout.meeting_sofas.iter().enumerate() {
         let mirrored = i > 0;
@@ -515,14 +622,44 @@ pub fn render_to_rgb_buffer(
     for wp in &layout.waypoints {
         use crate::tui::layout::WaypointKind;
         match wp.kind {
-            WaypointKind::Couch => drawables.push(Drawable {
-                anchor_y: wp.pos.y + 2,
-                kind: DrawableKind::WaypointCouch { pos: wp.pos },
-            }),
-            WaypointKind::Pantry => drawables.push(Drawable {
-                anchor_y: wp.pos.y + 4,
-                kind: DrawableKind::WaypointPantry { pos: wp.pos },
-            }),
+            WaypointKind::Couch => {
+                // Small area rug under the lounge couch — anchored
+                // BEHIND (north of) the couch so the rug spans the
+                // floor in front of it (south side) where someone
+                // standing/walking would step. y-sort anchor at the
+                // top so couch sits on top.
+                drawables.push(Drawable {
+                    anchor_y: wp.pos.y.saturating_sub(2),
+                    kind: DrawableKind::AreaRug {
+                        pos: Point {
+                            x: wp.pos.x,
+                            y: wp.pos.y + 3,
+                        },
+                        width: 18,
+                        height: 7,
+                    },
+                });
+                drawables.push(Drawable {
+                    anchor_y: wp.pos.y + 3,
+                    kind: DrawableKind::WaypointCouch { pos: wp.pos },
+                });
+                if let Some(table) = layout.lounge_side_table {
+                    drawables.push(Drawable {
+                        anchor_y: table.y + 1,
+                        kind: DrawableKind::LoungeSideTable { pos: table },
+                    });
+                }
+            }
+            WaypointKind::Pantry => {
+                let (cw, ch) = layout.pantry_counter_size;
+                drawables.push(Drawable {
+                    anchor_y: wp.pos.y + ch / 2,
+                    kind: DrawableKind::WaypointPantry {
+                        pos: wp.pos,
+                        use_large: cw >= 32,
+                    },
+                });
+            }
             WaypointKind::PhoneBooth | WaypointKind::StandingDesk => {}
         }
     }
@@ -595,6 +732,7 @@ pub fn render_to_rgb_buffer(
             WallDecor::BulletinBoard => 6,
             WallDecor::ExitSign => 3,
             WallDecor::Whiteboard => 11,
+            WallDecor::MeetingScreen => 6,
         };
         drawables.push(Drawable {
             anchor_y: pos.y + h,

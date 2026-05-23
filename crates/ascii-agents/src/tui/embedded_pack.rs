@@ -85,6 +85,8 @@ fn load_embedded_pack() -> Result<Pack> {
     let floor_seat = include_str!("../../../../assets/sprites/default/seated_floor.sprite");
     let floor_slp = include_str!("../../../../assets/sprites/default/seated_floor_sleeping.sprite");
     let couch = include_str!("../../../../assets/sprites/default/couch.sprite");
+    let meeting_sofa = include_str!("../../../../assets/sprites/default/meeting_sofa.sprite");
+    let meeting_screen = include_str!("../../../../assets/sprites/default/meeting_screen.sprite");
     let coffee = include_str!("../../../../assets/sprites/default/coffee.sprite");
     let sitting = include_str!("../../../../assets/sprites/default/sitting_couch.sprite");
     let back_couch = include_str!("../../../../assets/sprites/default/back_couch.sprite");
@@ -93,6 +95,7 @@ fn load_embedded_pack() -> Result<Pack> {
         include_str!("../../../../assets/sprites/default/sitting_couch_sleeping.sprite");
     let holding = include_str!("../../../../assets/sprites/default/holding_coffee.sprite");
     let pantry = include_str!("../../../../assets/sprites/default/pantry.sprite");
+    let pantry_small = include_str!("../../../../assets/sprites/default/pantry_small.sprite");
     let whiteboard = include_str!("../../../../assets/sprites/default/whiteboard.sprite");
     let bookshelf = include_str!("../../../../assets/sprites/default/bookshelf.sprite");
     let tv_stand = include_str!("../../../../assets/sprites/default/tv_stand.sprite");
@@ -128,6 +131,8 @@ fn load_embedded_pack() -> Result<Pack> {
             ("seated_floor.sprite", floor_seat),
             ("seated_floor_sleeping.sprite", floor_slp),
             ("couch.sprite", couch),
+            ("meeting_sofa.sprite", meeting_sofa),
+            ("meeting_screen.sprite", meeting_screen),
             ("coffee.sprite", coffee),
             ("sitting_couch.sprite", sitting),
             ("back_couch.sprite", back_couch),
@@ -135,6 +140,7 @@ fn load_embedded_pack() -> Result<Pack> {
             ("sitting_couch_sleeping.sprite", sleeping_cch),
             ("holding_coffee.sprite", holding),
             ("pantry.sprite", pantry),
+            ("pantry_small.sprite", pantry_small),
             ("whiteboard.sprite", whiteboard),
             ("bookshelf.sprite", bookshelf),
             ("tv_stand.sprite", tv_stand),
