@@ -18,7 +18,7 @@ use ascii_agents_core::state::ActivityState;
 use ascii_agents_core::{AgentId, AgentSlot, Reducer, SceneState, Transport};
 use clap::Parser;
 use image::codecs::gif::{GifEncoder, Repeat};
-use image::{Delay, Frame as GifFrame, Rgb as ImgRgb, Rgba, RgbaImage, RgbImage};
+use image::{Delay, Frame as GifFrame, Rgb as ImgRgb, RgbImage, Rgba, RgbaImage};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use ratatui::Terminal;
@@ -141,8 +141,16 @@ fn main() -> Result<()> {
     }
 
     draw_scene(
-        &mut term, &scene, &pack, now, &mut buf, &mut cache, &mut router, &mut overlay,
-        &mut history, None,
+        &mut term,
+        &scene,
+        &pack,
+        now,
+        &mut buf,
+        &mut cache,
+        &mut router,
+        &mut overlay,
+        &mut history,
+        None,
     )?;
 
     if args.debug_walkable {
@@ -597,7 +605,11 @@ fn save_as_gif(
         let frame = GifFrame::from_parts(rgba, 0, 0, delay);
         encoder.encode_frame(frame)?;
         if (i + 1) % (fps as usize) == 0 {
-            eprint!("\r  encoding: {}/{}s", (i + 1) / fps as usize, duration_secs);
+            eprint!(
+                "\r  encoding: {}/{}s",
+                (i + 1) / fps as usize,
+                duration_secs
+            );
         }
     }
     eprintln!("\r  encoded {frame_count} frames @ {fps}fps");
