@@ -1,28 +1,75 @@
-# ascii-agents
+<p align="center">
+  <img src="docs/images/screenshot.png" alt="ascii-agents coworking office" width="720" />
+</p>
 
-[![CI](https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Rust 1.78+](https://img.shields.io/badge/Rust-1.78%2B-orange.svg)](https://www.rust-lang.org/)
+<h1 align="center">ascii-agents</h1>
 
-A terminal-native, multi-agent pixel-art visualizer for AI coding agents. Each running [Claude Code](https://claude.com/claude-code) session appears as an animated character in a top-down coworking office — typing at desks, wandering to the pantry for coffee, lounging on the couch, or walking through the corridor. All rendered with half-block pixel art at 24-bit color, right in your terminal.
+<p align="center">
+  <strong>Your AI coding agents deserve an office.</strong><br />
+  A terminal-native pixel-art coworking lounge where every Claude Code session is a character — typing at desks, wandering to the pantry, napping on the couch.
+</p>
 
-![Top-down pixel-art coworking office with agents at desks, meeting room, pantry, and elevator](docs/images/screenshot.png)
+<p align="center">
+  <a href="https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml"><img src="https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.78%2B-orange.svg" alt="Rust 1.78+" /></a>
+  <a href="https://github.com/IvanWng97/ascii-agents/releases"><img src="https://img.shields.io/github/v/release/IvanWng97/ascii-agents?label=release&color=green" alt="Release" /></a>
+</p>
 
-> Inspired by [`pablodelucca/pixel-agents`](https://github.com/pablodelucca/pixel-agents) (VS Code webview) and [`rullerzhou-afk/clawd-on-desk`](https://github.com/rullerzhou-afk/clawd-on-desk) (desktop pet). Different niche: pure terminal, no Electron, no browser, runs over SSH.
+---
+
+> Inspired by [`pixel-agents`](https://github.com/pablodelucca/pixel-agents) (VS Code webview) and [`clawd-on-desk`](https://github.com/rullerzhou-afk/clawd-on-desk) (desktop pet). Different niche: pure terminal, no Electron, no browser, runs over SSH.
+
+## Why?
+
+You're running 5 Claude Code sessions across 3 repos. Which one is typing? Which one is stuck waiting for permission? Which one finished 10 minutes ago and you forgot about?
+
+**ascii-agents** gives you a single pane of glass: a pixel-art office where each session is a character. Typing agents sit at desks with glowing monitors. Waiting agents stand up with a `?` bubble. Idle agents doze off — head on desk, z's floating. You see everything at a glance.
+
+## Gallery
+
+<table>
+  <tr>
+    <td align="center"><strong>Cubicle pods</strong><br />Agents typing at desks with per-tool monitor glow<br /><img src="docs/images/gallery-cubicle.png" width="360" /></td>
+    <td align="center"><strong>Meeting room</strong><br />Overflow agents on sofas with laptops<br /><img src="docs/images/gallery-meeting.png" width="240" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Pantry</strong><br />Kitchen counter, bistro table, potted plants<br /><img src="docs/images/gallery-pantry.png" width="240" /></td>
+    <td align="center"><strong>Status footer</strong><br /><code>12 agents · 3 active · 2 waiting · 7 idle · Edit×2 Bash×1</code></td>
+  </tr>
+</table>
 
 ## Features
 
 - **Multi-agent coworking office** — each CC session gets a desk; overflow agents work from meeting-room sofas and floor seats with laptops
-- **Animated characters** — typing, waiting, idle, walking between waypoints with A*-routed pathfinding
-- **Coworking-lounge layout** — city-view windows, meeting room with sofas, pantry with coffee machine, cubicle pods with aisle decor, elevator door animation
-- **Per-agent identity** — deterministic shirt/hair/skin palette from session hash, Wes Anderson + Studio Ghibli outfit presets
+- **Animated characters** — typing (with head-bob), waiting (standing + `?` bubble), sleeping (head-on-desk + z's), walking between waypoints
+- **A\*-routed pathfinding** — idle agents wander to the couch, pantry, standing desk, phone booth; route around furniture via cached A\* on a 4x4 cell grid
+- **Per-agent identity** — deterministic shirt/hair/skin palette from session hash, 16 curated outfits (Wes Anderson + Studio Ghibli inspired)
 - **Per-tool monitor glow** — Edit = blue, Bash = orange, Read = cyan, Agent/Task = purple (scannable at a glance)
+- **Coworking-lounge layout** — city-view windows, meeting room with sofas, pantry with coffee machine, cubicle pods with aisle decor (whiteboards, phone booths, standing desks, TVs), elevator door animation
 - **Status-bar footer** — agent count + state breakdown + active tool tally, adapts to terminal width
-- **Hover tooltips** — mouse over a character to see agent details (cwd, tool, session ID)
-- **Wander state machine** — idle agents leave desks, walk to the couch / pantry / standing desk / phone booth, return via snap-back animation
-- **Dual event sources** — hook socket (real-time) + JSONL transcript watching (fallback), transport-tagged dedup
+- **Hover tooltips** — mouse over a character to see agent details (cwd, active tool, session ID)
+- **Dual event sources** — hook socket (real-time) + JSONL transcript watching (fallback), transport-tagged dedup with 1.5s Active→Idle debounce
 - **Hook-safe** — the shim always exits 0 with a 200ms timeout; a stuck visualizer can never block Claude Code
+- **Half-block pixel art** — 24-bit RGB color via `▀` cells, hand-drawn `.sprite` files, per-agent recolor by RGB substitution
 - **147+ tests** — TDD-shaped, including walkable-mask BFS connectivity across 5 terminal sizes
+
+## Quick start
+
+```bash
+# Install (macOS / Linux)
+brew install IvanWng97/ascii-agents/ascii-agents
+
+# Wire Claude Code's hooks (one-time).
+ascii-agents install-hooks
+
+# Start the office.
+ascii-agents
+```
+
+In another terminal, start a Claude Code session (`claude`). A character walks in from the elevator within a second.
+
+**`q` / Esc / Ctrl-C** quits the TUI. Hooks stay installed — the shim silently no-ops when the TUI isn't running.
 
 ## Install
 
@@ -53,29 +100,7 @@ cd ascii-agents
 cargo build --release
 ```
 
-Two binaries in `target/release/`: `ascii-agents` (TUI) and `ascii-agents-hook` (shim).
-
-## Quick start
-
-```bash
-# Wire Claude Code's hooks (one-time, survives TUI restarts).
-ascii-agents install-hooks
-
-# Start the office.
-ascii-agents
-```
-
-In another terminal, start a Claude Code session (`claude`). A character walks in from the elevator within a second.
-
-**`q` / Esc / Ctrl-C** quits the TUI. Hooks stay installed — the shim silently no-ops when the TUI isn't running.
-
-### Headless / scripting
-
-```bash
-ascii-agents run --headless --projects-root ~/.claude/projects --max-desks 16
-```
-
-Prints a one-line summary every time the scene changes. Useful for CI and observability.
+Two binaries in `target/release/`: **`ascii-agents`** (TUI) and **`ascii-agents-hook`** (shim).
 
 ## How it works
 
@@ -83,7 +108,7 @@ Prints a one-line summary every time the scene changes. Useful for CI and observ
 CC tool call ──► CC fires hook ──► ascii-agents-hook (shim)
                                          │ JSON over Unix socket
                                          ▼
-                                  $XDG_RUNTIME_DIR/ascii-agents.sock
+                                  /tmp/ascii-agents.sock
                                          │
                        HookSocketListener ─────► ┐
                                                  │ (Transport, AgentEvent)
@@ -117,19 +142,9 @@ pub trait Source: Send + 'static {
 
 A future `CodexSource` / `CursorSource` / `GeminiSource` implements the trait, writes tagged events onto the channel, and `SourceManager::with_source()` plugs it in.
 
-## Verify visually
+## Contributing
 
-```bash
-cargo run --release --example snapshot -- /tmp/snap.png
-open /tmp/snap.png
-```
-
-For quadrant crops during sprite iteration:
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python3 scripts/crop-snapshot.py /tmp/snap.png --scale 3
-```
+See [`CLAUDE.md`](CLAUDE.md) for architecture, conventions, and the sprite iteration workflow. PRs welcome — especially new `Source` adapters for other agent CLIs.
 
 ## Acknowledgments
 
