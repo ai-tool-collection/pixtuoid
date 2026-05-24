@@ -159,7 +159,10 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &SceneLayout) -> Option
             let t = (since_exit * 1000 / ENTRY_ANIMATION_MS).min(1000) as u16;
             let frame = ((since_exit / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
             return Some(Pose::Walking {
-                from: desk,
+                from: Point {
+                    x: desk.x + 6,
+                    y: desk.y + 4,
+                },
                 to: target,
                 t_x1000: t,
                 frame,
@@ -171,6 +174,9 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &SceneLayout) -> Option
 
     // Entry animation overrides everything for the first ENTRY_ANIMATION_MS
     // after creation — agent walks in from the door threshold to their desk.
+    // Target is offset (+6, +4) from the desk top-left so the walk ends at
+    // the seated anchor position, not inside the desk obstacle. Without this
+    // the A* router detours around the desk and always approaches from one side.
     if let Some(from) = layout.door_threshold {
         let since_spawn = now
             .duration_since(slot.created_at)
@@ -181,7 +187,10 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &SceneLayout) -> Option
             let frame = ((since_spawn / WALKING_FRAME_MS) as usize) % WALKING_FRAMES;
             return Some(Pose::Walking {
                 from,
-                to: desk,
+                to: Point {
+                    x: desk.x + 6,
+                    y: desk.y + 4,
+                },
                 t_x1000: t,
                 frame,
             });
