@@ -92,19 +92,23 @@ pub async fn run_tui(
                         }
                         MouseEventKind::Down(MouseButton::Left) => {
                             renderer.set_mouse_pos(Some((m.column, m.row)));
-                            let pinned = renderer.pinned_agent();
-                            if pinned.is_some() {
-                                renderer.set_pinned_agent(None);
+                            if m.row <= 1 && m.column >= 1 && m.column < 31 {
+                                let _ = open::that("https://github.com/IvanWng97/ascii-agents");
                             } else {
-                                let snap = scene_rx.borrow().clone();
-                                let hit = renderer::hit_test_from_tui(
-                                    &snap,
-                                    snap.max_desks,
-                                    m.column,
-                                    m.row,
-                                    renderer.buf(),
-                                );
-                                renderer.set_pinned_agent(hit);
+                                let pinned = renderer.pinned_agent();
+                                if pinned.is_some() {
+                                    renderer.set_pinned_agent(None);
+                                } else {
+                                    let snap = scene_rx.borrow().clone();
+                                    let hit = renderer::hit_test_from_tui(
+                                        &snap,
+                                        snap.max_desks,
+                                        m.column,
+                                        m.row,
+                                        renderer.buf(),
+                                    );
+                                    renderer.set_pinned_agent(hit);
+                                }
                             }
                         }
                         _ => {}

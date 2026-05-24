@@ -17,6 +17,7 @@ version = "1"
 "j" = "#1c2a36"   # monitor screen when idle (powered, dark wallpaper)
 "w" = "#ececec"   # whiteboard surface (off-white)
 "t" = "#d68a4a"   # orange tabby cat
+"u" = "#3a2010"   # cat dark (ears, eyes, nose, tail tip)
 "M" = "#3a3a40"   # monitor frame
 "E" = "#6e7280"   # elevator frame — brushed steel; deliberately lighter
                   # than wall (#383846) and darker than chrome (K) so the

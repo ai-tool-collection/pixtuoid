@@ -36,7 +36,7 @@ use anchors::{
 };
 use background::{
     dim_floor_overlay, paint_ceiling_pool, paint_clock, paint_corridor_runner,
-    paint_floor_and_walls, paint_floor_lamp_halo, paint_shadow, time_of_day_look,
+    paint_floor_and_walls, paint_floor_lamp_halo, paint_neon_panel, paint_shadow, time_of_day_look,
 };
 use drawable::{cat_position, paint_drawable, Drawable, DrawableKind};
 use palette::{agent_palette, recolor_frame};
@@ -405,6 +405,13 @@ pub fn render_to_rgb_buffer(
     if let Some(lamp) = layout.floor_lamp {
         paint_floor_lamp_halo(buf, lamp.x, lamp.y, look.darkness * 0.55);
     }
+
+    // Neon sign panel in the wall band — dark bg with glow border.
+    // Text overlay (branding, dots, star link) is rendered by the ratatui
+    // widget pass in renderer.rs::paint_wall_display.
+    let neon_w = 30u16;
+    let neon_h = 8u16;
+    paint_neon_panel(buf, 1, 1, neon_w, neon_h, now);
 
     // Live wall clock painted after the wall (so hands sit on top of it)
     // but before wall decor — the bookshelf etc. shouldn't cover it.

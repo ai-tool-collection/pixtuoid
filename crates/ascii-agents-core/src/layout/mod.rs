@@ -596,13 +596,6 @@ impl SceneLayout {
                 },
             ),
             (
-                WallDecor::BulletinBoard,
-                Point {
-                    x: buf_w * 42 / 100,
-                    y: top_margin.saturating_sub(6),
-                },
-            ),
-            (
                 WallDecor::ExitSign,
                 Point {
                     x: buf_w.saturating_sub(9),

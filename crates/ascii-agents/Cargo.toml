@@ -32,6 +32,7 @@ chrono             = { version = "0.4", default-features = false, features = ["c
 # palette gives Lab-space color blending — perceptually-correct twilight
 # transitions and dim overlays vs naive sRGB linear blend.
 palette            = { version = "0.7", default-features = false, features = ["std"] }
+open               = "5"
 
 [dev-dependencies]
 tempfile = "3"

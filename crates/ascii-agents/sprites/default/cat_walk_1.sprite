@@ -1,6 +1,8 @@
-# 6x4 orange-tabby cat (frame 1). Alternate leg position.
+# 8x6 orange tabby cat (frame 1). Alternate legs, tail raised.
 @frame 0
-. t . . t .
-t t t t t t
-t t t t t t
-t . t . t .
+. u . . . . . .
+u t u . . . u .
+. t e t t t t u
+. w . t t t . .
+. . t . t . . .
+. . . . . . . .

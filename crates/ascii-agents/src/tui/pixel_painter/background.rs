@@ -441,6 +441,47 @@ fn paint_floor_to_ceiling_window(
     }
 }
 
+/// Neon sign panel — dark background with colored glow border, painted in
+/// the wall band. The ratatui text widget renders on top with bright colors.
+pub(super) fn paint_neon_panel(
+    buf: &mut RgbBuffer,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    now: SystemTime,
+) {
+    let elapsed_ms = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let pulse = 0.7 + 0.3 * ((elapsed_ms as f32 / 1200.0).sin() * 0.5 + 0.5);
+
+    const PANEL_BG: Rgb = Rgb(12, 14, 22);
+
+    let frame_color = Rgb(
+        (20.0 + 25.0 * pulse) as u8,
+        (60.0 + 50.0 * pulse) as u8,
+        (80.0 + 50.0 * pulse) as u8,
+    );
+
+    for dy in 0..h {
+        for dx in 0..w {
+            let px = x + dx;
+            let py = y + dy;
+            if px >= buf.width || py >= buf.height {
+                continue;
+            }
+            let on_border = dx == 0 || dx == w - 1 || dy == 0 || dy == h - 1;
+            if on_border {
+                buf.put(px, py, frame_color);
+            } else {
+                buf.put(px, py, PANEL_BG);
+            }
+        }
+    }
+}
+
 /// Live wall clock — reads system local time and renders hour + minute hands.
 /// 5x5 clock face. Hands quantize to 8 cardinal/intercardinal directions
 /// (the most a 5x5 sprite can express).
