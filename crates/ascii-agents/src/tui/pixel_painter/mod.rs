@@ -592,7 +592,19 @@ pub fn render_to_rgb_buffer(
             .iter()
             .find(|a| a.desk_index == i && a.exiting_at.is_none());
         let screen_glow = occupant
-            .filter(|a| matches!(a.state, ActivityState::Active { .. }))
+            .filter(|a| {
+                matches!(a.state, ActivityState::Active { .. })
+                    && now
+                        .duration_since(a.created_at)
+                        .unwrap_or_default()
+                        .as_millis() as u64
+                        >= pose::ENTRY_ANIMATION_MS
+                    && now
+                        .duration_since(a.state_started_at)
+                        .unwrap_or_default()
+                        .as_millis() as u64
+                        >= 900
+            })
             .and_then(|a| palette::tool_glow_tint(a, &theme.tool_glow));
         let session_age_secs = occupant
             .and_then(|a| now.duration_since(a.created_at).ok())
@@ -1209,6 +1221,8 @@ mod tests {
             exiting_at: None,
             pending_idle_at: None,
             desk_index: 0,
+            tool_call_count: 0,
+            active_ms: 0,
         }
     }
 
