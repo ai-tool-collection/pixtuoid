@@ -383,7 +383,16 @@ pub fn render_to_rgb_buffer(
     // so `paint_floor_and_walls` skips drawing a window that would
     // otherwise bleed through behind the elevator frame.
     let door_x_range = layout.door.map(|d| (d.x, d.x + 16));
-    paint_floor_and_walls(buf, buf_w, buf_h, now, &look, top_wall_h, door_x_range);
+    paint_floor_and_walls(
+        buf,
+        buf_w,
+        buf_h,
+        now,
+        &look,
+        top_wall_h,
+        door_x_range,
+        theme,
+    );
 
     // Artificial light pass — at night the floor dims toward navy and
     // ceiling fluorescents + the floor lamp halo paint the visible
@@ -434,12 +443,12 @@ pub fn render_to_rgb_buffer(
     // widget pass in renderer.rs::paint_wall_display.
     let neon_w = 30u16;
     let neon_h = 8u16;
-    paint_neon_panel(buf, 1, 1, neon_w, neon_h, now);
+    paint_neon_panel(buf, 1, 1, neon_w, neon_h, now, theme);
 
     // Live wall clock painted after the wall (so hands sit on top of it)
     // but before wall decor — the bookshelf etc. shouldn't cover it.
     let clock_x = buf_w / 2 - 2;
-    paint_clock(buf, clock_x, 1, now);
+    paint_clock(buf, clock_x, 1, now, theme);
     // Corridor runner — painted over the floor but BEFORE walls/decor
     // so walls cleanly overlap it where they cross.
     if let Some(corridor) = layout.corridor {
@@ -580,7 +589,7 @@ pub fn render_to_rgb_buffer(
             .find(|a| a.desk_index == i && a.exiting_at.is_none());
         let screen_glow = occupant
             .filter(|a| matches!(a.state, ActivityState::Active { .. }))
-            .and_then(palette::tool_glow_tint);
+            .and_then(|a| palette::tool_glow_tint(a, &theme.tool_glow));
         let session_age_secs = occupant
             .and_then(|a| now.duration_since(a.created_at).ok())
             .map(|d| d.as_secs())
@@ -1018,7 +1027,7 @@ pub fn render_to_rgb_buffer(
                         frame_idx: frame,
                         anchor,
                         flip_x: false,
-                        glow_tint: palette::tool_glow_tint(agent),
+                        glow_tint: palette::tool_glow_tint(agent, &theme.tool_glow),
                         sleep_z_seed: None,
                         waiting_bubble: false,
                         walking_dust_frame: None,
@@ -1261,9 +1270,10 @@ mod tests {
             },
         );
         let idle_slot = make_slot(id, ActivityState::Idle);
-        let edit_tint = palette::tool_glow_tint(&edit_slot);
-        let bash_tint = palette::tool_glow_tint(&bash_slot);
-        let idle_tint = palette::tool_glow_tint(&idle_slot);
+        let glow = &crate::tui::theme::NORMAL.tool_glow;
+        let edit_tint = palette::tool_glow_tint(&edit_slot, glow);
+        let bash_tint = palette::tool_glow_tint(&bash_slot, glow);
+        let idle_tint = palette::tool_glow_tint(&idle_slot, glow);
         assert!(edit_tint.is_some(), "Edit should produce glow");
         assert!(bash_tint.is_some(), "Bash should produce glow");
         assert_eq!(idle_tint, None, "Idle should produce no glow");

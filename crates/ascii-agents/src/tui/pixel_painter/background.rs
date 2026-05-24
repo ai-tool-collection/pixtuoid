@@ -12,15 +12,7 @@ use ascii_agents_core::sprite::{Rgb, RgbBuffer};
 
 use super::palette::{blend, lerp_rgb};
 
-// --- Color constants ------------------------------------------------------
-const CARPET_BASE: Rgb = Rgb(150, 110, 72);
-const CARPET_LIGHT: Rgb = Rgb(178, 138, 96);
-const CARPET_DARK: Rgb = Rgb(118, 82, 50);
-const WALL: Rgb = Rgb(56, 56, 70);
-const WALL_TRIM: Rgb = Rgb(80, 80, 100);
-const BASEBOARD: Rgb = Rgb(40, 40, 52);
-
-// --- Floor / walls / windows ---------------------------------------------
+use crate::tui::theme::Theme;
 
 pub(super) fn paint_floor_and_walls(
     buf: &mut RgbBuffer,
@@ -30,12 +22,17 @@ pub(super) fn paint_floor_and_walls(
     look: &TimeOfDayLook,
     top_wall_h: u16,
     skip_window_x_range: Option<(u16, u16)>,
+    theme: &Theme,
 ) {
     const BASEBOARD_H: u16 = 3;
-    const WINDOW_FRAME: Rgb = Rgb(24, 24, 32);
+    let window_frame = theme.surface.window_frame;
+    let carpet_base = theme.surface.carpet_base;
+    let carpet_light = theme.surface.carpet_light;
+    let carpet_dark = theme.surface.carpet_dark;
+    let wall = theme.surface.wall;
+    let wall_trim_color = theme.surface.wall_trim;
+    let baseboard = theme.surface.baseboard;
 
-    // Carpet: warm tan/grey base with deterministic light/dark flecks.
-    // No seams, no grid — softer than the previous plank pattern.
     for y in 0..buf_h {
         for x in 0..buf_w {
             let hash = (x as u32)
@@ -43,16 +40,16 @@ pub(super) fn paint_floor_and_walls(
                 .wrapping_add((y as u32).wrapping_mul(151))
                 ^ ((x as u32).wrapping_mul(11) ^ (y as u32).wrapping_mul(37));
             let color = match hash % 17 {
-                0 | 1 => CARPET_LIGHT,
-                2 | 3 => CARPET_DARK,
-                _ => CARPET_BASE,
+                0 | 1 => carpet_light,
+                2 | 3 => carpet_dark,
+                _ => carpet_base,
             };
             buf.put(x, y, color);
         }
     }
     for y in 0..top_wall_h.min(buf_h) {
         for x in 0..buf_w {
-            buf.put(x, y, WALL);
+            buf.put(x, y, wall);
         }
     }
 
@@ -78,7 +75,7 @@ pub(super) fn paint_floor_and_walls(
                 window_y,
                 WINDOW_W,
                 window_h,
-                WINDOW_FRAME,
+                window_frame,
                 look,
                 idx as u16,
                 now,
@@ -102,14 +99,14 @@ pub(super) fn paint_floor_and_walls(
     let trim_y = top_wall_h.saturating_sub(1);
     if trim_y < buf_h {
         for x in 0..buf_w {
-            buf.put(x, trim_y, WALL_TRIM);
+            buf.put(x, trim_y, wall_trim_color);
         }
     }
 
     let base_y = buf_h.saturating_sub(BASEBOARD_H);
     for y in base_y..buf_h {
         for x in 0..buf_w {
-            buf.put(x, y, BASEBOARD);
+            buf.put(x, y, baseboard);
         }
     }
 }
@@ -450,6 +447,7 @@ pub(super) fn paint_neon_panel(
     w: u16,
     h: u16,
     now: SystemTime,
+    theme: &Theme,
 ) {
     let elapsed_ms = now
         .duration_since(std::time::UNIX_EPOCH)
@@ -457,12 +455,13 @@ pub(super) fn paint_neon_panel(
         .unwrap_or(0);
     let pulse = 0.7 + 0.3 * ((elapsed_ms as f32 / 1200.0).sin() * 0.5 + 0.5);
 
-    const PANEL_BG: Rgb = Rgb(12, 14, 22);
+    let panel_bg = theme.office.neon_panel_bg;
+    let base = theme.office.neon_frame_base;
 
     let frame_color = Rgb(
-        (20.0 + 25.0 * pulse) as u8,
-        (60.0 + 50.0 * pulse) as u8,
-        (80.0 + 50.0 * pulse) as u8,
+        (base.0 as f32 + 25.0 * pulse) as u8,
+        (base.1 as f32 + 50.0 * pulse) as u8,
+        (base.2 as f32 + 50.0 * pulse) as u8,
     );
 
     for dy in 0..h {
@@ -476,7 +475,7 @@ pub(super) fn paint_neon_panel(
             if on_border {
                 buf.put(px, py, frame_color);
             } else {
-                buf.put(px, py, PANEL_BG);
+                buf.put(px, py, panel_bg);
             }
         }
     }
@@ -485,35 +484,35 @@ pub(super) fn paint_neon_panel(
 /// Live wall clock — reads system local time and renders hour + minute hands.
 /// 5x5 clock face. Hands quantize to 8 cardinal/intercardinal directions
 /// (the most a 5x5 sprite can express).
-pub(super) fn paint_clock(buf: &mut RgbBuffer, x: u16, y: u16, now: SystemTime) {
-    const RIM: Rgb = Rgb(200, 200, 210);
-    const FACE: Rgb = Rgb(240, 240, 240);
-    const HAND_HOUR: Rgb = Rgb(20, 20, 25);
-    const HAND_MIN: Rgb = Rgb(60, 60, 80);
+pub(super) fn paint_clock(buf: &mut RgbBuffer, x: u16, y: u16, now: SystemTime, theme: &Theme) {
+    let rim = theme.office.clock_rim;
+    let face = theme.office.clock_face;
+    let hand_color = theme.office.clock_hand;
+    let hand_min = hand_color;
 
     // Face + rim background.
     let bg: &[(u16, u16, Rgb)] = &[
-        (1, 0, RIM),
-        (2, 0, RIM),
-        (3, 0, RIM),
-        (0, 1, RIM),
-        (1, 1, FACE),
-        (2, 1, FACE),
-        (3, 1, FACE),
-        (4, 1, RIM),
-        (0, 2, RIM),
-        (1, 2, FACE),
-        (2, 2, FACE),
-        (3, 2, FACE),
-        (4, 2, RIM),
-        (0, 3, RIM),
-        (1, 3, FACE),
-        (2, 3, FACE),
-        (3, 3, FACE),
-        (4, 3, RIM),
-        (1, 4, RIM),
-        (2, 4, RIM),
-        (3, 4, RIM),
+        (1, 0, rim),
+        (2, 0, rim),
+        (3, 0, rim),
+        (0, 1, rim),
+        (1, 1, face),
+        (2, 1, face),
+        (3, 1, face),
+        (4, 1, rim),
+        (0, 2, rim),
+        (1, 2, face),
+        (2, 2, face),
+        (3, 2, face),
+        (4, 2, rim),
+        (0, 3, rim),
+        (1, 3, face),
+        (2, 3, face),
+        (3, 3, face),
+        (4, 3, rim),
+        (1, 4, rim),
+        (2, 4, rim),
+        (3, 4, rim),
     ];
     for (dx, dy, c) in bg {
         let px = x + dx;
@@ -545,15 +544,15 @@ pub(super) fn paint_clock(buf: &mut RgbBuffer, x: u16, y: u16, now: SystemTime) 
     };
 
     // Center pin (always painted).
-    put(buf, 0, 0, HAND_HOUR);
+    put(buf, 0, 0, hand_color);
 
     // Hour hand: 1 px from center along quantized angle.
     let (hdx, hdy) = octant_offset(hour_turns);
-    put(buf, hdx, hdy, HAND_HOUR);
+    put(buf, hdx, hdy, hand_color);
 
     // Minute hand: 2 px from center (longer than hour hand) along its angle.
     let (mdx, mdy) = octant_offset(min_turns);
-    put(buf, mdx, mdy, HAND_MIN);
+    put(buf, mdx, mdy, hand_min);
     // (Don't put a 2nd pixel if it falls off the 5x5 — the rim handles it.)
 }
 
