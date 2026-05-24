@@ -1130,4 +1130,40 @@ mod tests {
         let crosses = line.matches('×').count();
         assert_eq!(crosses, 4, "expected ≤4 tools in breakdown: {line:?}");
     }
+
+    #[test]
+    fn coffee_machine_hit_test_returns_false_for_tiny_buffer() {
+        let buf = RgbBuffer::filled(10, 10, Rgb(0, 0, 0));
+        assert!(!hit_test_coffee_machine(&buf, 4, 5, 5));
+    }
+
+    #[test]
+    fn coffee_machine_hit_test_returns_false_for_origin() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        assert!(!hit_test_coffee_machine(&buf, 4, 0, 0));
+    }
+
+    #[test]
+    fn coffee_machine_hit_test_returns_true_for_machine_area() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        let pantry_wp = layout
+            .waypoints
+            .iter()
+            .find(|w| w.kind == crate::tui::layout::WaypointKind::Pantry)
+            .expect("pantry");
+        let (cw, ch) = layout.pantry_counter_size;
+        let sprite_x = pantry_wp.pos.x.saturating_sub(cw / 2);
+        let sprite_y = pantry_wp.pos.y.saturating_sub(ch / 2);
+        let mid_x = if cw >= 32 {
+            sprite_x + 14
+        } else {
+            sprite_x + 10
+        };
+        let mid_cell_y = (sprite_y + ch / 2) / 2;
+        assert!(
+            hit_test_coffee_machine(&buf, 4, mid_x, mid_cell_y),
+            "expected hit at coffee machine area ({mid_x}, {mid_cell_y})"
+        );
+    }
 }

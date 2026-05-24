@@ -485,4 +485,27 @@ mod tests {
         let mut router = StubRouter::straight();
         assert!(derive_with_routing(&slot, now, &l, &mut router, &overlay, &mut history).is_none());
     }
+
+    #[test]
+    fn pose_history_record_and_recent() {
+        let id = AgentId::from_transcript_path("/test/a.jsonl");
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let pt = Point { x: 42, y: 99 };
+        let mut history = PoseHistory::new();
+        assert!(history.recent(id, 500, now).is_none());
+        history.record(id, pt, now);
+        assert_eq!(history.recent(id, 500, now), Some(pt));
+    }
+
+    #[test]
+    fn pose_history_recent_expires() {
+        let id = AgentId::from_transcript_path("/test/b.jsonl");
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let pt = Point { x: 10, y: 20 };
+        let mut history = PoseHistory::new();
+        history.record(id, pt, t0);
+        let t1 = t0 + Duration::from_millis(600);
+        assert_eq!(history.recent(id, 500, t1), None);
+        assert_eq!(history.recent(id, 700, t1), Some(pt));
+    }
 }

@@ -69,3 +69,41 @@ impl Cli {
         (level, theme, cmd)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cmd_or_default_returns_run_when_no_subcommand() {
+        let cli = Cli {
+            cmd: None,
+            log_level: "info".into(),
+            theme: "normal".into(),
+        };
+        let (level, theme, cmd) = cli.cmd_or_default();
+        assert_eq!(level, "info");
+        assert_eq!(theme, "normal");
+        assert!(matches!(
+            cmd,
+            Cmd::Run {
+                headless: false,
+                max_desks: 16,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cmd_or_default_preserves_explicit_subcommand() {
+        let cli = Cli {
+            cmd: Some(Cmd::UninstallHooks { settings: None }),
+            log_level: "debug".into(),
+            theme: "cyberpunk".into(),
+        };
+        let (level, theme, cmd) = cli.cmd_or_default();
+        assert_eq!(level, "debug");
+        assert_eq!(theme, "cyberpunk");
+        assert!(matches!(cmd, Cmd::UninstallHooks { .. }));
+    }
+}

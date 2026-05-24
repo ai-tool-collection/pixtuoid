@@ -529,4 +529,77 @@ mod tests {
         let (nx, ny) = result.unwrap();
         assert!(nx <= MAX_SNAP_RADIUS && ny <= MAX_SNAP_RADIUS);
     }
+
+    #[test]
+    fn heuristic_zero_for_same_cell() {
+        assert_eq!(heuristic((5, 5), (5, 5)), 0);
+    }
+
+    #[test]
+    fn heuristic_straight_horizontal() {
+        assert_eq!(heuristic((0, 0), (3, 0)), 30);
+    }
+
+    #[test]
+    fn heuristic_diagonal_uses_octile() {
+        let h = heuristic((0, 0), (2, 2));
+        assert_eq!(h, 28);
+    }
+
+    #[test]
+    fn cell_of_maps_pixel_to_cell() {
+        assert_eq!(cell_of(Point { x: 0, y: 0 }), (0, 0));
+        assert_eq!(cell_of(Point { x: 7, y: 11 }), (1, 2));
+        assert_eq!(cell_of(Point { x: 4, y: 4 }), (1, 1));
+    }
+
+    #[test]
+    fn cell_center_is_midpoint_of_cell() {
+        let c = cell_center(0, 0);
+        assert_eq!(c, Point { x: 2, y: 2 });
+        let c = cell_center(3, 5);
+        assert_eq!(c, Point { x: 14, y: 22 });
+    }
+
+    #[test]
+    fn cell_in_zone_false_when_none() {
+        assert!(!cell_in_zone(None, 5, 5));
+    }
+
+    #[test]
+    fn cell_in_zone_true_when_inside() {
+        let zone = Bounds {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 40,
+        };
+        assert!(cell_in_zone(Some(zone), 2, 2));
+    }
+
+    #[test]
+    fn cell_in_zone_false_when_outside() {
+        let zone = Bounds {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        assert!(!cell_in_zone(Some(zone), 20, 20));
+    }
+
+    #[test]
+    fn cell_walkable_on_open_mask() {
+        let mask = WalkableMask::new_open(100, 100);
+        let overlay = OccupancyOverlay::new();
+        assert!(cell_walkable(&mask, &overlay, 5, 5));
+    }
+
+    #[test]
+    fn cell_walkable_false_when_blocked_by_overlay() {
+        let mask = WalkableMask::new_open(100, 100);
+        let mut overlay = OccupancyOverlay::new();
+        overlay.add(20, 20, CELL_SIZE, CELL_SIZE);
+        assert!(!cell_walkable(&mask, &overlay, 5, 5));
+    }
 }
