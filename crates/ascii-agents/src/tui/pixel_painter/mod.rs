@@ -344,6 +344,7 @@ pub fn render_to_rgb_buffer(
     router: &mut dyn Router,
     overlay: &mut OccupancyOverlay,
     history: &mut pose::PoseHistory,
+    theme: &crate::tui::theme::Theme,
 ) {
     let agents: Vec<_> = scene.agents.values().cloned().collect();
     let buf_w = layout.buf_w;
@@ -1120,7 +1121,7 @@ pub fn render_to_rgb_buffer(
     // → pass-2 layering for waypoint couch / pantry counter).
     drawables.sort_by_key(|d| d.anchor_y);
     for d in &drawables {
-        paint_drawable(d, buf, pack, cache, now);
+        paint_drawable(d, buf, pack, cache, now, theme);
     }
 }
 

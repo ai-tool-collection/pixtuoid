@@ -261,6 +261,7 @@ pub(super) fn paint_drawable(
     pack: &Pack,
     cache: &mut FrameCache,
     now: SystemTime,
+    theme: &crate::tui::theme::Theme,
 ) {
     match &d.kind {
         DrawableKind::DeskCubicle {
@@ -304,7 +305,7 @@ pub(super) fn paint_drawable(
             }
             paint_desk_personalization(buf, *desk, *session_age_secs);
             if let Some(tint) = screen_glow {
-                paint_screen_glow(buf, desk.x, desk.y, now, *tint);
+                paint_screen_glow(buf, desk.x, desk.y, now, *tint, theme);
             }
         }
         DrawableKind::Character {
@@ -319,16 +320,16 @@ pub(super) fn paint_drawable(
             walking_dust_frame,
         } => {
             if let Some(dust_frame) = walking_dust_frame {
-                paint_walking_dust(buf, *anchor, *dust_frame);
+                paint_walking_dust(buf, *anchor, *dust_frame, theme);
             }
             paint_character_at(
                 buf, anim_name, *frame_idx, *anchor, agent, pack, *flip_x, *glow_tint, cache,
             );
             if let Some(seed) = sleep_z_seed {
-                paint_sleep_z(buf, *anchor, now, *seed);
+                paint_sleep_z(buf, *anchor, now, *seed, theme);
             }
             if *waiting_bubble {
-                paint_waiting_bubble(buf, *anchor);
+                paint_waiting_bubble(buf, *anchor, theme);
             }
         }
         DrawableKind::WaypointCouch { pos } => {
@@ -369,6 +370,7 @@ pub(super) fn paint_drawable(
                     y: pos.y.saturating_sub(2),
                 },
                 now,
+                theme,
             );
         }
         DrawableKind::MeetingSofa { pos, mirrored } => {
@@ -479,7 +481,7 @@ pub(super) fn paint_drawable(
             let py = pos.y.saturating_sub(final_frame.height / 2);
             blit_frame(&final_frame, px, py, buf);
             if *anim_name == "cat_sleep" {
-                paint_sleep_z(buf, *pos, now, 0xCAFE);
+                paint_sleep_z(buf, *pos, now, 0xCAFE, theme);
             }
         }
     }
