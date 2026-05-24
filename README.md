@@ -11,13 +11,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml"><img src="https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://codecov.io/gh/IvanWng97/ascii-agents"><img src="https://codecov.io/gh/IvanWng97/ascii-agents/graph/badge.svg" alt="Coverage" /></a>
-  <a href="https://crates.io/crates/ascii-agents"><img src="https://img.shields.io/crates/v/ascii-agents.svg" alt="crates.io" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.78%2B-orange.svg" alt="Rust 1.78+" /></a>
-  <a href="https://github.com/IvanWng97/ascii-agents/releases"><img src="https://img.shields.io/github/v/release/IvanWng97/ascii-agents?label=release&color=green" alt="Release" /></a>
-  <a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Built%20with-Claude%20Code-blueviolet?logo=anthropic" alt="Built with Claude Code" /></a>
+  <a href="https://github.com/IvanWng97/ascii-agents/stargazers"><img src="https://img.shields.io/github/stars/IvanWng97/ascii-agents?style=flat-square" alt="Stars" /></a>
+  <a href="https://github.com/IvanWng97/ascii-agents/releases"><img src="https://img.shields.io/github/v/release/IvanWng97/ascii-agents?label=version&style=flat-square" alt="Version" /></a>
+  <a href="https://crates.io/crates/ascii-agents"><img src="https://img.shields.io/crates/v/ascii-agents.svg?style=flat-square" alt="crates.io" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/IvanWng97/ascii-agents/ci.yml?style=flat-square&label=CI" alt="CI" /></a>
+  <a href="https://codecov.io/gh/IvanWng97/ascii-agents"><img src="https://img.shields.io/codecov/c/github/IvanWng97/ascii-agents?style=flat-square" alt="Coverage" /></a>
+  <a href="https://claude.ai/code"><img src="https://img.shields.io/badge/Built%20with-Claude%20Code-blueviolet?style=flat-square&logo=anthropic" alt="Built with Claude Code" /></a>
 </p>
 
 ---
