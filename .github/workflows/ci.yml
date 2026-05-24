@@ -93,7 +93,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build release binaries + examples
-        run: cargo build --release --workspace --examples
+        run: cargo build --release --workspace --bins --examples
       - name: ascii-agents --help exits 0
         run: ./target/release/ascii-agents --help
       - name: ascii-agents-hook exits 0 with no socket
