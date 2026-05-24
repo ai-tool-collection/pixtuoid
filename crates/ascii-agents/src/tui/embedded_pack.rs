@@ -91,6 +91,8 @@ fn load_embedded_pack() -> Result<Pack> {
     let filing = include_str!("../../sprites/default/filing_cabinet.sprite");
     let cat_0 = include_str!("../../sprites/default/cat_walk_0.sprite");
     let cat_1 = include_str!("../../sprites/default/cat_walk_1.sprite");
+    let cat_sit = include_str!("../../sprites/default/cat_sit.sprite");
+    let cat_sleep = include_str!("../../sprites/default/cat_sleep.sprite");
     let floor_seat = include_str!("../../sprites/default/seated_floor.sprite");
     let floor_slp = include_str!("../../sprites/default/seated_floor_sleeping.sprite");
     let working_couch_0 = include_str!("../../sprites/default/working_couch_0.sprite");
@@ -141,6 +143,8 @@ fn load_embedded_pack() -> Result<Pack> {
             ("filing_cabinet.sprite", filing),
             ("cat_walk_0.sprite", cat_0),
             ("cat_walk_1.sprite", cat_1),
+            ("cat_sit.sprite", cat_sit),
+            ("cat_sleep.sprite", cat_sleep),
             ("seated_floor.sprite", floor_seat),
             ("seated_floor_sleeping.sprite", floor_slp),
             ("working_couch_0.sprite", working_couch_0),

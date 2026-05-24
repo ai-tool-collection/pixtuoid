@@ -1,9 +1,9 @@
-# 8x6 orange tabby cat (frame 0). Side view — pointed ears, dark eye
-# on orange face, white chest, legs apart, tail curled up.
+# 8x6 orange tabby cat (frame 0). Chunky side view — big head with
+# two triangular ears, visible eye, round body, short legs, raised tail.
 @frame 0
-. u . . . . . .
-u t u . . . . u
-. t e t t t t t
-. w . t t t . .
-. t . t . t . .
+. u t u t . . .
+. t t t t . . u
+. t e t t t t u
+. t w t t t t .
+. . t . . t . .
 . . . . . . . .

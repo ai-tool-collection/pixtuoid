@@ -111,6 +111,14 @@ frame_ms = 600
 frames   = ["cat_walk_0.sprite", "cat_walk_1.sprite"]
 frame_ms = 220
 
+[animations.cat_sit]
+frames   = ["cat_sit.sprite"]
+frame_ms = 600
+
+[animations.cat_sleep]
+frames   = ["cat_sleep.sprite"]
+frame_ms = 600
+
 [animations.seated_floor]
 frames   = ["seated_floor.sprite"]
 frame_ms = 600

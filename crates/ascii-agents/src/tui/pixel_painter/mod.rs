@@ -757,24 +757,28 @@ pub fn render_to_rgb_buffer(
         });
     }
 
-    // Collect idle desk x-positions for cat interaction.
-    let idle_desk_xs: Vec<u16> = agents
+    let idle_desk_indices: Vec<usize> = agents
         .iter()
         .filter(|a| {
             matches!(a.state, ActivityState::Idle)
                 && a.desk_index < layout.home_desks.len()
                 && a.exiting_at.is_none()
         })
-        .map(|a| layout.home_desks[a.desk_index].x)
+        .map(|a| a.desk_index)
         .collect();
+    let all_idle = agents
+        .iter()
+        .all(|a| matches!(a.state, ActivityState::Idle));
 
-    // Wandering cat (6×4 centered).
-    if let Some((pos, flip, frame_idx)) = cat_position(layout, pack, now, &idle_desk_xs) {
+    if let Some((pos, flip, anim_name, frame_idx)) =
+        cat_position(layout, pack, now, &idle_desk_indices, all_idle)
+    {
         drawables.push(Drawable {
-            anchor_y: pos.y + 2,
+            anchor_y: pos.y + 3,
             kind: DrawableKind::Cat {
                 pos,
                 flip,
+                anim_name,
                 frame_idx,
             },
         });

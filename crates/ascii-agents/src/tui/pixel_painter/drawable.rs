@@ -133,62 +133,144 @@ pub(super) enum DrawableKind<'a> {
     Cat {
         pos: Point,
         flip: bool,
+        anim_name: &'static str,
         frame_idx: usize,
     },
 }
 
-/// Returns the cat's current position + flip + frame_idx, or `None` if
-/// the corridor isn't available. Pulled out of `paint_wandering_cat` so
-/// the y-sort can place the cat with everything else.
+/// Cat state machine. 45s cycle with desk visits:
+///   0-30%: walk corridor left→right
+///  30-40%: walk from corridor to target desk
+///  40-70%: sit/sleep at target desk
+///  70-80%: walk from desk back to corridor
+///  80-100%: walk corridor right→left
+///
+/// Target desk is deterministic per cycle (hash of cycle number).
+/// If no desks exist, falls back to corridor-only walk.
+/// Returns (position, flip, animation_name, frame_idx).
 pub(super) fn cat_position(
     layout: &Layout,
     pack: &Pack,
     now: SystemTime,
-    idle_desk_xs: &[u16],
-) -> Option<(Point, bool, usize)> {
-    let anim = pack.animation("cat_walk")?;
-    if anim.frames.is_empty() {
-        return None;
-    }
+    idle_desk_indices: &[usize],
+    all_idle: bool,
+) -> Option<(Point, bool, &'static str, usize)> {
+    pack.animation("cat_walk")?;
+    let corridor = layout.corridor?;
+
     let elapsed_ms = now
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    const CYCLE_MS: u64 = 30_000;
+
+    const CYCLE_MS: u64 = 45_000;
+    let cycle_n = elapsed_ms / CYCLE_MS;
     let phase = elapsed_ms % CYCLE_MS;
     let frac = phase as f32 / CYCLE_MS as f32;
-    let (t, flip, paused) = if frac < 0.4 {
-        (frac / 0.4, false, false)
-    } else if frac < 0.5 {
-        (1.0, false, true)
-    } else if frac < 0.9 {
-        (1.0 - (frac - 0.5) / 0.4, true, false)
-    } else {
-        (0.0, true, true)
-    };
-    let corridor = layout.corridor?;
+
     let left_x = corridor.x + corridor.width * 8 / 100;
     let right_x = corridor.x + corridor.width * 92 / 100;
-    let mut cx = left_x + ((right_x - left_x) as f32 * t) as u16;
-    let cy = corridor.y + corridor.height / 2;
+    let corridor_y = corridor.y + corridor.height / 2;
 
-    // Pause near idle agents: if the cat is walking and passes within
-    // 6px of an idle agent's desk, snap to that x and show frame 0 (sitting).
-    if !paused && !idle_desk_xs.is_empty() {
-        for &dx in idle_desk_xs {
-            if cx.abs_diff(dx + 4) < 6 {
-                cx = dx + 4;
-                return Some((Point { x: cx, y: cy }, flip, 0));
-            }
+    let has_target = !layout.home_desks.is_empty();
+    let target_desk_idx = if has_target {
+        let hash = cycle_n.wrapping_mul(0x9e37_79b9) as usize;
+        hash % layout.home_desks.len()
+    } else {
+        0
+    };
+
+    let desk_target = if has_target {
+        let desk = layout.home_desks[target_desk_idx];
+        Point {
+            x: desk.x + DESK_W + 1,
+            y: desk.y + 4,
         }
+    } else {
+        Point {
+            x: (left_x + right_x) / 2,
+            y: corridor_y,
+        }
+    };
+
+    let corridor_mid = Point {
+        x: desk_target.x.clamp(left_x, right_x),
+        y: corridor_y,
+    };
+
+    let is_at_idle_desk = idle_desk_indices.contains(&target_desk_idx);
+
+    if !has_target || frac < 0.30 {
+        let t = if has_target { frac / 0.30 } else { frac / 0.5 };
+        let t = t.min(1.0);
+        let cx = left_x + ((right_x - left_x) as f32 * t) as u16;
+        let frame_idx = (elapsed_ms / 220) as usize % 2;
+        return Some((
+            Point {
+                x: cx,
+                y: corridor_y,
+            },
+            false,
+            "cat_walk",
+            frame_idx,
+        ));
     }
 
-    let frame_idx = if paused {
-        0
-    } else {
-        (elapsed_ms / 220) as usize % anim.frames.len()
-    };
-    Some((Point { x: cx, y: cy }, flip, frame_idx))
+    if frac < 0.40 {
+        let t = (frac - 0.30) / 0.10;
+        let x = corridor_mid.x as f32 + (desk_target.x as f32 - corridor_mid.x as f32) * t;
+        let y = corridor_mid.y as f32 + (desk_target.y as f32 - corridor_mid.y as f32) * t;
+        let frame_idx = (elapsed_ms / 220) as usize % 2;
+        let flip = desk_target.x < corridor_mid.x;
+        return Some((
+            Point {
+                x: x as u16,
+                y: y as u16,
+            },
+            flip,
+            "cat_walk",
+            frame_idx,
+        ));
+    }
+
+    if frac < 0.70 {
+        let anim = if all_idle || is_at_idle_desk {
+            "cat_sleep"
+        } else {
+            "cat_sit"
+        };
+        return Some((desk_target, false, anim, 0));
+    }
+
+    if frac < 0.80 {
+        let t = (frac - 0.70) / 0.10;
+        let x = desk_target.x as f32 + (corridor_mid.x as f32 - desk_target.x as f32) * t;
+        let y = desk_target.y as f32 + (corridor_mid.y as f32 - desk_target.y as f32) * t;
+        let frame_idx = (elapsed_ms / 220) as usize % 2;
+        let flip = corridor_mid.x < desk_target.x;
+        return Some((
+            Point {
+                x: x as u16,
+                y: y as u16,
+            },
+            flip,
+            "cat_walk",
+            frame_idx,
+        ));
+    }
+
+    let t = (frac - 0.80) / 0.20;
+    let cx = right_x - ((right_x - left_x) as f32 * t) as u16;
+    let frame_idx = (elapsed_ms / 220) as usize % 2;
+    Some((
+        Point {
+            x: cx,
+            y: corridor_y,
+        },
+        true,
+        "cat_walk",
+        frame_idx,
+    ))
 }
 
 /// Dispatch one Drawable's paint. Effects attached to characters paint
@@ -399,12 +481,13 @@ pub(super) fn paint_drawable(
         DrawableKind::Cat {
             pos,
             flip,
+            anim_name,
             frame_idx,
         } => {
-            let Some(anim) = pack.animation("cat_walk") else {
+            let Some(anim) = pack.animation(anim_name) else {
                 return;
             };
-            let Some(frame) = anim.frames.get(*frame_idx) else {
+            let Some(frame) = anim.frames.get(*frame_idx).or(anim.frames.first()) else {
                 return;
             };
             let final_frame = if *flip {
@@ -415,6 +498,9 @@ pub(super) fn paint_drawable(
             let px = pos.x.saturating_sub(final_frame.width / 2);
             let py = pos.y.saturating_sub(final_frame.height / 2);
             blit_frame(&final_frame, px, py, buf);
+            if *anim_name == "cat_sleep" {
+                paint_sleep_z(buf, *pos, now, 0xCAFE);
+            }
         }
     }
 }
