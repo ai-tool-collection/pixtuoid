@@ -15,46 +15,29 @@ fn main() -> Result<()> {
         || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&log_level));
 
     // Log routing:
-    //   `run` in TUI mode (headless=false) → file at $ASCII_AGENTS_LOG /
-    //     $XDG_STATE_HOME/ascii-agents/log / ~/.cache/ascii-agents/log,
-    //     because writing ANSI logs to stderr while crossterm raw mode owns
-    //     the screen corrupts the TUI output.
-    //   everything else (install-hooks, uninstall-hooks, --headless) →
-    //     stderr as before.
+    //   TUI mode: silent by default (no file, no stderr). Only logs when
+    //     $ASCII_AGENTS_LOG is set or --log-level is debug/trace.
+    //     Crash reporting is handled separately by the panic hook.
+    //   Non-TUI (install-hooks, uninstall-hooks, --headless): stderr.
     let tui_active = matches!(&cmd, Cmd::Run { headless, .. } if !*headless);
-    let mut log_to_stderr = !tui_active;
-    if tui_active {
-        match log_file_path() {
-            Ok(path) => {
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                match OpenOptions::new().create(true).append(true).open(&path) {
-                    Ok(f) => {
-                        let writer = Arc::new(Mutex::new(f));
-                        tracing_subscriber::fmt()
-                            .with_env_filter(make_filter())
-                            .with_ansi(false)
-                            .with_writer(move || MutexFileWriter(writer.clone()))
-                            .init();
-                        eprintln!("logging to {}", path.display());
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "warn: could not open log file {}: {e}; falling back to stderr",
-                            path.display()
-                        );
-                        log_to_stderr = true;
-                    }
-                }
+    let wants_verbose = matches!(log_level.as_str(), "debug" | "trace");
+    let explicit_log_file = std::env::var("ASCII_AGENTS_LOG").is_ok();
+
+    if tui_active && (wants_verbose || explicit_log_file) {
+        if let Ok(path) = log_file_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
             }
-            Err(e) => {
-                eprintln!("warn: no log file path ({e}); falling back to stderr");
-                log_to_stderr = true;
+            if let Ok(f) = OpenOptions::new().create(true).append(true).open(&path) {
+                let writer = Arc::new(Mutex::new(f));
+                tracing_subscriber::fmt()
+                    .with_env_filter(make_filter())
+                    .with_ansi(false)
+                    .with_writer(move || MutexFileWriter(writer.clone()))
+                    .init();
             }
         }
-    }
-    if log_to_stderr {
+    } else if !tui_active {
         tracing_subscriber::fmt()
             .with_env_filter(make_filter())
             .with_writer(std::io::stderr)
