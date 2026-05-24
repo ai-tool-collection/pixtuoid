@@ -29,8 +29,11 @@ pub(super) fn weather_state(now: SystemTime) -> Weather {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let cycle = secs / 600;
-    let hash = cycle.wrapping_mul(0x517c_c1b7_2722_0a95);
-    match hash % 10 {
+    let mut h = cycle.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^= h >> 31;
+    match h % 10 {
         0..=4 => Weather::Clear,
         5..=6 => Weather::Rain,
         7 => Weather::Storm,
@@ -86,6 +89,7 @@ pub(super) fn paint_floor_and_walls(
     const WINDOW_GAP: u16 = 3;
     let window_y: u16 = 1;
     let window_h: u16 = top_wall_h.saturating_sub(2).max(8);
+    let weather = weather_state(now);
     let mut x = 3u16;
     let mut idx: u32 = 0;
     while x + WINDOW_W + 2 <= buf_w {
@@ -95,7 +99,6 @@ pub(super) fn paint_floor_and_walls(
         let overlaps_door =
             skip_window_x_range.is_some_and(|(dx0, dx1)| x < dx1 && x + WINDOW_W > dx0);
         if !overlaps_door {
-            let weather = weather_state(now);
             paint_floor_to_ceiling_window(
                 buf,
                 x,
@@ -552,8 +555,8 @@ fn paint_floor_to_ceiling_window(
                     }
                 }
             }
-            let flash_phase = elapsed_ms % 4000;
-            if flash_phase < 80 {
+            let flash_phase = elapsed_ms % 6000;
+            if flash_phase < 50 {
                 for dy in 1..h.saturating_sub(1) {
                     for dx in 1..w.saturating_sub(1) {
                         let px = x + dx;
@@ -564,9 +567,9 @@ fn paint_floor_to_ceiling_window(
                                 px,
                                 py,
                                 Rgb(
-                                    blend(cur.0, 255, 0.6),
-                                    blend(cur.1, 255, 0.6),
-                                    blend(cur.2, 255, 0.6),
+                                    blend(cur.0, 255, 0.35),
+                                    blend(cur.1, 255, 0.35),
+                                    blend(cur.2, 255, 0.35),
                                 ),
                             );
                         }
