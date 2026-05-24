@@ -714,11 +714,16 @@ fn paint_hover_tooltip(
     } else {
         "<1m".to_string()
     };
-    let active_pct = (agent.active_ms / 1000)
-        .checked_mul(100)
-        .and_then(|n| n.checked_div(session_secs))
-        .map(|p| p.min(100))
-        .unwrap_or(0);
+    let active_str = if session_secs >= 5 {
+        let pct = (agent.active_ms / 1000)
+            .checked_mul(100)
+            .and_then(|n| n.checked_div(session_secs))
+            .map(|p| p.min(100))
+            .unwrap_or(0);
+        format!("{pct}%")
+    } else {
+        "--%".to_string()
+    };
 
     let mut lines: Vec<ratatui::text::Line> = Vec::new();
     lines.push(ratatui::text::Line::from(Span::styled(
@@ -745,7 +750,7 @@ fn paint_hover_tooltip(
     lines.push(ratatui::text::Line::from(Span::styled(
         format!(
             " ⏱ {} · {} calls · {}% active",
-            duration_str, agent.tool_call_count, active_pct
+            duration_str, agent.tool_call_count, active_str
         ),
         Style::default().fg(to_color(theme.ui.tooltip_dim)),
     )));
