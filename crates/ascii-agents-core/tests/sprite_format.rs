@@ -61,7 +61,7 @@ fn missing_animation_returns_none() {
 
 #[test]
 fn default_pack_loads_with_required_animations() {
-    let pack = load_pack(Path::new("../../assets/sprites/default")).unwrap();
+    let pack = load_pack(Path::new("../ascii-agents/sprites/default")).unwrap();
     for name in &[
         "seated",
         "typing",

@@ -36,12 +36,15 @@ impl HookSocketListener {
     pub async fn run(self, tx: TaggedSender) -> Result<()> {
         let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNS));
         loop {
+            let permit = Arc::clone(&sem)
+                .acquire_owned()
+                .await
+                .expect("semaphore closed");
             match self.listener.accept().await {
                 Ok((stream, _addr)) => {
                     let tx = tx.clone();
-                    let permit = Arc::clone(&sem);
                     tokio::spawn(async move {
-                        let _permit = permit.acquire().await;
+                        let _permit = permit;
                         let _ = tokio::time::timeout(CONN_TIMEOUT, handle_conn(stream, tx)).await;
                     });
                 }

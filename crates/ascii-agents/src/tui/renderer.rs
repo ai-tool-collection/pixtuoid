@@ -60,7 +60,7 @@ impl TickerQueue {
         }
     }
 
-    pub fn update(&mut self, scene: &SceneState, _now: SystemTime) {
+    pub fn update(&mut self, scene: &SceneState) {
         let mut items: Vec<String> = scene
             .agents
             .values()
@@ -68,9 +68,9 @@ impl TickerQueue {
             .filter_map(|a| match &a.state {
                 ActivityState::Active { detail, .. } => {
                     let tool = detail.as_deref().unwrap_or("working");
-                    Some(format!("{}→{}", a.label, tool))
+                    Some(format!("{}: {}", a.label, tool))
                 }
-                ActivityState::Waiting { reason } => Some(format!("{}→?{}", a.label, reason)),
+                ActivityState::Waiting { reason } => Some(format!("{}: ?{}", a.label, reason)),
                 _ => None,
             })
             .collect();
@@ -78,17 +78,17 @@ impl TickerQueue {
         let snapshot = items.join("|");
         if snapshot != self.last_snapshot {
             self.last_snapshot = snapshot;
-            if items.is_empty() {
-                return;
-            }
             for item in &items {
                 self.buffer.push_str(item);
-                self.buffer.push_str("  ·  ");
+                self.buffer.push_str("  |  ");
             }
-            const MAX_BUFFER: usize = 512;
-            if self.buffer.len() > MAX_BUFFER {
-                let trim = self.buffer.len() - MAX_BUFFER;
-                self.buffer.drain(..trim);
+            const MAX_CHARS: usize = 512;
+            let char_count = self.buffer.chars().count();
+            if char_count > MAX_CHARS {
+                let trim_chars = char_count - MAX_CHARS;
+                if let Some((byte_idx, _)) = self.buffer.char_indices().nth(trim_chars) {
+                    self.buffer.drain(..byte_idx);
+                }
             }
         }
     }
@@ -101,7 +101,8 @@ impl TickerQueue {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let offset = (elapsed_ms / 150) as usize % self.buffer.len();
+        let char_count = self.buffer.chars().count();
+        let offset = (elapsed_ms / 150) as usize % char_count;
         let doubled = format!("{}{}", self.buffer, self.buffer);
         doubled.chars().skip(offset).take(width).collect()
     }

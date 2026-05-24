@@ -83,7 +83,7 @@ impl<B: Backend> TuiRenderer<B> {
 
 impl<B: Backend> Renderer for TuiRenderer<B> {
     fn render(&mut self, scene: &SceneState, pack: &Pack, now: SystemTime) -> Result<()> {
-        self.ticker.update(scene, now);
+        self.ticker.update(scene);
         draw_scene(
             &mut self.terminal,
             scene,
