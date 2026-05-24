@@ -38,6 +38,75 @@ use crate::tui::pose;
 /// terminal is too small to render the full scene.
 const BG: Rgb = Rgb(28, 32, 40);
 
+/// Persistent scrolling ticker queue. Messages append to the end and scroll
+/// off the left naturally — like a news crawl. The queue rebuilds only when
+/// the set of active tool details changes, preserving scroll continuity.
+pub struct TickerQueue {
+    buffer: String,
+    last_snapshot: String,
+}
+
+impl Default for TickerQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TickerQueue {
+    pub fn new() -> Self {
+        Self {
+            buffer: "★ Star on GitHub  ·  github.com/IvanWng97/ascii-agents  ·  ".to_string(),
+            last_snapshot: String::new(),
+        }
+    }
+
+    pub fn update(&mut self, scene: &SceneState, _now: SystemTime) {
+        let mut items: Vec<String> = scene
+            .agents
+            .values()
+            .filter(|a| a.exiting_at.is_none())
+            .filter_map(|a| match &a.state {
+                ActivityState::Active { detail, .. } => {
+                    let tool = detail.as_deref().unwrap_or("working");
+                    Some(format!("{}→{}", a.label, tool))
+                }
+                ActivityState::Waiting { reason } => Some(format!("{}→?{}", a.label, reason)),
+                _ => None,
+            })
+            .collect();
+        items.sort();
+        let snapshot = items.join("|");
+        if snapshot != self.last_snapshot {
+            self.last_snapshot = snapshot;
+            if items.is_empty() {
+                return;
+            }
+            for item in &items {
+                self.buffer.push_str(item);
+                self.buffer.push_str("  ·  ");
+            }
+            const MAX_BUFFER: usize = 512;
+            if self.buffer.len() > MAX_BUFFER {
+                let trim = self.buffer.len() - MAX_BUFFER;
+                self.buffer.drain(..trim);
+            }
+        }
+    }
+
+    pub fn visible(&self, width: usize, now: SystemTime) -> String {
+        if self.buffer.is_empty() {
+            return String::new();
+        }
+        let elapsed_ms = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let offset = (elapsed_ms / 150) as usize % self.buffer.len();
+        let doubled = format!("{}{}", self.buffer, self.buffer);
+        doubled.chars().skip(offset).take(width).collect()
+    }
+}
+
 /// Clip a widget rect to fit inside `bounds`. Returns `None` if the rect
 /// falls fully outside or has zero width/height after clipping — callers
 /// use that to skip the render entirely. Prevents ratatui's
@@ -114,6 +183,7 @@ pub fn draw_scene<B: Backend>(
     history: &mut pose::PoseHistory,
     mouse_pos: Option<(u16, u16)>,
     pinned_agent: Option<AgentId>,
+    ticker: &TickerQueue,
 ) -> Result<()> {
     let term_size = term.size()?;
     let full_rect = Rect {
@@ -168,7 +238,7 @@ pub fn draw_scene<B: Backend>(
         paint_label_widgets(
             f, scene, &layout, now, router, overlay, history, scene_rect, hovered,
         );
-        paint_wall_display(f, scene, &layout, scene_rect, now);
+        paint_wall_display(f, scene, &layout, scene_rect, now, ticker);
         let tooltip_agent = hovered.or(pinned_agent);
         if let (Some(agent_id), Some((mx, my))) = (tooltip_agent, mouse_pos) {
             paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect);
@@ -564,6 +634,7 @@ fn paint_wall_display(
     _layout: &Layout,
     scene_rect: Rect,
     now: SystemTime,
+    ticker: &TickerQueue,
 ) {
     use ratatui::style::Modifier;
     use ratatui::text::Line;
@@ -626,49 +697,7 @@ fn paint_wall_display(
     ]);
 
     let ticker_width = 28usize;
-    let active_items: Vec<String> = live
-        .iter()
-        .filter_map(|a| match &a.state {
-            ActivityState::Active { detail, .. } => {
-                let tool = detail.as_deref().unwrap_or("working");
-                Some(format!("{}→{}", a.label, tool))
-            }
-            ActivityState::Waiting { reason } => Some(format!("{}→?{}", a.label, reason)),
-            _ => None,
-        })
-        .collect();
-    let ticker_text = if !active_items.is_empty() {
-        format!("{}  ·  ", active_items.join("  ·  "))
-    } else if !live.is_empty() {
-        let roster: Vec<String> = live
-            .iter()
-            .map(|a| {
-                format!(
-                    "{}@{}",
-                    a.label,
-                    a.cwd.file_name().and_then(|f| f.to_str()).unwrap_or("~")
-                )
-            })
-            .collect();
-        format!("{}  ·  ", roster.join("  ·  "))
-    } else {
-        "★ Star on GitHub  ·  github.com/IvanWng97/ascii-agents  ·  ".to_string()
-    };
-    let elapsed_ms = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let scroll_offset = if ticker_text.len() > ticker_width {
-        (elapsed_ms / 150) as usize % ticker_text.len()
-    } else {
-        0
-    };
-    let doubled = format!("{ticker_text}{ticker_text}");
-    let visible: String = doubled
-        .chars()
-        .skip(scroll_offset)
-        .take(ticker_width)
-        .collect();
+    let visible = ticker.visible(ticker_width, now);
     let ticker_line = Line::from(Span::styled(
         visible,
         Style::default().fg(Color::Rgb(180, 220, 255)),

@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use ascii_agents::tui::embedded_pack::load_sprite_pack;
 use ascii_agents::tui::frame_cache::FrameCache;
-use ascii_agents::tui::renderer::draw_scene;
+use ascii_agents::tui::renderer::{draw_scene, TickerQueue};
 use ascii_agents_core::source::jsonl::JsonlWatcher;
 use ascii_agents_core::source::{Activity, AgentEvent};
 use ascii_agents_core::sprite::{Rgb, RgbBuffer};
@@ -118,6 +118,7 @@ fn main() -> Result<()> {
     let mut router = ascii_agents::tui::pathfind::AStarRouter::new();
     let mut overlay = ascii_agents_core::walkable::OccupancyOverlay::new();
     let mut history = ascii_agents::tui::pose::PoseHistory::new();
+    let ticker = TickerQueue::new();
 
     if args.gif {
         save_as_gif(
@@ -152,6 +153,7 @@ fn main() -> Result<()> {
         &mut history,
         None,
         None,
+        &ticker,
     )?;
 
     if args.debug_walkable {
@@ -562,6 +564,7 @@ fn save_as_gif(
     let frame_ms = 1000 / fps.max(1);
     let img_w = cols as u32 * CELL_W;
     let img_h = rows as u32 * CELL_H;
+    let ticker = TickerQueue::new();
 
     let file = std::fs::File::create(path)?;
     let mut encoder = GifEncoder::new(file);
@@ -570,7 +573,7 @@ fn save_as_gif(
     for i in 0..frame_count {
         let now = start_now + Duration::from_millis(i as u64 * frame_ms);
         draw_scene(
-            term, scene, pack, now, buf, cache, router, overlay, history, None, None,
+            term, scene, pack, now, buf, cache, router, overlay, history, None, None, &ticker,
         )?;
 
         let term_buf = term.backend().buffer();

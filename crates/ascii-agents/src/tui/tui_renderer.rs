@@ -33,6 +33,7 @@ pub struct TuiRenderer<B: Backend> {
     history: PoseHistory,
     mouse_pos: Option<(u16, u16)>,
     pinned_agent: Option<ascii_agents_core::AgentId>,
+    pub ticker: crate::tui::renderer::TickerQueue,
 }
 
 impl<B: Backend> TuiRenderer<B> {
@@ -46,6 +47,7 @@ impl<B: Backend> TuiRenderer<B> {
             history: PoseHistory::new(),
             mouse_pos: None,
             pinned_agent: None,
+            ticker: crate::tui::renderer::TickerQueue::new(),
         }
     }
 
@@ -81,6 +83,7 @@ impl<B: Backend> TuiRenderer<B> {
 
 impl<B: Backend> Renderer for TuiRenderer<B> {
     fn render(&mut self, scene: &SceneState, pack: &Pack, now: SystemTime) -> Result<()> {
+        self.ticker.update(scene, now);
         draw_scene(
             &mut self.terminal,
             scene,
@@ -93,6 +96,7 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             &mut self.history,
             self.mouse_pos,
             self.pinned_agent,
+            &self.ticker,
         )
     }
 }

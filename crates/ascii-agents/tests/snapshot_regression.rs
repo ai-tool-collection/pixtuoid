@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime};
 
 use ascii_agents::tui::embedded_pack::load_sprite_pack;
 use ascii_agents::tui::frame_cache::FrameCache;
-use ascii_agents::tui::renderer::draw_scene;
+use ascii_agents::tui::renderer::{draw_scene, TickerQueue};
 use ascii_agents_core::source::Activity;
 use ascii_agents_core::sprite::{Rgb, RgbBuffer};
 use ascii_agents_core::state::ActivityState;
@@ -92,6 +92,7 @@ fn render_pixel_hash(now: SystemTime) -> u64 {
         &mut ascii_agents::tui::pose::PoseHistory::new(),
         None,
         None,
+        &TickerQueue::new(),
     )
     .expect("render");
 
@@ -159,6 +160,7 @@ fn render_produces_distinct_wall_band_and_floor_regions() {
         &mut ascii_agents::tui::pose::PoseHistory::new(),
         None,
         None,
+        &TickerQueue::new(),
     )
     .expect("render");
 
@@ -240,6 +242,7 @@ fn render_changes_when_an_agent_state_changes() {
         &mut ascii_agents::tui::pose::PoseHistory::new(),
         None,
         None,
+        &TickerQueue::new(),
     )
     .expect("render");
     let mut hasher = DefaultHasher::new();

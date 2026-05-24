@@ -184,7 +184,7 @@ pub(super) fn cat_position(
         let desk = layout.home_desks[target_desk_idx];
         Point {
             x: desk.x + DESK_W + 1,
-            y: desk.y + 4,
+            y: desk.y + DESK_H + 2,
         }
     } else {
         Point {
@@ -200,10 +200,11 @@ pub(super) fn cat_position(
 
     let is_at_idle_desk = idle_desk_indices.contains(&target_desk_idx);
 
-    if !has_target || frac < 0.30 {
-        let t = if has_target { frac / 0.30 } else { frac / 0.5 };
+    // Phase 1: walk corridor left → corridor_mid (directly below target desk)
+    if !has_target || frac < 0.25 {
+        let t = if has_target { frac / 0.25 } else { frac / 0.5 };
         let t = t.min(1.0);
-        let cx = left_x + ((right_x - left_x) as f32 * t) as u16;
+        let cx = left_x + ((corridor_mid.x - left_x) as f32 * t) as u16;
         let frame_idx = (elapsed_ms / 220) as usize % 2;
         return Some((
             Point {
@@ -216,24 +217,25 @@ pub(super) fn cat_position(
         ));
     }
 
-    if frac < 0.40 {
-        let t = (frac - 0.30) / 0.10;
+    // Phase 2: walk from corridor_mid up to desk
+    if frac < 0.35 {
+        let t = (frac - 0.25) / 0.10;
         let x = corridor_mid.x as f32 + (desk_target.x as f32 - corridor_mid.x as f32) * t;
-        let y = corridor_mid.y as f32 + (desk_target.y as f32 - corridor_mid.y as f32) * t;
+        let y = corridor_y as f32 + (desk_target.y as f32 - corridor_y as f32) * t;
         let frame_idx = (elapsed_ms / 220) as usize % 2;
-        let flip = desk_target.x < corridor_mid.x;
         return Some((
             Point {
                 x: x as u16,
                 y: y as u16,
             },
-            flip,
+            false,
             "cat_walk",
             frame_idx,
         ));
     }
 
-    if frac < 0.70 {
+    // Phase 3: sit/sleep at desk
+    if frac < 0.65 {
         let anim = if all_idle || is_at_idle_desk {
             "cat_sleep"
         } else {
@@ -242,25 +244,26 @@ pub(super) fn cat_position(
         return Some((desk_target, false, anim, 0));
     }
 
-    if frac < 0.80 {
-        let t = (frac - 0.70) / 0.10;
+    // Phase 4: walk from desk back to corridor_mid
+    if frac < 0.75 {
+        let t = (frac - 0.65) / 0.10;
         let x = desk_target.x as f32 + (corridor_mid.x as f32 - desk_target.x as f32) * t;
-        let y = desk_target.y as f32 + (corridor_mid.y as f32 - desk_target.y as f32) * t;
+        let y = desk_target.y as f32 + (corridor_y as f32 - desk_target.y as f32) * t;
         let frame_idx = (elapsed_ms / 220) as usize % 2;
-        let flip = corridor_mid.x < desk_target.x;
         return Some((
             Point {
                 x: x as u16,
                 y: y as u16,
             },
-            flip,
+            true,
             "cat_walk",
             frame_idx,
         ));
     }
 
-    let t = (frac - 0.80) / 0.20;
-    let cx = right_x - ((right_x - left_x) as f32 * t) as u16;
+    // Phase 5: walk corridor_mid → left (return)
+    let t = (frac - 0.75) / 0.25;
+    let cx = corridor_mid.x - ((corridor_mid.x - left_x) as f32 * t) as u16;
     let frame_idx = (elapsed_ms / 220) as usize % 2;
     Some((
         Point {
