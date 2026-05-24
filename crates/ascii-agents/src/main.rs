@@ -9,6 +9,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
+    install_crash_hook();
     let (log_level, cmd) = Cli::parse().cmd_or_default();
     let make_filter =
         || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&log_level));
@@ -74,6 +75,57 @@ fn main() -> Result<()> {
         } => install::install(hook_path, settings),
         Cmd::UninstallHooks { settings } => install::uninstall(settings),
     }
+}
+
+fn install_crash_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stderr(),
+            crossterm::event::DisableMouseCapture,
+            crossterm::terminal::LeaveAlternateScreen
+        );
+
+        let crash_path = crash_log_path();
+        let mut report = String::new();
+        report.push_str(&format!(
+            "ascii-agents crashed at {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        ));
+        report.push_str(&format!("{info}\n"));
+        let bt = std::backtrace::Backtrace::force_capture();
+        report.push_str(&format!("{bt}\n"));
+
+        if let Some(parent) = crash_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&crash_path)
+        {
+            use std::io::Write;
+            let _ = f.write_all(report.as_bytes());
+        }
+
+        eprintln!(
+            "\nascii-agents crashed. Report saved to: {}",
+            crash_path.display()
+        );
+        eprintln!("Please report at: https://github.com/IvanWng97/ascii-agents/issues\n");
+        default_hook(info);
+    }));
+}
+
+fn crash_log_path() -> PathBuf {
+    if let Ok(state) = std::env::var("XDG_STATE_HOME") {
+        return PathBuf::from(format!("{state}/ascii-agents/crash.log"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(format!("{home}/.cache/ascii-agents/crash.log"));
+    }
+    PathBuf::from("/tmp/ascii-agents-crash.log")
 }
 
 fn log_file_path() -> Result<PathBuf> {
