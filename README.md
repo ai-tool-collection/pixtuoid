@@ -12,6 +12,8 @@
 
 <p align="center">
   <a href="https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml"><img src="https://github.com/IvanWng97/ascii-agents/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://codecov.io/gh/IvanWng97/ascii-agents"><img src="https://codecov.io/gh/IvanWng97/ascii-agents/graph/badge.svg" alt="Coverage" /></a>
+  <a href="https://crates.io/crates/ascii-agents"><img src="https://img.shields.io/crates/v/ascii-agents.svg" alt="crates.io" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.78%2B-orange.svg" alt="Rust 1.78+" /></a>
   <a href="https://github.com/IvanWng97/ascii-agents/releases"><img src="https://img.shields.io/github/v/release/IvanWng97/ascii-agents?label=release&color=green" alt="Release" /></a>
@@ -97,6 +99,12 @@ Download from [GitHub Releases](https://github.com/IvanWng97/ascii-agents/releas
 | macOS (Intel) | `ascii-agents-v*-x86_64-apple-darwin.tar.gz` |
 | Linux (x86_64, static) | `ascii-agents-v*-x86_64-unknown-linux-musl.tar.gz` |
 | Linux (ARM64) | `ascii-agents-v*-aarch64-unknown-linux-gnu.tar.gz` |
+
+### Cargo (crates.io)
+
+```bash
+cargo install ascii-agents
+```
 
 ### From source
 

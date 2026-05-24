@@ -16,15 +16,13 @@ name = "ascii-agents"
 path = "src/main.rs"
 
 [dependencies]
-ascii-agents-core  = { path = "../ascii-agents-core", features = ["test-renderer"] }
+ascii-agents-core  = { path = "../ascii-agents-core", version = "0.1.0", features = ["test-renderer"] }
 tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net", "fs", "io-util"] }
 ratatui            = { workspace = true }
 crossterm          = { workspace = true }
 clap               = { workspace = true }
-serde              = { workspace = true }
 serde_json         = { workspace = true }
 anyhow             = { workspace = true }
-thiserror          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 fs2                = { workspace = true }

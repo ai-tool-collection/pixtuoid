@@ -1,0 +1,29 @@
+[advisories]
+ignore = [
+    # paste is unmaintained but pulled transitively by ratatui — not actionable
+    # until ratatui migrates to pastey. Track: https://github.com/ratatui/ratatui/issues
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
