@@ -878,4 +878,50 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn walkable_mask_connected_across_floor_seeds() {
+        use std::collections::VecDeque;
+
+        let (buf_w, buf_h, num_agents) = (160u16, 100u16, 12usize);
+        for seed in 0..5u64 {
+            let l = SceneLayout::compute_with_seed(buf_w, buf_h, num_agents, seed)
+                .expect("layout fits");
+            let w = l.buf_w as usize;
+            let h = l.buf_h as usize;
+            let start = l.door_threshold.expect("door_threshold");
+            assert!(l.is_walkable(start.x, start.y));
+
+            let mut visited = vec![false; w * h];
+            visited[(start.y as usize) * w + (start.x as usize)] = true;
+            let mut queue = VecDeque::new();
+            queue.push_back((start.x, start.y));
+            let mut reachable = 1usize;
+            while let Some((cx, cy)) = queue.pop_front() {
+                for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = cx as i32 + dx;
+                    let ny = cy as i32 + dy;
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let (nx, ny) = (nx as u16, ny as u16);
+                    let idx = (ny as usize) * w + (nx as usize);
+                    if !visited[idx] && l.is_walkable(nx, ny) {
+                        visited[idx] = true;
+                        reachable += 1;
+                        queue.push_back((nx, ny));
+                    }
+                }
+            }
+            let walkable_total = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .filter(|&(x, y)| l.is_walkable(x as u16, y as u16))
+                .count();
+            assert_eq!(
+                reachable, walkable_total,
+                "seed={seed}: {buf_w}x{buf_h}: {} disconnected pixels",
+                walkable_total - reachable
+            );
+        }
+    }
 }
