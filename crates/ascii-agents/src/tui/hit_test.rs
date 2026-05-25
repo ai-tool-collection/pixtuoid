@@ -92,21 +92,7 @@ pub fn hit_test_from_tui(
 /// Hit-test whether the mouse is over the pantry coffee machine.
 /// Returns true if `(mx, my)` (terminal cell coords) falls on the coffee
 /// machine section of the pantry counter sprite.
-pub fn hit_test_coffee_machine(
-    buf: &RgbBuffer,
-    max_desks: usize,
-    mx: u16,
-    my: u16,
-    floor_seed: u64,
-) -> bool {
-    let buf_w = buf.width;
-    let buf_h = buf.height;
-    if buf_w < 20 || buf_h < 24 {
-        return false;
-    }
-    let Some(layout) = Layout::compute_with_seed(buf_w, buf_h, max_desks, floor_seed) else {
-        return false;
-    };
+pub fn hit_test_coffee_machine(layout: &Layout, mx: u16, my: u16) -> bool {
     let pantry_wp = layout
         .waypoints
         .iter()
@@ -132,16 +118,8 @@ pub fn hit_test_coffee_machine(
 /// if `(mx, my)` (terminal cell coords) falls on any known item.
 /// The coffee machine is handled separately for its click-to-open
 /// behavior — this function covers the remaining decorations.
-pub fn hit_test_furniture(
-    buf: &RgbBuffer,
-    max_desks: usize,
-    mx: u16,
-    my: u16,
-    floor_seed: u64,
-) -> Option<&'static str> {
+pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static str> {
     use crate::tui::layout::{PlantKind, PodDecor, WallDecor, WaypointKind, DESK_H, DESK_W};
-
-    let layout = Layout::compute_with_seed(buf.width, buf.height, max_desks, floor_seed)?;
     let px = mx;
     let py = my * 2;
 
@@ -322,23 +300,15 @@ pub fn hit_test_furniture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ascii_agents_core::sprite::Rgb;
-
-    #[test]
-    fn coffee_machine_hit_test_returns_false_for_tiny_buffer() {
-        let buf = RgbBuffer::filled(10, 10, Rgb(0, 0, 0));
-        assert!(!hit_test_coffee_machine(&buf, 4, 5, 5, 0));
-    }
 
     #[test]
     fn coffee_machine_hit_test_returns_false_for_origin() {
-        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
-        assert!(!hit_test_coffee_machine(&buf, 4, 0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        assert!(!hit_test_coffee_machine(&layout, 0, 0));
     }
 
     #[test]
     fn coffee_machine_hit_test_returns_true_for_machine_area() {
-        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
         let layout = Layout::compute(160, 200, 4).expect("layout");
         let pantry_wp = layout
             .waypoints
@@ -355,66 +325,59 @@ mod tests {
         };
         let mid_cell_y = (sprite_y + ch / 2) / 2;
         assert!(
-            hit_test_coffee_machine(&buf, 4, mid_x, mid_cell_y, 0),
+            hit_test_coffee_machine(&layout, mid_x, mid_cell_y),
             "expected hit at coffee machine area ({mid_x}, {mid_cell_y})"
         );
     }
 
     #[test]
     fn furniture_hit_test_returns_none_for_empty_space() {
-        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
-        assert_eq!(hit_test_furniture(&buf, 4, 80, 50, 0), None);
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        assert_eq!(hit_test_furniture(&layout, 80, 50), None);
     }
 
     #[test]
     fn furniture_hit_test_finds_desk() {
-        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
         let layout = Layout::compute(160, 200, 4).expect("layout");
         let desk = layout.home_desks.first().expect("desk");
         let cell_y = (desk.y + 2) / 2;
         assert_eq!(
-            hit_test_furniture(&buf, 4, desk.x + 2, cell_y, 0),
+            hit_test_furniture(&layout, desk.x + 2, cell_y),
             Some("Desk")
         );
     }
 
     #[test]
     fn furniture_hit_test_finds_elevator() {
-        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
         let layout = Layout::compute(160, 200, 4).expect("layout");
         let door = layout.door.expect("door");
         let cell_y = (door.y + 7) / 2;
         assert_eq!(
-            hit_test_furniture(&buf, 4, door.x + 8, cell_y, 0),
+            hit_test_furniture(&layout, door.x + 8, cell_y),
             Some("Elevator")
         );
     }
 
     #[test]
     fn furniture_hit_test_finds_meeting_table() {
-        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
         let layout = Layout::compute(160, 200, 4).expect("layout");
         let table = layout.meeting_tables.first().expect("table");
         let cell_y = table.y / 2;
         assert_eq!(
-            hit_test_furniture(&buf, 4, table.x, cell_y, 0),
+            hit_test_furniture(&layout, table.x, cell_y),
             Some("Meeting Table")
         );
     }
 
     #[test]
     fn furniture_hit_test_respects_floor_seed() {
-        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
-        // Seed 1 = open plan (no meeting room)
-        let layout = Layout::compute_with_seed(160, 200, 4, 1).expect("layout");
-        assert!(layout.meeting_tables.is_empty());
-        // No meeting table at seed=1, so hitting the same coords should not
-        // return "Meeting Table"
+        let layout1 = Layout::compute_with_seed(160, 200, 4, 1).expect("layout");
+        assert!(layout1.meeting_tables.is_empty());
         let layout0 = Layout::compute(160, 200, 4).expect("layout");
         if let Some(table) = layout0.meeting_tables.first() {
             let cell_y = table.y / 2;
             assert_ne!(
-                hit_test_furniture(&buf, 4, table.x, cell_y, 1),
+                hit_test_furniture(&layout1, table.x, cell_y),
                 Some("Meeting Table"),
             );
         }

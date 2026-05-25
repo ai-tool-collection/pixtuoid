@@ -238,11 +238,9 @@ pub fn draw_scene<B: Backend>(
         }
         if tooltip_agent.is_none() && pinned_agent.is_none() {
             if let Some((mx, my)) = mouse_pos {
-                if hit_test_coffee_machine(buf, scene.max_desks, mx, my, floor.floor_seed) {
+                if hit_test_coffee_machine(&layout, mx, my) {
                     paint_coffee_tooltip(f, mx, my, scene_rect, theme);
-                } else if let Some(label) =
-                    hit_test_furniture(buf, scene.max_desks, mx, my, floor.floor_seed)
-                {
+                } else if let Some(label) = hit_test_furniture(&layout, mx, my) {
                     paint_furniture_tooltip(f, label, mx, my, scene_rect, theme);
                 }
             }

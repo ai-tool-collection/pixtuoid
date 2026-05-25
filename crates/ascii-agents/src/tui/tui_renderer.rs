@@ -37,6 +37,7 @@ pub struct TuiRenderer<B: Backend> {
     pub ticker: crate::tui::renderer::TickerQueue,
     theme: &'static crate::tui::theme::Theme,
     theme_picker: Option<usize>,
+    cached_layout: Option<Layout>,
 }
 
 impl<B: Backend> TuiRenderer<B> {
@@ -52,11 +53,16 @@ impl<B: Backend> TuiRenderer<B> {
             ticker: crate::tui::renderer::TickerQueue::new(),
             theme,
             theme_picker: None,
+            cached_layout: None,
         }
     }
 
     pub fn current_floor(&self) -> usize {
         self.current_floor
+    }
+
+    pub fn cached_layout(&self) -> Option<&Layout> {
+        self.cached_layout.as_ref()
     }
 
     pub fn current_floor_seed(&self) -> u64 {
@@ -334,6 +340,17 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             floor_info,
             floor: FloorMeta::for_floor(self.current_floor, nf),
         };
-        draw_scene(&mut self.terminal, &floor_scene, pack, now, &mut draw_ctx)
+        let result = draw_scene(&mut self.terminal, &floor_scene, pack, now, &mut draw_ctx);
+
+        let buf = &self.floor_bufs[self.current_floor];
+        let floor_meta = FloorMeta::for_floor(self.current_floor, nf);
+        self.cached_layout = Layout::compute_with_seed(
+            buf.width,
+            buf.height,
+            floor_scene.max_desks,
+            floor_meta.floor_seed,
+        );
+
+        result
     }
 }
