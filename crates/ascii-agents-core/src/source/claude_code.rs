@@ -137,17 +137,18 @@ pub fn decode_cc_line(transcript_path: &str, source: &str, v: Value) -> Result<V
     Ok(out)
 }
 
-/// CC label: subagent paths → "subagent", otherwise cwd basename.
+/// CC label: subagent paths → "subagent", otherwise "cc·" + cwd basename.
 pub fn cc_derive_label(path: &Path, _source: &str, cwd: &Path) -> String {
     let is_subagent = path.to_string_lossy().contains("subagents");
     if is_subagent {
         "subagent".to_string()
     } else if cwd != Path::new("") && cwd != Path::new("/") {
-        cwd.file_name()
+        let base = cwd
+            .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("claude-code")
-            .to_string()
+            .unwrap_or("cc");
+        format!("cc·{base}")
     } else {
-        "claude-code".to_string()
+        "cc".to_string()
     }
 }

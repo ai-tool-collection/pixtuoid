@@ -108,12 +108,13 @@ pub fn decode_ag_line(transcript_path: &str, source: &str, v: Value) -> Result<V
 fn derive_ag_label(path: &Path, _source: &str, cwd: &Path) -> String {
     if cwd != Path::new("") && cwd != Path::new("/") {
         if let Some(name) = cwd.file_name().and_then(|n| n.to_str()) {
-            return name.to_string();
+            return format!("ag·{name}");
         }
     }
-    path.parent()
+    let base = path
+        .parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
-        .unwrap_or("antigravity")
-        .to_string()
+        .unwrap_or("ag");
+    format!("ag·{base}")
 }
