@@ -436,20 +436,20 @@ pub(super) fn flush_buffer_to_term_at_offset(
     f: &mut ratatui::Frame<'_>,
     buf: &RgbBuffer,
     scene_rect: Rect,
-    x_offset: i32,
+    y_offset: i32,
 ) {
     let term_buf = f.buffer_mut();
     let w = buf.width as usize;
     let cell_rows = (buf.height / 2) as usize;
     for cy in 0..cell_rows {
+        let target_y = cy as i32 + y_offset;
+        if target_y < 0 || target_y >= scene_rect.height as i32 {
+            continue;
+        }
         for cx in 0..(buf.width as usize) {
-            let target_x = cx as i32 + x_offset;
-            if target_x < 0 || target_x >= scene_rect.width as i32 {
-                continue;
-            }
-            let x = scene_rect.x + target_x as u16;
-            let y = scene_rect.y + cy as u16;
-            if y >= scene_rect.y + scene_rect.height {
+            let x = scene_rect.x + cx as u16;
+            let y = scene_rect.y + target_y as u16;
+            if x >= scene_rect.x + scene_rect.width {
                 continue;
             }
             let py_top = cy * 2;

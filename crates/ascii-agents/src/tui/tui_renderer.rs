@@ -252,18 +252,17 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
                 );
             }
 
-            // Compute x-offsets for the slide.
-            let width = scene_rect.width as f32;
+            // Compute y-offsets for vertical slide + 1-row black divider.
+            let height = scene_rect.height as f32;
+            let divider_h = 1i32;
             let (from_offset, to_offset) = if going_down {
-                // Outgoing slides left, incoming from right.
-                let from_x = -(t * width) as i32;
-                let to_x = (width - t * width) as i32;
-                (from_x, to_x)
+                let from_y = -(t * height) as i32;
+                let to_y = (height - t * height) as i32 + divider_h;
+                (from_y, to_y)
             } else {
-                // Outgoing slides right, incoming from left.
-                let from_x = (t * width) as i32;
-                let to_x = -((width - t * width) as i32);
-                (from_x, to_x)
+                let from_y = (t * height) as i32;
+                let to_y = -((height - t * height) as i32) - divider_h;
+                (from_y, to_y)
             };
 
             let theme = self.theme;
