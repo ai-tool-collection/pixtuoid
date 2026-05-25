@@ -315,12 +315,17 @@ impl Reducer {
                 .duration_since(pending)
                 .is_ok_and(|d| d >= ACTIVE_GRACE_WINDOW)
             {
-                if matches!(slot.state, ActivityState::Active { .. }) {
-                    let elapsed = pending
-                        .duration_since(slot.state_started_at)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    slot.active_ms += elapsed;
+                if matches!(
+                    slot.state,
+                    ActivityState::Active { .. } | ActivityState::Waiting { .. }
+                ) {
+                    if matches!(slot.state, ActivityState::Active { .. }) {
+                        let elapsed = pending
+                            .duration_since(slot.state_started_at)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        slot.active_ms += elapsed;
+                    }
                     slot.state = ActivityState::Idle;
                     slot.state_started_at = now;
                 }

@@ -422,7 +422,8 @@ async fn session_ended_last(path: &Path) -> bool {
         if line.windows(13).any(|w| w == b"session_start") {
             last_is_end = false;
         }
-        if line.windows(11).any(|w| w == b"session_end") || line.windows(10).any(|w| w == b"SessionEnd")
+        if line.windows(11).any(|w| w == b"session_end")
+            || line.windows(10).any(|w| w == b"SessionEnd")
         {
             last_is_end = true;
         }

@@ -279,3 +279,42 @@ fn ag_uses_source_namespaced_agent_id() {
         "different sources must produce different AgentIds"
     );
 }
+
+#[test]
+fn ag_ask_permission_and_question_emits_waiting() {
+    let transcript = "/Users/me/.gemini/antigravity-cli/brain/sess/transcript.jsonl";
+
+    // ask_permission tool call
+    let v_perm = serde_json::json!({
+        "step_index": 4,
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [
+            { "name": "ask_permission", "args": { "Reason": "read a file" } }
+        ]
+    });
+    let events_perm = antigravity::decode_ag_line(transcript, "antigravity", v_perm).unwrap();
+    assert_eq!(events_perm.len(), 1);
+    match &events_perm[0] {
+        AgentEvent::Waiting { reason, .. } => {
+            assert_eq!(reason, "asking permission");
+        }
+        other => panic!("expected Waiting, got {other:?}"),
+    }
+
+    // ask_question tool call
+    let v_quest = serde_json::json!({
+        "step_index": 5,
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [
+            { "name": "ask_question", "args": { "questions": [] } }
+        ]
+    });
+    let events_quest = antigravity::decode_ag_line(transcript, "antigravity", v_quest).unwrap();
+    assert_eq!(events_quest.len(), 1);
+    match &events_quest[0] {
+        AgentEvent::Waiting { reason, .. } => {
+            assert_eq!(reason, "asking permission");
+        }
+        other => panic!("expected Waiting, got {other:?}"),
+    }
+}

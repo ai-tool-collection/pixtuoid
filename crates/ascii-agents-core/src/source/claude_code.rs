@@ -143,10 +143,7 @@ pub fn cc_derive_label(path: &Path, _source: &str, cwd: &Path) -> String {
     if is_subagent {
         "subagent".to_string()
     } else if cwd != Path::new("") && cwd != Path::new("/") {
-        let base = cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("cc");
+        let base = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("cc");
         format!("cc·{base}")
     } else {
         "cc".to_string()

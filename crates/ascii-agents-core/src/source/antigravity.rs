@@ -63,36 +63,44 @@ pub fn decode_ag_line(transcript_path: &str, source: &str, v: Value) -> Result<V
                 };
                 let name = tc_obj.get("name").and_then(|s| s.as_str()).unwrap_or("?");
                 let args = tc_obj.get("args");
-                let mut normalized_input = serde_json::Map::new();
-                if let Some(args_obj) = args.and_then(|v| v.as_object()) {
-                    let raw_val = args_obj
-                        .get("DirectoryPath")
-                        .or_else(|| args_obj.get("AbsolutePath"))
-                        .or_else(|| args_obj.get("TargetFile"))
-                        .or_else(|| args_obj.get("CommandLine"))
-                        .or_else(|| args_obj.get("SearchPath"))
-                        .or_else(|| args_obj.get("query"))
-                        .and_then(|v| v.as_str());
-                    if let Some(s) = raw_val {
-                        let clean = s
-                            .strip_prefix('"')
-                            .and_then(|s| s.strip_suffix('"'))
-                            .unwrap_or(s);
-                        let key = match name {
-                            "run_command" => "command",
-                            "grep_search" => "pattern",
-                            _ => "file_path",
-                        };
-                        normalized_input.insert(key.to_string(), Value::String(clean.to_string()));
+                if name == "ask_permission" || name == "ask_question" {
+                    out.push(AgentEvent::Waiting {
+                        agent_id,
+                        reason: "asking permission".to_string(),
+                    });
+                } else {
+                    let mut normalized_input = serde_json::Map::new();
+                    if let Some(args_obj) = args.and_then(|v| v.as_object()) {
+                        let raw_val = args_obj
+                            .get("DirectoryPath")
+                            .or_else(|| args_obj.get("AbsolutePath"))
+                            .or_else(|| args_obj.get("TargetFile"))
+                            .or_else(|| args_obj.get("CommandLine"))
+                            .or_else(|| args_obj.get("SearchPath"))
+                            .or_else(|| args_obj.get("query"))
+                            .and_then(|v| v.as_str());
+                        if let Some(s) = raw_val {
+                            let clean = s
+                                .strip_prefix('"')
+                                .and_then(|s| s.strip_suffix('"'))
+                                .unwrap_or(s);
+                            let key = match name {
+                                "run_command" => "command",
+                                "grep_search" => "pattern",
+                                _ => "file_path",
+                            };
+                            normalized_input
+                                .insert(key.to_string(), Value::String(clean.to_string()));
+                        }
                     }
+                    let target = describe_tool_target(name, Some(&Value::Object(normalized_input)));
+                    out.push(AgentEvent::ActivityStart {
+                        agent_id,
+                        activity: Activity::Typing,
+                        tool_use_id: Some(format!("ag-{step_index}-{i}")),
+                        detail: Some(make_tool_detail(name, target)),
+                    });
                 }
-                let target = describe_tool_target(name, Some(&Value::Object(normalized_input)));
-                out.push(AgentEvent::ActivityStart {
-                    agent_id,
-                    activity: Activity::Typing,
-                    tool_use_id: Some(format!("ag-{step_index}-{i}")),
-                    detail: Some(make_tool_detail(name, target)),
-                });
             }
         }
     } else if step_type != "USER_INPUT" && step_type != "CONVERSATION_HISTORY" && step_index > 0 {
