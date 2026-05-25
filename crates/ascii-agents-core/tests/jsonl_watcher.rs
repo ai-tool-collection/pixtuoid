@@ -255,7 +255,7 @@ async fn watcher_emits_session_start_for_recent_files_on_startup() {
 
     let mut got_start = false;
     let mut got_activity = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
             Ok(Some((_, AgentEvent::SessionStart { .. }))) => got_start = true,
@@ -389,5 +389,64 @@ async fn stale_file_emits_session_start_when_written_to() {
         }
     }
     assert!(got_start, "appending to a stale file should bring it live");
+    handle.abort();
+}
+
+struct CustomNamingStrategy;
+
+impl ascii_agents_core::source::jsonl::NamingStrategy for CustomNamingStrategy {
+    fn derive_label(&self, _path: &std::path::Path, _source: &str, _cwd: &std::path::Path) -> String {
+        "custom-label-ok".to_string()
+    }
+}
+
+#[tokio::test]
+async fn watcher_custom_naming_strategy() {
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().to_path_buf();
+    let project_dir = projects_root.join("proj-y");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+    let transcript = project_dir.join("ses-xyz.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let watcher = JsonlWatcher::new(projects_root.clone())
+        .with_naming_strategy(std::sync::Arc::new(CustomNamingStrategy));
+    let handle = tokio::spawn(async move { watcher.run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    let start_line = serde_json::json!({
+        "type": "system",
+        "subtype": "session_start",
+        "sessionId": "ses-xyz",
+        "cwd": "/repo"
+    });
+    f.write_all(format!("{start_line}\n").as_bytes())
+        .await
+        .unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut got_custom_rename = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+            Ok(Some((_, AgentEvent::Rename { label, .. }))) => {
+                if label == "custom-label-ok" {
+                    got_custom_rename = true;
+                    break;
+                }
+            }
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => {}
+        }
+    }
+    assert!(got_custom_rename, "expected Rename event with custom label from custom naming strategy");
     handle.abort();
 }

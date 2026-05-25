@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
+use ascii_agents_core::source::antigravity::AntigravitySource;
 use ascii_agents_core::source::claude_code::ClaudeCodeSource;
 use ascii_agents_core::source::manager::SourceManager;
 use ascii_agents_core::state::ActivityState;
@@ -46,20 +47,25 @@ async fn run_async(
     headless: bool,
     theme: &'static crate::tui::theme::Theme,
 ) -> Result<()> {
-    let mut src = ClaudeCodeSource::default_paths();
+    let mut cc_src = ClaudeCodeSource::default_paths();
     if let Some(s) = socket {
-        src.socket_path = s;
+        cc_src.socket_path = s;
     }
     if let Some(p) = projects_root {
-        src.projects_root = p;
+        cc_src.projects_root = p;
     }
+
+    let ag_src = AntigravitySource::default_paths();
 
     let (tx, rx) = mpsc::channel::<(Transport, AgentEvent)>(256);
     let (scene_tx, scene_rx) = watch::channel(Arc::new(SceneState::new(max_desks)));
 
     tokio::spawn(reducer_task(rx, scene_tx, max_desks));
 
-    let _source_handles = SourceManager::new().with_source(Box::new(src)).spawn(tx);
+    let _source_handles = SourceManager::new()
+        .with_source(Box::new(cc_src))
+        .with_source(Box::new(ag_src))
+        .spawn(tx);
 
     let max_desks_shared = Arc::new(AtomicUsize::new(max_desks));
 

@@ -29,9 +29,14 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
     match event {
         "SessionStart" => {
             let cwd = obj.get("cwd").and_then(|s| s.as_str()).unwrap_or("").into();
+            let source = obj
+                .get("source")
+                .and_then(|s| s.as_str())
+                .unwrap_or(SOURCE_NAME)
+                .to_string();
             Ok(AgentEvent::SessionStart {
                 agent_id,
-                source: SOURCE_NAME.into(),
+                source,
                 session_id,
                 cwd,
             })
@@ -123,9 +128,58 @@ pub fn decode_jsonl_line(transcript_path: &str, v: Value) -> Result<Vec<AgentEve
     let Some(obj) = v.as_object() else {
         return Ok(vec![]);
     };
-    let ty = obj.get("type").and_then(|s| s.as_str()).unwrap_or("");
 
     let mut out = Vec::new();
+
+    if obj.contains_key("step_index") {
+        let step_index = obj.get("step_index").and_then(|v| v.as_i64()).unwrap_or(0);
+        let step_type = obj.get("type").and_then(|s| s.as_str()).unwrap_or("");
+
+        if step_type == "PLANNER_RESPONSE" {
+            if let Some(Value::Array(tool_calls)) = obj.get("tool_calls") {
+                for tc in tool_calls {
+                    if let Some(tc_obj) = tc.as_object() {
+                        let name = tc_obj.get("name").and_then(|s| s.as_str()).unwrap_or("?");
+                        let args = tc_obj.get("args");
+                        let mut normalized_input = serde_json::Map::new();
+                        if let Some(args_obj) = args.and_then(|v| v.as_object()) {
+                            let raw_val = args_obj.get("DirectoryPath")
+                                .or_else(|| args_obj.get("AbsolutePath"))
+                                .or_else(|| args_obj.get("TargetFile"))
+                                .or_else(|| args_obj.get("CommandLine"))
+                                .or_else(|| args_obj.get("SearchPath"))
+                                .or_else(|| args_obj.get("query"))
+                                .and_then(|v| v.as_str());
+                            if let Some(s) = raw_val {
+                                let clean = s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s);
+                                let key = match name {
+                                    "run_command" => "command",
+                                    "grep_search" => "pattern",
+                                    _ => "file_path",
+                                };
+                                normalized_input.insert(key.to_string(), Value::String(clean.to_string()));
+                            }
+                        }
+                        let target = describe_tool_target(name, Some(&Value::Object(normalized_input)));
+                        out.push(AgentEvent::ActivityStart {
+                            agent_id,
+                            activity: Activity::Typing,
+                            tool_use_id: Some(format!("tuid-{step_index}")),
+                            detail: Some(make_tool_detail(name, target)),
+                        });
+                    }
+                }
+            }
+        } else if step_type != "USER_INPUT" && step_type != "CONVERSATION_HISTORY" && step_index > 0 {
+            out.push(AgentEvent::ActivityEnd {
+                agent_id,
+                tool_use_id: Some(format!("tuid-{}", step_index - 1)),
+            });
+        }
+        return Ok(out);
+    }
+
+    let ty = obj.get("type").and_then(|s| s.as_str()).unwrap_or("");
 
     // Subagent identity: CC tags subagent assistant lines with the dispatching
     // agent name (e.g. "feature-dev:code-explorer"). Strip the plugin prefix

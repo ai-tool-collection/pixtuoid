@@ -157,6 +157,7 @@ pub trait Source: Send + 'static {
     async fn run(self: Box<Self>, tx: TaggedSender) -> anyhow::Result<()>;
 }
 
+pub mod antigravity;
 pub mod claude_code;
 pub mod decoder;
 pub mod hook;

@@ -32,6 +32,27 @@ fn decode_session_start() {
 }
 
 #[test]
+fn decode_session_start_with_custom_source() {
+    let mut payload = load("session_start");
+    payload["source"] = serde_json::Value::String("antigravity".into());
+    let ev = decode_hook_payload(payload).unwrap();
+    let expected_id = AgentId::from_transcript_path("/Users/me/.claude/projects/x/ses-abc.jsonl");
+    match ev {
+        AgentEvent::SessionStart {
+            agent_id,
+            session_id,
+            source,
+            ..
+        } => {
+            assert_eq!(agent_id, expected_id);
+            assert_eq!(session_id, "ses-abc");
+            assert_eq!(source, "antigravity");
+        }
+        other => panic!("expected SessionStart, got {other:?}"),
+    }
+}
+
+#[test]
 fn decode_pre_tool_use_write_maps_to_typing() {
     let ev = decode_hook_payload(load("pre_tool_use_write")).unwrap();
     match ev {
@@ -217,4 +238,54 @@ fn jsonl_plain_user_message_yields_no_events() {
     let transcript = "/Users/me/.claude/projects/x/ses-abc.jsonl";
     let events = decode_jsonl_line(transcript, load_jsonl("user_message")).unwrap();
     assert!(events.is_empty());
+}
+
+#[test]
+fn jsonl_antigravity_decoding() {
+    let transcript = "/Users/me/.gemini/antigravity-cli/brain/sess/transcript.jsonl";
+    
+    // Test ActivityStart from PLANNER_RESPONSE
+    let v_start = serde_json::json!({
+        "step_index": 2,
+        "source": "MODEL",
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "created_at": "2026-05-25T00:16:13Z",
+        "tool_calls": [
+            {
+                "name": "list_dir",
+                "args": {
+                    "DirectoryPath": "\"/repo/src\""
+                }
+            }
+        ]
+    });
+    let events_start = decode_jsonl_line(transcript, v_start).unwrap();
+    assert_eq!(events_start.len(), 1);
+    match &events_start[0] {
+        AgentEvent::ActivityStart { activity, tool_use_id, detail, .. } => {
+            assert_eq!(*activity, Activity::Typing);
+            assert_eq!(tool_use_id.as_deref(), Some("tuid-2"));
+            assert!(detail.as_ref().unwrap().display().contains("list_dir"));
+        }
+        other => panic!("expected ActivityStart, got {other:?}"),
+    }
+
+    // Test ActivityEnd from subsequent LIST_DIRECTORY tool output step
+    let v_end = serde_json::json!({
+        "step_index": 3,
+        "source": "MODEL",
+        "type": "LIST_DIRECTORY",
+        "status": "DONE",
+        "created_at": "2026-05-25T00:16:14Z",
+        "content": "some output"
+    });
+    let events_end = decode_jsonl_line(transcript, v_end).unwrap();
+    assert_eq!(events_end.len(), 1);
+    match &events_end[0] {
+        AgentEvent::ActivityEnd { tool_use_id, .. } => {
+            assert_eq!(tool_use_id.as_deref(), Some("tuid-2"));
+        }
+        other => panic!("expected ActivityEnd, got {other:?}"),
+    }
 }

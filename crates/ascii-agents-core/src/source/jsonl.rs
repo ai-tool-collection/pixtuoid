@@ -13,6 +13,28 @@ use crate::source::decoder::{decode_jsonl_line, SOURCE_NAME};
 use crate::source::{AgentEvent, TaggedSender, Transport};
 use crate::AgentId;
 
+pub trait NamingStrategy: Send + Sync + 'static {
+    fn derive_label(&self, path: &Path, source: &str, cwd: &Path) -> String;
+}
+
+pub struct DefaultNamingStrategy;
+
+impl NamingStrategy for DefaultNamingStrategy {
+    fn derive_label(&self, path: &Path, source: &str, cwd: &Path) -> String {
+        let is_subagent = path.to_string_lossy().contains("subagents");
+        if is_subagent {
+            "subagent".to_string()
+        } else if source == "claude-code" && cwd != Path::new("") && cwd != Path::new("/") {
+            cwd.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(source)
+                .to_string()
+        } else {
+            source.to_string()
+        }
+    }
+}
+
 pub struct JsonlWatcher {
     root: PathBuf,
     /// On startup, only emit SessionStart for transcripts whose mtime is
@@ -20,6 +42,8 @@ pub struct JsonlWatcher {
     /// so any future writes still bring them live (next SessionStart fires
     /// then). Without this, every historical .jsonl floods the desk allocator.
     initial_window: Duration,
+    source_name: String,
+    naming_strategy: Arc<dyn NamingStrategy>,
 }
 
 /// On startup, transcripts modified within this window are treated as
@@ -35,6 +59,8 @@ impl JsonlWatcher {
         Self {
             root,
             initial_window: DEFAULT_INITIAL_WINDOW,
+            source_name: SOURCE_NAME.to_string(),
+            naming_strategy: Arc::new(DefaultNamingStrategy),
         }
     }
 
@@ -42,7 +68,19 @@ impl JsonlWatcher {
         Self {
             root,
             initial_window: window,
+            source_name: SOURCE_NAME.to_string(),
+            naming_strategy: Arc::new(DefaultNamingStrategy),
         }
+    }
+
+    pub fn with_source(mut self, source: String) -> Self {
+        self.source_name = source;
+        self
+    }
+
+    pub fn with_naming_strategy(mut self, strategy: Arc<dyn NamingStrategy>) -> Self {
+        self.naming_strategy = strategy;
+        self
     }
 
     pub async fn run(self, tx: TaggedSender) -> Result<()> {
@@ -64,9 +102,14 @@ impl JsonlWatcher {
         let _ = tokio::fs::create_dir_all(&self.root).await;
         watcher.watch(&self.root, RecursiveMode::Recursive)?;
 
+        let source_arc: Arc<str> = Arc::from(self.source_name.as_str());
+        let strategy = self.naming_strategy.clone();
+
         initial_seed_root(
             &self.root,
             self.initial_window,
+            &source_arc,
+            &strategy,
             &cursors,
             &seen_sessions,
             &tx,
@@ -74,12 +117,14 @@ impl JsonlWatcher {
         .await;
 
         loop {
+            let source_arc = source_arc.clone();
+            let strategy = strategy.clone();
             tokio::select! {
                 Some(path) = notify_rx.recv() => {
-                    walk_jsonl(&path, &cursors, &seen_sessions, &tx).await;
+                    walk_jsonl(&path, &source_arc, &strategy, &cursors, &seen_sessions, &tx).await;
                 }
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                    scan_root(&self.root, &cursors, &seen_sessions, &tx).await;
+                    scan_root(&self.root, &source_arc, &strategy, &cursors, &seen_sessions, &tx).await;
                 }
             }
         }
@@ -89,13 +134,15 @@ impl JsonlWatcher {
 async fn initial_seed_root(
     root: &Path,
     window: Duration,
+    source: &Arc<str>,
+    naming_strategy: &Arc<dyn NamingStrategy>,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
 ) {
     if let Ok(mut read) = tokio::fs::read_dir(root).await {
         while let Ok(Some(entry)) = read.next_entry().await {
-            initial_seed_walk(&entry.path(), window, cursors, seen, tx).await;
+            initial_seed_walk(&entry.path(), window, source, naming_strategy, cursors, seen, tx).await;
         }
     }
 }
@@ -103,6 +150,8 @@ async fn initial_seed_root(
 async fn initial_seed_walk(
     path: &Path,
     window: Duration,
+    source: &Arc<str>,
+    naming_strategy: &Arc<dyn NamingStrategy>,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
@@ -114,7 +163,7 @@ async fn initial_seed_walk(
     if meta.is_dir() {
         if let Ok(mut read) = tokio::fs::read_dir(path).await {
             while let Ok(Some(entry)) = read.next_entry().await {
-                Box::pin(initial_seed_walk(&entry.path(), window, cursors, seen, tx)).await;
+                Box::pin(initial_seed_walk(&entry.path(), window, source, naming_strategy, cursors, seen, tx)).await;
             }
         }
         return;
@@ -134,7 +183,7 @@ async fn initial_seed_walk(
         // Live session: let the normal walk_jsonl flow read from offset 0,
         // emit SessionStart, and replay content so in-flight Task / tool
         // state survives an ascii-agents restart.
-        walk_jsonl(path, cursors, seen, tx).await;
+        walk_jsonl(path, source, naming_strategy, cursors, seen, tx).await;
     } else {
         // Stale: seed cursor at end so historical events don't replay, and
         // leave `seen` untouched so the first future write triggers a fresh
@@ -145,19 +194,23 @@ async fn initial_seed_walk(
 
 async fn scan_root(
     root: &Path,
+    source: &Arc<str>,
+    naming_strategy: &Arc<dyn NamingStrategy>,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
 ) {
     if let Ok(mut read) = tokio::fs::read_dir(root).await {
         while let Ok(Some(entry)) = read.next_entry().await {
-            walk_jsonl(&entry.path(), cursors, seen, tx).await;
+            walk_jsonl(&entry.path(), source, naming_strategy, cursors, seen, tx).await;
         }
     }
 }
 
 async fn walk_jsonl(
     path: &Path,
+    source: &Arc<str>,
+    naming_strategy: &Arc<dyn NamingStrategy>,
     cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
     seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
     tx: &TaggedSender,
@@ -169,7 +222,7 @@ async fn walk_jsonl(
     if meta.is_dir() {
         if let Ok(mut read) = tokio::fs::read_dir(path).await {
             while let Ok(Some(entry)) = read.next_entry().await {
-                Box::pin(walk_jsonl(&entry.path(), cursors, seen, tx)).await;
+                Box::pin(walk_jsonl(&entry.path(), source, naming_strategy, cursors, seen, tx)).await;
             }
         }
         return;
@@ -268,9 +321,20 @@ async fn walk_jsonl(
                     Transport::Jsonl,
                     AgentEvent::SessionStart {
                         agent_id: id,
-                        source: SOURCE_NAME.into(),
-                        session_id,
-                        cwd,
+                        source: source.to_string(),
+                        session_id: session_id.clone(),
+                        cwd: cwd.clone(),
+                    },
+                ))
+                .await;
+
+            let label = naming_strategy.derive_label(path, source, &cwd);
+            let _ = tx
+                .send((
+                    Transport::Jsonl,
+                    AgentEvent::Rename {
+                        agent_id: id,
+                        label,
                     },
                 ))
                 .await;
