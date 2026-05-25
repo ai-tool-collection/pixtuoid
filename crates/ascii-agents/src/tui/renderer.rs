@@ -1522,4 +1522,64 @@ mod tests {
             "expected hit at coffee machine area ({mid_x}, {mid_cell_y})"
         );
     }
+
+    #[test]
+    fn furniture_hit_test_returns_none_for_empty_space() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        assert_eq!(hit_test_furniture(&buf, 4, 80, 50, 0), None);
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_desk() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        let desk = layout.home_desks.first().expect("desk");
+        let cell_y = (desk.y + 2) / 2;
+        assert_eq!(
+            hit_test_furniture(&buf, 4, desk.x + 2, cell_y, 0),
+            Some("Desk")
+        );
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_elevator() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        let door = layout.door.expect("door");
+        let cell_y = (door.y + 7) / 2;
+        assert_eq!(
+            hit_test_furniture(&buf, 4, door.x + 8, cell_y, 0),
+            Some("Elevator")
+        );
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_meeting_table() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        let layout = Layout::compute(160, 200, 4).expect("layout");
+        let table = layout.meeting_tables.first().expect("table");
+        let cell_y = table.y / 2;
+        assert_eq!(
+            hit_test_furniture(&buf, 4, table.x, cell_y, 0),
+            Some("Meeting Table")
+        );
+    }
+
+    #[test]
+    fn furniture_hit_test_respects_floor_seed() {
+        let buf = RgbBuffer::filled(160, 200, Rgb(0, 0, 0));
+        // Seed 1 = open plan (no meeting room)
+        let layout = Layout::compute_with_seed(160, 200, 4, 1).expect("layout");
+        assert!(layout.meeting_tables.is_empty());
+        // No meeting table at seed=1, so hitting the same coords should not
+        // return "Meeting Table"
+        let layout0 = Layout::compute(160, 200, 4).expect("layout");
+        if let Some(table) = layout0.meeting_tables.first() {
+            let cell_y = table.y / 2;
+            assert_ne!(
+                hit_test_furniture(&buf, 4, table.x, cell_y, 1),
+                Some("Meeting Table"),
+            );
+        }
+    }
 }
