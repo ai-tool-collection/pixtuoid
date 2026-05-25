@@ -1,0 +1,6 @@
+---
+source: crates/ascii-agents/src/tui/widgets.rs
+assertion_line: 782
+expression: line
+---
+ 8 agents · 3 active · 2 waiting · 3 idle · Edit×2 Bash×1                       [p]ause [t]heme [+/-]desks [q]uit

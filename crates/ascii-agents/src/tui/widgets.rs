@@ -752,16 +752,22 @@ mod tests {
     const QUIT_SUFFIX: &str = " [p]ause [t]heme [+/-]desks [q]uit ";
 
     #[test]
-    fn footer_zero_agents_shows_zero_count_and_quit() {
+    fn footer_zero_agents() {
         let s = scene_of(vec![]);
         let line = build_status_summary(&s, 80, None);
-        assert!(line.contains("0 agents"), "missing zero count: {line:?}");
-        assert!(line.ends_with(QUIT_SUFFIX), "missing quit suffix: {line:?}");
-        assert_eq!(line.len(), 80, "should pad to full width: {line:?}");
+        assert_eq!(line.len(), 80, "should pad to full width");
+        insta::assert_snapshot!(line);
     }
 
     #[test]
-    fn footer_full_width_shows_state_breakdown_and_tools() {
+    fn footer_single_idle_agent() {
+        let s = scene_of(vec![idle("myproject")]);
+        let line = build_status_summary(&s, 80, None);
+        insta::assert_snapshot!(line);
+    }
+
+    #[test]
+    fn footer_full_width_mixed_states() {
         let s = scene_of(vec![
             active_with("Edit src/a.rs", "a"),
             active_with("Edit src/b.rs", "b"),
@@ -773,22 +779,11 @@ mod tests {
             idle("h"),
         ]);
         let line = build_status_summary(&s, 120, None);
-        // Per-state counts present.
-        assert!(line.contains("8 agents"), "{line:?}");
-        assert!(line.contains("3 active"), "{line:?}");
-        assert!(line.contains("2 waiting"), "{line:?}");
-        assert!(line.contains("3 idle"), "{line:?}");
-        // Top tools by count, ordered desc: Edit x2 should come before Bash x1.
-        let edit_pos = line.find("Edit\u{00d7}2").expect("Edit x2 present");
-        let bash_pos = line.find("Bash\u{00d7}1").expect("Bash x1 present");
-        assert!(
-            edit_pos < bash_pos,
-            "tools should sort by count desc: {line:?}"
-        );
+        insta::assert_snapshot!(line);
     }
 
     #[test]
-    fn footer_medium_width_drops_to_compact_letters() {
+    fn footer_medium_width_compact() {
         let s = scene_of(vec![
             active_with("Edit src/a.rs", "a"),
             waiting("b"),
@@ -796,36 +791,31 @@ mod tests {
         ]);
         let line = build_status_summary(&s, 60, None);
         assert!(
-            line.contains("3a") && line.contains("1A"),
-            "expected medium tier letters: {line:?}"
+            !line.contains("3 agents"),
+            "full tier should not fit at width 60"
         );
-        assert!(
-            !line.contains("3 agents \u{00b7} "),
-            "full tier should not fit at width 60: {line:?}"
-        );
-        assert!(line.ends_with(QUIT_SUFFIX), "{line:?}");
+        insta::assert_snapshot!(line);
     }
 
     #[test]
-    fn footer_minimal_width_keeps_total_and_quit_only() {
+    fn footer_minimal_width() {
         let s = scene_of(vec![idle("a"), idle("b")]);
         let w = QUIT_SUFFIX.len() + 6;
         let line = build_status_summary(&s, w as u16, None);
-        assert!(line.contains("2a"), "expected minimal tier: {line:?}");
-        assert!(line.ends_with(QUIT_SUFFIX), "{line:?}");
         assert_eq!(line.len(), w);
+        insta::assert_snapshot!(line);
     }
 
     #[test]
-    fn footer_collapses_to_quit_only_below_minimal_threshold() {
+    fn footer_quit_only_below_threshold() {
         let s = scene_of(vec![idle("a")]);
         let w = QUIT_SUFFIX.len();
         let line = build_status_summary(&s, w as u16, None);
-        assert_eq!(line, QUIT_SUFFIX);
+        insta::assert_snapshot!(line);
     }
 
     #[test]
-    fn footer_caps_tool_breakdown_at_four_entries() {
+    fn footer_caps_tools_at_four() {
         let s = scene_of(vec![
             active_with("Edit x", "a"),
             active_with("Bash x", "b"),
@@ -835,8 +825,16 @@ mod tests {
             active_with("Glob x", "f"),
         ]);
         let line = build_status_summary(&s, 200, None);
-        // Six distinct tools, but only 4 should appear. Count multiplication sign markers.
+        // Six distinct tools, but only 4 should appear.
         let crosses = line.matches('\u{00d7}').count();
-        assert_eq!(crosses, 4, "expected <=4 tools in breakdown: {line:?}");
+        assert_eq!(crosses, 4, "expected <=4 tools in breakdown");
+        insta::assert_snapshot!(line);
+    }
+
+    #[test]
+    fn footer_with_floor_info() {
+        let s = scene_of(vec![idle("a"), idle("b")]);
+        let line = build_status_summary(&s, 120, Some((2, 3)));
+        insta::assert_snapshot!(line);
     }
 }

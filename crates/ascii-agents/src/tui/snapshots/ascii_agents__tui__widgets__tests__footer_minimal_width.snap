@@ -1,0 +1,6 @@
+---
+source: crates/ascii-agents/src/tui/widgets.rs
+assertion_line: 803
+expression: line
+---
+ 2a    [p]ause [t]heme [+/-]desks [q]uit
