@@ -125,18 +125,18 @@ pub async fn run_tui(
                                             .store(cur - 1, std::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
-                                (KeyCode::PageDown, _)
-                                | (KeyCode::Down, _)
-                                | (KeyCode::Char('j'), _) => {
+                                (KeyCode::PageUp, _)
+                                | (KeyCode::Up, _)
+                                | (KeyCode::Char('k'), _) => {
                                     let n_floors = crate::tui::floor::num_floors(&snapshot);
                                     let cur = renderer.current_floor();
                                     if cur + 1 < n_floors && renderer.transition().is_none() {
                                         renderer.navigate_floor(cur + 1, now);
                                     }
                                 }
-                                (KeyCode::PageUp, _)
-                                | (KeyCode::Up, _)
-                                | (KeyCode::Char('k'), _) => {
+                                (KeyCode::PageDown, _)
+                                | (KeyCode::Down, _)
+                                | (KeyCode::Char('j'), _) => {
                                     let cur = renderer.current_floor();
                                     if cur > 0 && renderer.transition().is_none() {
                                         renderer.navigate_floor(cur - 1, now);

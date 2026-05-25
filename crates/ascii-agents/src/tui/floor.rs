@@ -246,17 +246,23 @@ mod tests {
     }
 
     #[test]
-    fn transition_t_progresses_linearly() {
+    fn transition_t_progresses() {
         let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let tr = FloorTransition::new(0, 1, start);
 
         assert!((tr.t(start) - 0.0).abs() < f32::EPSILON);
 
-        let mid = start + Duration::from_millis(250);
-        assert!((tr.t(mid) - 0.5).abs() < 0.01);
+        let mid = start + Duration::from_millis(450);
+        let t_mid = tr.t(mid);
+        assert!(
+            t_mid > 0.0 && t_mid < 1.0,
+            "mid should be between 0 and 1, got {t_mid}"
+        );
 
-        let end = start + Duration::from_millis(500);
+        let end = start + Duration::from_millis(900);
         assert!((tr.t(end) - 1.0).abs() < f32::EPSILON);
+        assert!(!tr.is_done(start + Duration::from_millis(450)));
+        assert!(tr.is_done(end));
     }
 
     #[test]

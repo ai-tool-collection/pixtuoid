@@ -245,6 +245,10 @@ pub fn draw_scene<B: Backend>(
         paint_wall_display(
             f, scene, &layout, scene_rect, now, ticker, theme, floor_info,
         );
+        if let Some(door) = layout.door {
+            let (current, _) = floor_info.unwrap_or((1, 1));
+            paint_elevator_indicator(f, door, current, scene_rect, theme);
+        }
         let tooltip_agent = hovered.or(pinned_agent);
         if let (Some(agent_id), Some((mx, my))) = (tooltip_agent, mouse_pos) {
             paint_hover_tooltip(f, scene, agent_id, mx, my, scene_rect, now, theme);
@@ -638,6 +642,39 @@ fn hit_test_agent(
     None
 }
 
+pub(super) fn paint_elevator_indicator(
+    f: &mut ratatui::Frame<'_>,
+    door: crate::tui::layout::Point,
+    current_floor: usize,
+    scene_rect: Rect,
+    theme: &crate::tui::theme::Theme,
+) {
+    use ratatui::style::Modifier;
+    use ratatui::text::Line;
+
+    let label = format!(" ▲ F{current_floor} ▼ ");
+    let label_w = label.len() as u16;
+    let door_cell_x = door.x + 8u16.saturating_sub(label_w / 2);
+    let door_cell_y = door.y / 2;
+    let indicator_y = door_cell_y.saturating_sub(1);
+
+    if let Some(r) = clip_widget_rect(
+        Rect {
+            x: scene_rect.x + door_cell_x,
+            y: scene_rect.y + indicator_y,
+            width: label_w,
+            height: 1,
+        },
+        scene_rect,
+    ) {
+        let style = Style::default()
+            .fg(to_color(theme.ui.neon_brand))
+            .bg(to_color(theme.ui.tooltip_bg))
+            .add_modifier(Modifier::BOLD);
+        f.render_widget(Paragraph::new(Line::from(Span::styled(label, style))), r);
+    }
+}
+
 fn paint_coffee_tooltip(
     f: &mut ratatui::Frame<'_>,
     mx: u16,
@@ -840,7 +877,7 @@ fn paint_hover_tooltip(
 /// in supported terminals (iTerm2, Ghostty, Kitty, WezTerm) opens the
 /// browser.
 #[allow(clippy::too_many_arguments)]
-fn paint_wall_display(
+pub(super) fn paint_wall_display(
     f: &mut ratatui::Frame<'_>,
     scene: &SceneState,
     _layout: &Layout,

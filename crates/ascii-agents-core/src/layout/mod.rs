@@ -146,19 +146,8 @@ impl SceneLayout {
         // cubicle band starts immediately after the partition line.
         let right_x = mid_x + 1;
         let right_w = buf_w.saturating_sub(right_x);
-        // Reserve the last 3 px for the baseboard sprite (matches the
-        // BASEBOARD_H constant in the renderer's paint_floor_and_walls).
-        // Without this reservation, walkway_h overlapped the baseboard and
-        // the corridor itself was marked non-walkable — agents couldn't
-        // route through it, which is one of the root causes of "闪现".
-        const BASEBOARD_RESERVE: u16 = 3;
-        // Walkway floors at 8 px so the corridor is wide enough for the
-        // coarsened 4×4 path grid to see at least 2 walkable cell rows
-        // even after obstacle padding.
         let walkway_h = (usable_h / 10).max(8);
-        let cubicle_h = usable_h
-            .saturating_sub(walkway_h)
-            .saturating_sub(BASEBOARD_RESERVE);
+        let cubicle_h = usable_h.saturating_sub(walkway_h);
         let cubicle_band = Bounds {
             x: right_x,
             y: top_margin,

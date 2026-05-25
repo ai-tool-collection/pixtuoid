@@ -67,14 +67,12 @@ pub(super) fn paint_floor_and_walls(
     skip_window_x_range: Option<(u16, u16)>,
     theme: &Theme,
 ) {
-    const BASEBOARD_H: u16 = 3;
     let window_frame = theme.surface.window_frame;
     let carpet_base = theme.surface.carpet_base;
     let carpet_light = theme.surface.carpet_light;
     let carpet_dark = theme.surface.carpet_dark;
     let wall = theme.surface.wall;
     let wall_trim_color = theme.surface.wall_trim;
-    let baseboard = theme.surface.baseboard;
 
     for y in 0..buf_h {
         for x in 0..buf_w {
@@ -147,13 +145,6 @@ pub(super) fn paint_floor_and_walls(
     if trim_y < buf_h {
         for x in 0..buf_w {
             buf.put(x, trim_y, wall_trim_color);
-        }
-    }
-
-    let base_y = buf_h.saturating_sub(BASEBOARD_H);
-    for y in base_y..buf_h {
-        for x in 0..buf_w {
-            buf.put(x, y, baseboard);
         }
     }
 }
