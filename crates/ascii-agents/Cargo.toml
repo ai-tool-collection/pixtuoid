@@ -16,7 +16,7 @@ name = "ascii-agents"
 path = "src/main.rs"
 
 [dependencies]
-ascii-agents-core  = { path = "../ascii-agents-core", version = "0.1.2" }
+ascii-agents-core  = { path = "../ascii-agents-core", version = "0.2.0" }
 tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net", "fs", "io-util"] }
 ratatui            = { workspace = true }
 crossterm          = { workspace = true }
