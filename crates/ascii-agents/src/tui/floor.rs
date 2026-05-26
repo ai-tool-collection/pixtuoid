@@ -254,6 +254,38 @@ mod tests {
     }
 
     #[test]
+    fn num_floors_variable_capacities() {
+        // F0: 0..4, F1: 4..12 — 6 agents span 2 floors
+        let mut s = SceneState::new([4, 8, 6, 4, 2]);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for i in 0..6 {
+            let id = AgentId::from_transcript_path(&format!("/p/{i}.jsonl"));
+            s.agents.insert(
+                id,
+                AgentSlot {
+                    agent_id: id,
+                    source: Arc::from("cc"),
+                    session_id: Arc::from(format!("s{i}").as_str()),
+                    cwd: Arc::from(Path::new("/repo")),
+                    label: Arc::from(format!("a{i}").as_str()),
+                    state: ActivityState::Idle,
+                    state_started_at: now,
+                    created_at: now,
+                    last_event_at: now,
+                    exiting_at: None,
+                    pending_idle_at: None,
+                    desk_index: i,
+                    tool_call_count: 0,
+                    active_ms: 0,
+                    unknown_cwd: false,
+                    parent_id: None,
+                },
+            );
+        }
+        assert_eq!(num_floors(&s), 2);
+    }
+
+    #[test]
     fn transition_t_progresses() {
         let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let tr = FloorTransition::new(0, 1, start);

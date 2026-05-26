@@ -1263,3 +1263,37 @@ fn sweep_stale_marks_old_agent_exiting_on_tick() {
         "tick past STALE_IDLE_TIMEOUT should mark agent exiting"
     );
 }
+
+/// With heterogeneous per-floor capacities, the third session should
+/// overflow from floor 0 (cap=2) to floor 1's first desk (global index 2).
+#[test]
+fn session_start_overflows_to_floor1_with_heterogeneous_capacity() {
+    let mut r = Reducer::new();
+    let mut scene = SceneState::new([2, 4, 0, 0, 0]);
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    for i in 0..3 {
+        let id = AgentId::from_transcript_path(&format!("/proj/{i}.jsonl"));
+        r.apply(
+            &mut scene,
+            AgentEvent::SessionStart {
+                agent_id: id,
+                source: "cc".into(),
+                session_id: format!("s{i}"),
+                cwd: std::path::PathBuf::from("/repo"),
+                parent_id: None,
+            },
+            t0,
+            Transport::Jsonl,
+        );
+    }
+    assert_eq!(scene.agents.len(), 3);
+    let desks: Vec<usize> = scene.agents.values().map(|a| a.desk_index).collect();
+    assert!(desks.contains(&0));
+    assert!(desks.contains(&1));
+    assert!(
+        desks.contains(&2),
+        "third agent should get desk 2 (floor 1)"
+    );
+    assert_eq!(scene.floor_of(2), 1);
+}

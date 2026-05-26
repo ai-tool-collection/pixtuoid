@@ -123,10 +123,12 @@ impl SceneState {
     }
 
     /// Global desk index range `[lo, hi)` for a given floor.
+    /// Clamps `floor_idx` to `MAX_FLOORS - 1` to avoid panics.
     pub fn floor_range(&self, floor_idx: usize) -> std::ops::Range<usize> {
+        let idx = floor_idx.min(MAX_FLOORS - 1);
         let offsets = self.cumulative_offsets();
-        let lo = offsets[floor_idx];
-        let hi = lo + self.floor_capacities[floor_idx];
+        let lo = offsets[idx];
+        let hi = lo + self.floor_capacities[idx];
         lo..hi
     }
 
@@ -259,5 +261,35 @@ mod tests {
         }
         // Next free should be desk 4 (first desk on F1)
         assert_eq!(s.next_free_desk(), Some(4));
+    }
+
+    #[test]
+    fn zero_capacity_floor_skipped_by_next_free_desk() {
+        let s = SceneState::new([4, 0, 6, 0, 2]);
+        // F0: 0..4, F1: 4..4 (empty), F2: 4..10, F3: 10..10, F4: 10..12
+        assert_eq!(s.total_capacity(), 12);
+        assert_eq!(s.floor_range(0), 0..4);
+        assert_eq!(s.floor_range(1), 4..4);
+        assert_eq!(s.floor_range(2), 4..10);
+        assert_eq!(s.next_free_desk(), Some(0));
+    }
+
+    #[test]
+    fn floor_of_skips_zero_capacity_floors() {
+        let s = SceneState::new([4, 0, 6, 0, 2]);
+        // Desk 4 is first desk of F2 (F1 has zero capacity)
+        assert_eq!(s.floor_of(4), 2);
+        assert_eq!(s.floor_local_desk(4), 0);
+        assert_eq!(s.floor_of(9), 2);
+        assert_eq!(s.floor_of(10), 4);
+    }
+
+    #[test]
+    fn floor_range_clamps_oob_index() {
+        let s = SceneState::uniform(4);
+        // floor_idx >= MAX_FLOORS should clamp to last floor
+        let last = s.floor_range(MAX_FLOORS - 1);
+        let oob = s.floor_range(MAX_FLOORS + 10);
+        assert_eq!(last, oob);
     }
 }

@@ -211,15 +211,17 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
             let t = tr.t(now);
             let going_down = to_floor > from_floor;
 
-            // Build floor-scoped scenes for both floors.
+            // Build floor-scoped scenes for both floors. Each sub-scene
+            // uses uniform(cap) so floor arithmetic stays self-consistent
+            // with the remapped desk indices in [0..cap).
             let from_agents = build_floor_scene(scene, from_floor);
-            let mut from_scene = SceneState::new(scene.floor_capacities);
+            let mut from_scene = SceneState::uniform(scene.floor_capacities[from_floor]);
             for a in from_agents {
                 from_scene.agents.insert(a.agent_id, a);
             }
 
             let to_agents = build_floor_scene(scene, to_floor);
-            let mut to_scene = SceneState::new(scene.floor_capacities);
+            let mut to_scene = SceneState::uniform(scene.floor_capacities[to_floor]);
             for a in to_agents {
                 to_scene.agents.insert(a.agent_id, a);
             }
@@ -366,7 +368,7 @@ impl<B: Backend> Renderer for TuiRenderer<B> {
 
         // --- Normal path: single floor ------------------------------------
         let floor_agents = build_floor_scene(scene, self.current_floor);
-        let mut floor_scene = SceneState::new(scene.floor_capacities);
+        let mut floor_scene = SceneState::uniform(scene.floor_capacities[self.current_floor]);
         for agent in floor_agents {
             floor_scene.agents.insert(agent.agent_id, agent);
         }
