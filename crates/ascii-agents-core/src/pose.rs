@@ -29,9 +29,9 @@ pub const WANDER_CYCLE_BASE_MS: u64 = 7_000;
 /// Maximum extra time added per agent — jitter range is `[0, RANGE)`.
 pub const WANDER_CYCLE_RANGE_MS: u64 = 6_000;
 /// Phase fractions of a cycle (×1000 to stay in integer math).
-const PHASE_SEATED_FRAC: u64 = 389; // 0..389/1000
-const PHASE_WALK_OUT_FRAC: u64 = 556; // 389..556/1000
-const PHASE_AT_WAYPOINT_FRAC: u64 = 833; // 556..833/1000
+const PHASE_SEATED_FRAC: u64 = 250; // 0..250/1000
+const PHASE_WALK_OUT_FRAC: u64 = 417; // 250..417/1000
+const PHASE_AT_WAYPOINT_FRAC: u64 = 833; // 417..833/1000
                                          // walk-back is 833..1000/1000.
 
 /// Frame-cycle period for animated poses.
@@ -57,18 +57,18 @@ pub fn cycle_ms_for(agent_id: AgentId) -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Personality {
     /// Probability (in percent) that this agent takes a trip on any given
-    /// cycle. Range: 10..=50. Restless agents wander more.
+    /// cycle. Range: 25..=60. Restless agents wander more.
     pub trip_chance_pct: u8,
     /// Probability (in percent) that a trip is aimless wander vs heading to
-    /// a lounge waypoint. Range: 0..=70.
+    /// a lounge waypoint. Range: 0..=50.
     pub aimless_pref_pct: u8,
 }
 
 pub fn personality_for(agent_id: AgentId) -> Personality {
     let h = agent_id.raw();
     Personality {
-        trip_chance_pct: (10 + (h % 41)) as u8,  // 10..=50
-        aimless_pref_pct: ((h >> 8) % 71) as u8, // 0..=70
+        trip_chance_pct: (25 + (h % 36)) as u8,  // 25..=60
+        aimless_pref_pct: ((h >> 8) % 51) as u8, // 0..=50
     }
 }
 
@@ -510,14 +510,14 @@ mod tests {
     }
 
     #[test]
-    fn takes_trip_fires_roughly_30_percent_of_cycles() {
+    fn takes_trip_fires_roughly_42_percent_of_cycles() {
         let id = AgentId::from_transcript_path("/p/sample.jsonl");
         let trips = (0u64..1000).filter(|n| takes_trip(id, *n)).count();
-        // Per-agent trip chance varies 10..=50%, so across 1000 cycles the
+        // Per-agent trip chance varies 25..=60%, so across 1000 cycles the
         // count is bounded by those extremes with reasonable tolerance.
         assert!(
-            (50..=550).contains(&trips),
-            "expected 50..=550 trips out of 1000 (personality-driven), got {trips}"
+            (200..=650).contains(&trips),
+            "expected 200..=650 trips out of 1000 (personality-driven), got {trips}"
         );
     }
 
@@ -533,7 +533,7 @@ mod tests {
             "expected variance in trip_chance_pct"
         );
         for p in &ps {
-            assert!((10..=50).contains(&p.trip_chance_pct));
+            assert!((25..=60).contains(&p.trip_chance_pct));
             assert!(p.aimless_pref_pct <= 70);
         }
     }

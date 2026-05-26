@@ -97,6 +97,7 @@ fn render_and_get_buffer(
     let mut overlay = OccupancyOverlay::new();
     let ticker = TickerQueue::new();
     let mut history = PoseHistory::new();
+    let mut chitchat_state = std::collections::HashMap::new();
     let mut draw_ctx = DrawCtx {
         buf: &mut buf,
         cache: &mut cache,
@@ -112,6 +113,8 @@ fn render_and_get_buffer(
         floor: FloorMeta::ground(),
         cat_pet: None,
         last_cat_pos: None,
+        chitchat_state: &mut chitchat_state,
+        chitchat_bubbles: Vec::new(),
     };
     draw_scene(&mut term, &scene, &pack, now, &mut draw_ctx).unwrap();
     let buffer = term.backend().buffer().clone();
@@ -189,5 +192,51 @@ fn branding_visible_in_wall_display() {
     assert!(
         found,
         "branding 'ascii-agents' not found in the upper quarter of the display"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Chitchat bubble test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chitchat_bubble_text_appears_in_buffer() {
+    use ascii_agents::tui::chitchat::ChitchatBubble;
+    use ascii_agents::tui::layout::Point;
+
+    let w = 60u16;
+    let h = 30u16;
+    let backend = TestBackend::new(w, h);
+    let mut term = Terminal::new(backend).unwrap();
+    let scene_rect = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+    };
+    let bubble_text = "LGTM!";
+    let bubbles = vec![ChitchatBubble {
+        text: bubble_text,
+        anchor: Point { x: 30, y: 40 },
+    }];
+
+    term.draw(|f| {
+        ascii_agents::tui::widgets::paint_chitchat_bubbles(f, &bubbles, scene_rect, &theme::NORMAL);
+    })
+    .unwrap();
+
+    let buf = term.backend().buffer();
+    let mut found = false;
+    for y in 0..h {
+        let row = row_text(buf, y, w);
+        if row.contains(bubble_text) {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "chitchat bubble text '{}' not found in any row",
+        bubble_text
     );
 }

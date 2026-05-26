@@ -39,8 +39,9 @@ pub use crate::tui::hit_test::{
 pub(crate) use crate::tui::widgets::paint_hover_tooltip;
 pub use crate::tui::widgets::TickerQueue;
 pub(super) use crate::tui::widgets::{
-    paint_cat_tooltip, paint_coffee_tooltip, paint_elevator_indicator, paint_footer,
-    paint_furniture_tooltip, paint_label_widgets, paint_theme_picker, paint_wall_display,
+    paint_cat_tooltip, paint_chitchat_bubbles, paint_coffee_tooltip, paint_elevator_indicator,
+    paint_footer, paint_furniture_tooltip, paint_label_widgets, paint_theme_picker,
+    paint_wall_display,
 };
 
 /// Duration (ms) the cat stays frozen in place after being petted.
@@ -86,6 +87,9 @@ pub struct DrawCtx<'a> {
     pub floor: crate::tui::floor::FloorMeta,
     pub cat_pet: Option<&'a CatPetState>,
     pub last_cat_pos: Option<(Point, &'static str)>,
+    pub chitchat_state:
+        &'a mut std::collections::HashMap<(usize, usize), crate::tui::chitchat::ActiveChitchat>,
+    pub chitchat_bubbles: Vec<crate::tui::chitchat::ChitchatBubble>,
 }
 
 /// Clip a widget rect to fit inside `bounds`. Returns `None` if the rect
@@ -191,7 +195,7 @@ pub fn draw_scene<B: Backend>(
 
     ctx.router.set_preferred_zone(layout.corridor);
 
-    ctx.last_cat_pos = render_to_rgb_buffer(
+    let pixel_result = render_to_rgb_buffer(
         scene,
         &layout,
         pack,
@@ -204,7 +208,10 @@ pub fn draw_scene<B: Backend>(
         theme,
         floor,
         ctx.cat_pet,
+        ctx.chitchat_state,
     );
+    ctx.last_cat_pos = pixel_result.cat_pos;
+    ctx.chitchat_bubbles = pixel_result.chitchat_bubbles;
 
     let mouse_pos = ctx.mouse_pos;
     let pinned_agent = ctx.pinned_agent;
@@ -224,6 +231,7 @@ pub fn draw_scene<B: Backend>(
     let buf = &ctx.buf;
     let ticker = ctx.ticker;
     let theme_picker = ctx.theme_picker;
+    let chitchat_bubbles = &ctx.chitchat_bubbles;
     term.draw(|f| {
         paint_footer(f, scene, full_rect, theme, floor_info);
         flush_buffer_to_term(f, buf, scene_rect);
@@ -239,6 +247,7 @@ pub fn draw_scene<B: Backend>(
             hovered,
             theme,
         );
+        paint_chitchat_bubbles(f, chitchat_bubbles, scene_rect, theme);
         paint_wall_display(f, scene, scene_rect, now, ticker, theme, floor_info);
         if let Some(door) = layout.door {
             let (current, _) = floor_info.unwrap_or((1, 1));

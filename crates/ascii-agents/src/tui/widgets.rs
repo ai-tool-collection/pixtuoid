@@ -755,6 +755,45 @@ pub(super) fn paint_elevator_indicator(
     }
 }
 
+/// Paint chitchat speech bubbles above agents who are chatting at a
+/// social waypoint. Each bubble is a small Paragraph with the speaker's
+/// line of text, positioned above the agent's sprite head.
+pub fn paint_chitchat_bubbles(
+    f: &mut ratatui::Frame<'_>,
+    bubbles: &[crate::tui::chitchat::ChitchatBubble],
+    scene_rect: Rect,
+    theme: &crate::tui::theme::Theme,
+) {
+    for bubble in bubbles {
+        let text = format!(" {} ", bubble.text);
+        let tip_w = text.len() as u16;
+        let tip_h = 1u16;
+
+        // Convert pixel anchor to cell coords.
+        let cell_x = scene_rect.x + bubble.anchor.x;
+        let cell_y = scene_rect.y + bubble.anchor.y / 2;
+
+        // Position above the sprite head.
+        let bx = cell_x.saturating_sub(tip_w / 2);
+        let by = cell_y.saturating_sub(3);
+
+        if let Some(r) = clip_widget_rect(
+            Rect {
+                x: bx,
+                y: by,
+                width: tip_w,
+                height: tip_h,
+            },
+            scene_rect,
+        ) {
+            let style = Style::default()
+                .bg(to_color(theme.ui.tooltip_bg))
+                .fg(Color::White);
+            f.render_widget(Paragraph::new(Span::styled(text, style)), r);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
