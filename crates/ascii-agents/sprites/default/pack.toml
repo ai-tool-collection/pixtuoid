@@ -33,6 +33,7 @@ version = "1"
 "g" = "#c2734f"   # plant pot terracotta
 "C" = "#7e6a55"   # couch fabric
 "K" = "#a8a8b0"   # coffee station chrome
+"V" = "#c8bea8"   # coffee cup (warm beige, matches desk cup theme color)
 "r" = "#a83232"   # book spine red
 "b" = "#3a5a9e"   # book spine blue
 "y" = "#c8a64c"   # book spine yellow / paperback

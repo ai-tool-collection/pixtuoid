@@ -1,5 +1,5 @@
 # 8x12 walker-with-coffee frame 1 — right foot forward, carrying a cup.
-# Cup in trailing hand: white body (w) + chrome rim (K), 2 cells wide.
+# Cup: warm beige (V) matching the desk personalization cup color.
 @frame 0
 . n H H H H n .
 n H H H H H H n
@@ -8,8 +8,8 @@ H S e S S e S H
 . S S S m S S .
 . n S S S S n .
 . B B B B B B .
-B B B B K K B B
-B B B B w w B B
+B B B B V V B B
+B B B B V V B B
 . P P P P P P .
 . S P P P P S .
 . P . . . . P P
