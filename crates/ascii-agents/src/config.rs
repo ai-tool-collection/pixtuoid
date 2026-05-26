@@ -182,4 +182,55 @@ mod tests {
         let theme = resolve_theme(&cfg, Some("dracula".into()));
         assert_eq!(theme, "dracula");
     }
+
+    // --- max-desks cap flow -----------------------------------------------
+
+    #[test]
+    fn max_desks_config_set_no_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "max-desks = 8\n").unwrap();
+        let cfg = load(&path);
+        let cli_max_desks: Option<usize> = None;
+        let desk_cap = cli_max_desks.or(cfg.max_desks);
+        assert_eq!(desk_cap, Some(8));
+    }
+
+    #[test]
+    fn max_desks_cli_overrides_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "max-desks = 8\n").unwrap();
+        let cfg = load(&path);
+        let cli_max_desks: Option<usize> = Some(4);
+        let desk_cap = cli_max_desks.or(cfg.max_desks);
+        assert_eq!(desk_cap, Some(4));
+    }
+
+    #[test]
+    fn max_desks_neither_set() {
+        let cfg = AppConfig::default();
+        let cli_max_desks: Option<usize> = None;
+        let desk_cap = cli_max_desks.or(cfg.max_desks);
+        assert_eq!(desk_cap, None);
+    }
+
+    #[test]
+    fn max_desks_no_config_file() {
+        let cfg = load(Path::new("/nonexistent/path/config.toml"));
+        let cli_max_desks: Option<usize> = None;
+        let desk_cap = cli_max_desks.or(cfg.max_desks);
+        assert_eq!(desk_cap, None);
+    }
+
+    #[test]
+    fn save_preserves_max_desks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"normal\"\nmax-desks = 8\n").unwrap();
+        save(&path, "cyberpunk").unwrap();
+        let cfg = load(&path);
+        assert_eq!(cfg.theme.as_deref(), Some("cyberpunk"));
+        assert_eq!(cfg.max_desks, Some(8));
+    }
 }
