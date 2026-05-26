@@ -83,7 +83,7 @@ ascii-agents
 
 In another terminal, start a Claude Code session. A character walks in from the elevator within a second.
 
-**Keyboard shortcuts:** `q` quit · `p` pause · `t` themes · `+/-` desks · `↑↓/jk/PgUp/PgDn` floors · click to pin tooltip
+**Keyboard shortcuts:** `q` quit · `p` pause · `t` themes · `↑↓/jk/PgUp/PgDn` floors · click to pin tooltip
 
 <details>
 <summary><strong>More install methods</strong></summary>

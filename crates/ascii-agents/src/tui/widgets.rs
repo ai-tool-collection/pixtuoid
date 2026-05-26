@@ -205,7 +205,7 @@ pub(super) fn build_status_summary(
         Some((current, total)) if total > 1 => format!(" F{current}/{total} [\u{2191}\u{2193}]"),
         _ => String::new(),
     };
-    let quit_base = " [p]ause [t]heme [+/-]desks [q]uit ";
+    let quit_base = " [p]ause [t]heme [q]uit ";
     let quit = format!("{floor_suffix}{quit_base}");
     let tools_str = {
         // Sort by count desc, then name asc for stable output. Top 4
@@ -873,7 +873,7 @@ mod tests {
         s
     }
 
-    const QUIT_SUFFIX: &str = " [p]ause [t]heme [+/-]desks [q]uit ";
+    const QUIT_SUFFIX: &str = " [p]ause [t]heme [q]uit ";
 
     #[test]
     fn footer_zero_agents() {

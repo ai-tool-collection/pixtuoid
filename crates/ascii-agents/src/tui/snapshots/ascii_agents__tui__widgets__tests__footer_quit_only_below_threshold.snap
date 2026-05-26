@@ -1,6 +1,6 @@
 ---
 source: crates/ascii-agents/src/tui/widgets.rs
-assertion_line: 811
+assertion_line: 938
 expression: line
 ---
- [p]ause [t]heme [+/-]desks [q]uit
+ [p]ause [t]heme [q]uit

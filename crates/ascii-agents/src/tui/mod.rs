@@ -33,7 +33,7 @@ pub async fn run_tui(
     let pack = embedded_pack::load_sprite_pack(pack_dir)?;
     let term = setup_terminal()?;
     let mut renderer = TuiRenderer::new(term, theme);
-    let mut last_layout_sig: Option<(u16, u16, usize)> = None;
+    let mut last_layout_sig: Option<(u16, u16)> = None;
     let mut paused = false;
     let mut frozen_now: Option<SystemTime> = None;
     let mut theme_picker: Option<usize> = None;
@@ -58,11 +58,7 @@ pub async fn run_tui(
                 Arc::new(s)
             };
             renderer.evict_missing(&snapshot);
-            let sig = (
-                renderer.buf().width,
-                renderer.buf().height,
-                snapshot.max_desks,
-            );
+            let sig = (renderer.buf().width, renderer.buf().height);
             if last_layout_sig != Some(sig) {
                 renderer.invalidate_routes();
                 renderer.cancel_transition();
@@ -70,6 +66,14 @@ pub async fn run_tui(
             }
             renderer.set_theme_picker(theme_picker);
             renderer.render(&snapshot, &pack, now)?;
+
+            // Auto-compute max_desks from the layout capacity so it tracks
+            // terminal size without manual +/- toggling.
+            if let Some(capacity) = renderer.cached_layout().map(|l| l.home_desks.len()) {
+                if capacity > 0 {
+                    max_desks.store(capacity, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
 
             let start = Instant::now();
             let mut polled = event::poll(tick)?;
@@ -113,20 +117,6 @@ pub async fn run_tui(
                                 }
                                 (KeyCode::Char('t'), _) => {
                                     theme_picker = Some(saved_theme_idx);
-                                }
-                                (KeyCode::Char('+') | KeyCode::Char('='), _) => {
-                                    let cur = max_desks.load(std::sync::atomic::Ordering::Relaxed);
-                                    if cur < 16 {
-                                        max_desks
-                                            .store(cur + 1, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                }
-                                (KeyCode::Char('-'), _) => {
-                                    let cur = max_desks.load(std::sync::atomic::Ordering::Relaxed);
-                                    if cur > 1 {
-                                        max_desks
-                                            .store(cur - 1, std::sync::atomic::Ordering::Relaxed);
-                                    }
                                 }
                                 (KeyCode::PageUp, _)
                                 | (KeyCode::Up, _)
