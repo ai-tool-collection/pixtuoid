@@ -317,7 +317,15 @@ pub(super) fn paint_drawable(
                     blit_frame(bin, bin_x, bin_y, buf);
                 }
             }
-            paint_desk_personalization(buf, *desk, *session_age_secs, *has_coffee, *coffee_steam, now, theme);
+            paint_desk_personalization(
+                buf,
+                *desk,
+                *session_age_secs,
+                *has_coffee,
+                *coffee_steam,
+                now,
+                theme,
+            );
             if let Some(tint) = screen_glow {
                 paint_screen_glow(buf, desk.x, desk.y, now, *tint, theme);
             }
@@ -605,15 +613,7 @@ fn paint_desk_personalization(
         put(buf, cx, cy + 1, theme.furniture.coffee_cup_shadow);
         put(buf, cx + 1, cy + 1, theme.furniture.coffee_cup_shadow);
         if coffee_steam {
-            paint_coffee_steam(
-                buf,
-                Point {
-                    x: cx,
-                    y: cy,
-                },
-                now,
-                theme,
-            );
+            paint_coffee_steam(buf, Point { x: cx, y: cy }, now, theme);
         }
     }
     if age_secs >= 1800 {

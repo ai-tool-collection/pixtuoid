@@ -167,7 +167,7 @@ pub fn derive(slot: &AgentSlot, now: SystemTime, layout: &SceneLayout) -> Option
                 to: target,
                 t_x1000: t,
                 frame,
-                carrying_coffee: false,
+                carrying_coffee: has_desk_coffee(slot, exit_time, layout).has_cup,
             });
         }
         // Past exit window: nothing to render, slot will be GC'd shortly.
@@ -349,12 +349,10 @@ pub fn has_desk_coffee(slot: &AgentSlot, now: SystemTime, layout: &SceneLayout) 
 
     // Check if a given cycle is a pantry trip (non-aimless, waypoint is Pantry).
     let is_pantry_trip = |n: u64| -> bool {
-        takes_trip(slot.agent_id, n)
-            && !is_aimless_cycle(slot.agent_id, n)
-            && {
-                let idx = waypoint_index_for_cycle(slot.agent_id, n, layout.waypoints.len());
-                layout.waypoints[idx].kind == WaypointKind::Pantry
-            }
+        takes_trip(slot.agent_id, n) && !is_aimless_cycle(slot.agent_id, n) && {
+            let idx = waypoint_index_for_cycle(slot.agent_id, n, layout.waypoints.len());
+            layout.waypoints[idx].kind == WaypointKind::Pantry
+        }
     };
 
     // Current cycle: if it's a pantry trip and we're past the at-waypoint
@@ -897,7 +895,10 @@ mod tests {
         let (s, now) = slot(ActivityState::Idle, midpoint);
         let coffee = has_desk_coffee(&s, now, &l);
         assert!(coffee.has_cup, "cup should appear during pantry walk-back");
-        assert!(coffee.has_steam, "steam should appear during fresh walk-back");
+        assert!(
+            coffee.has_steam,
+            "steam should appear during fresh walk-back"
+        );
     }
 
     #[test]
@@ -908,8 +909,7 @@ mod tests {
         let trip_n = first_trip_cycle_to_kind(test_slot.agent_id, &l, WaypointKind::Pantry)
             .expect("agent should visit Pantry within 2000 cycles");
         // Find the first non-trip cycle after the pantry trip.
-        let next_stay = ((trip_n + 1)..2000)
-            .find(|n| !takes_trip(test_slot.agent_id, *n));
+        let next_stay = ((trip_n + 1)..2000).find(|n| !takes_trip(test_slot.agent_id, *n));
         if let Some(stay_n) = next_stay {
             if stay_n == trip_n + 1 {
                 // Seated at 100ms into the next cycle.
@@ -931,23 +931,27 @@ mod tests {
         // previous cycle was also not a pantry trip.
         let trip_n = (1u64..2000)
             .find(|n| {
-                takes_trip(test_slot.agent_id, *n) && !is_aimless_cycle(test_slot.agent_id, *n) && {
-                    let idx = waypoint_index_for_cycle(test_slot.agent_id, *n, l.waypoints.len());
-                    l.waypoints[idx].kind != WaypointKind::Pantry
-                } && {
-                    // Ensure previous cycle was NOT a pantry trip.
-                    let prev_is_pantry = takes_trip(test_slot.agent_id, n - 1)
-                        && !is_aimless_cycle(test_slot.agent_id, n - 1)
-                        && {
-                            let idx = waypoint_index_for_cycle(
-                                test_slot.agent_id,
-                                n - 1,
-                                l.waypoints.len(),
-                            );
-                            l.waypoints[idx].kind == WaypointKind::Pantry
-                        };
-                    !prev_is_pantry
-                }
+                takes_trip(test_slot.agent_id, *n)
+                    && !is_aimless_cycle(test_slot.agent_id, *n)
+                    && {
+                        let idx =
+                            waypoint_index_for_cycle(test_slot.agent_id, *n, l.waypoints.len());
+                        l.waypoints[idx].kind != WaypointKind::Pantry
+                    }
+                    && {
+                        // Ensure previous cycle was NOT a pantry trip.
+                        let prev_is_pantry = takes_trip(test_slot.agent_id, n - 1)
+                            && !is_aimless_cycle(test_slot.agent_id, n - 1)
+                            && {
+                                let idx = waypoint_index_for_cycle(
+                                    test_slot.agent_id,
+                                    n - 1,
+                                    l.waypoints.len(),
+                                );
+                                l.waypoints[idx].kind == WaypointKind::Pantry
+                            };
+                        !prev_is_pantry
+                    }
             })
             .expect("agent should have non-pantry trip without prior pantry");
         let midpoint = trip_n * cycle + at_wp_end + (cycle - at_wp_end) / 2;
@@ -987,8 +991,7 @@ mod tests {
         let trip_n = first_trip_cycle_to_kind(test_slot.agent_id, &l, WaypointKind::Pantry)
             .expect("agent should visit Pantry within 2000 cycles");
         // Find a non-trip cycle after the pantry trip so the cup persists.
-        let next_stay = ((trip_n + 1)..2000)
-            .find(|n| !takes_trip(test_slot.agent_id, *n));
+        let next_stay = ((trip_n + 1)..2000).find(|n| !takes_trip(test_slot.agent_id, *n));
         if let Some(stay_n) = next_stay {
             if stay_n == trip_n + 1 {
                 // 130 seconds into the next cycle — past the 120s steam window.
