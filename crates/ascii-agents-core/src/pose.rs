@@ -290,6 +290,114 @@ fn pick_aimless_dest(layout: &SceneLayout, seed: u64) -> Point {
     }
 }
 
+/// Coffee cup state for desk personalization. Derived statelessly from the
+/// wander cycle timing — the cup appears when the agent has returned (or is
+/// returning) from a pantry trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeskCoffee {
+    /// True when a coffee cup should be drawn on the desk.
+    pub has_cup: bool,
+    /// True when the cup is "fresh" (steam effect). Only true when
+    /// `has_cup` is also true.
+    pub has_steam: bool,
+}
+
+/// Steam window — 120 seconds after the walk-back completes.
+const COFFEE_STEAM_WINDOW_MS: u64 = 120_000;
+
+/// Determine whether the agent's desk should show a coffee cup (and steam).
+///
+/// The cup appears when the agent has completed (or is in) the walk-back
+/// phase of a pantry trip. It persists through subsequent non-trip cycles
+/// until the agent starts a new trip to a non-pantry destination.
+///
+/// Returns `DeskCoffee { has_cup: false, has_steam: false }` when the agent
+/// is not Idle, is in the thinking window, or hasn't visited the pantry
+/// recently.
+pub fn has_desk_coffee(slot: &AgentSlot, now: SystemTime, layout: &SceneLayout) -> DeskCoffee {
+    let no_coffee = DeskCoffee {
+        has_cup: false,
+        has_steam: false,
+    };
+
+    // Only Idle agents that have passed the thinking window participate in
+    // the wander cycle (and therefore in coffee trips).
+    if !matches!(slot.state, crate::state::ActivityState::Idle) {
+        return no_coffee;
+    }
+    let was_active = slot.last_event_at > slot.created_at;
+    let since_last_event = now
+        .duration_since(slot.last_event_at)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    if was_active && since_last_event < THINKING_WINDOW_SECS {
+        return no_coffee;
+    }
+    if layout.waypoints.is_empty() {
+        return no_coffee;
+    }
+
+    let elapsed_ms = now
+        .duration_since(slot.state_started_at)
+        .unwrap_or(Duration::ZERO)
+        .as_millis() as u64;
+    let cycle_ms = cycle_ms_for(slot.agent_id);
+    let cycle_n = elapsed_ms / cycle_ms;
+    let phase_t = elapsed_ms % cycle_ms;
+
+    let at_wp_end = cycle_ms * PHASE_AT_WAYPOINT_FRAC / 1000;
+
+    // Check if a given cycle is a pantry trip (non-aimless, waypoint is Pantry).
+    let is_pantry_trip = |n: u64| -> bool {
+        takes_trip(slot.agent_id, n)
+            && !is_aimless_cycle(slot.agent_id, n)
+            && {
+                let idx = waypoint_index_for_cycle(slot.agent_id, n, layout.waypoints.len());
+                layout.waypoints[idx].kind == WaypointKind::Pantry
+            }
+    };
+
+    // Current cycle: if it's a pantry trip and we're past the at-waypoint
+    // phase (walk-back or later), the agent has coffee.
+    if is_pantry_trip(cycle_n) && phase_t >= at_wp_end {
+        // Compute ms since walk-back started for steam.
+        let ms_since_walkback_start = phase_t - at_wp_end;
+        return DeskCoffee {
+            has_cup: true,
+            has_steam: ms_since_walkback_start < COFFEE_STEAM_WINDOW_MS,
+        };
+    }
+
+    // Previous cycle: if it was a pantry trip, the cup persists while the
+    // current cycle is non-trip (seated). Once the current cycle starts a
+    // new trip (any destination), the cup disappears.
+    if cycle_n > 0 && is_pantry_trip(cycle_n - 1) {
+        // Current cycle is non-trip → cup persists.
+        if !takes_trip(slot.agent_id, cycle_n) || layout.waypoints.is_empty() {
+            // Steam: check if 120s have passed since the previous cycle's
+            // walk-back ended (= the start of this cycle).
+            let cycle_start_ms = cycle_n * cycle_ms;
+            let ms_since_prev_return = elapsed_ms.saturating_sub(cycle_start_ms);
+            return DeskCoffee {
+                has_cup: true,
+                has_steam: ms_since_prev_return < COFFEE_STEAM_WINDOW_MS,
+            };
+        }
+        // Current cycle is a trip but we haven't left yet (seated phase).
+        let seated_end = cycle_ms * PHASE_SEATED_FRAC / 1000;
+        if phase_t < seated_end {
+            let cycle_start_ms = cycle_n * cycle_ms;
+            let ms_since_prev_return = elapsed_ms.saturating_sub(cycle_start_ms);
+            return DeskCoffee {
+                has_cup: true,
+                has_steam: ms_since_prev_return < COFFEE_STEAM_WINDOW_MS,
+            };
+        }
+    }
+
+    no_coffee
+}
+
 fn idle_pose(slot: &AgentSlot, desk: Point, layout: &SceneLayout, elapsed_ms: u64) -> Pose {
     let cycle_ms = cycle_ms_for(slot.agent_id);
     let cycle_n = elapsed_ms / cycle_ms;
@@ -771,6 +879,125 @@ mod tests {
                 );
             }
             other => panic!("expected Walking, got {other:?}"),
+        }
+    }
+
+    // --- has_desk_coffee tests -----------------------------------------------
+
+    #[test]
+    fn desk_coffee_during_pantry_walkback() {
+        let (test_slot, _) = slot(ActivityState::Idle, 0);
+        let l = layout();
+        let cycle = cycle_ms_for(test_slot.agent_id);
+        let (_, _, at_wp_end, _) = phases(test_slot.agent_id);
+        let trip_n = first_trip_cycle_to_kind(test_slot.agent_id, &l, WaypointKind::Pantry)
+            .expect("agent should visit Pantry within 2000 cycles");
+        // Walk-back phase midpoint.
+        let midpoint = trip_n * cycle + at_wp_end + (cycle - at_wp_end) / 2;
+        let (s, now) = slot(ActivityState::Idle, midpoint);
+        let coffee = has_desk_coffee(&s, now, &l);
+        assert!(coffee.has_cup, "cup should appear during pantry walk-back");
+        assert!(coffee.has_steam, "steam should appear during fresh walk-back");
+    }
+
+    #[test]
+    fn desk_coffee_persists_in_next_non_trip_cycle() {
+        let (test_slot, _) = slot(ActivityState::Idle, 0);
+        let l = layout();
+        let cycle = cycle_ms_for(test_slot.agent_id);
+        let trip_n = first_trip_cycle_to_kind(test_slot.agent_id, &l, WaypointKind::Pantry)
+            .expect("agent should visit Pantry within 2000 cycles");
+        // Find the first non-trip cycle after the pantry trip.
+        let next_stay = ((trip_n + 1)..2000)
+            .find(|n| !takes_trip(test_slot.agent_id, *n));
+        if let Some(stay_n) = next_stay {
+            if stay_n == trip_n + 1 {
+                // Seated at 100ms into the next cycle.
+                let t = stay_n * cycle + 100;
+                let (s, now) = slot(ActivityState::Idle, t);
+                let coffee = has_desk_coffee(&s, now, &l);
+                assert!(coffee.has_cup, "cup should persist in next non-trip cycle");
+            }
+        }
+    }
+
+    #[test]
+    fn no_desk_coffee_during_non_pantry_trip() {
+        let (test_slot, _) = slot(ActivityState::Idle, 0);
+        let l = layout();
+        let cycle = cycle_ms_for(test_slot.agent_id);
+        let (_, _, at_wp_end, _) = phases(test_slot.agent_id);
+        // Find a trip that goes to a non-pantry waypoint AND whose
+        // previous cycle was also not a pantry trip.
+        let trip_n = (1u64..2000)
+            .find(|n| {
+                takes_trip(test_slot.agent_id, *n) && !is_aimless_cycle(test_slot.agent_id, *n) && {
+                    let idx = waypoint_index_for_cycle(test_slot.agent_id, *n, l.waypoints.len());
+                    l.waypoints[idx].kind != WaypointKind::Pantry
+                } && {
+                    // Ensure previous cycle was NOT a pantry trip.
+                    let prev_is_pantry = takes_trip(test_slot.agent_id, n - 1)
+                        && !is_aimless_cycle(test_slot.agent_id, n - 1)
+                        && {
+                            let idx = waypoint_index_for_cycle(
+                                test_slot.agent_id,
+                                n - 1,
+                                l.waypoints.len(),
+                            );
+                            l.waypoints[idx].kind == WaypointKind::Pantry
+                        };
+                    !prev_is_pantry
+                }
+            })
+            .expect("agent should have non-pantry trip without prior pantry");
+        let midpoint = trip_n * cycle + at_wp_end + (cycle - at_wp_end) / 2;
+        let (s, now) = slot(ActivityState::Idle, midpoint);
+        let coffee = has_desk_coffee(&s, now, &l);
+        assert!(
+            !coffee.has_cup,
+            "no cup during non-pantry walk-back without prior pantry"
+        );
+    }
+
+    #[test]
+    fn no_desk_coffee_when_active() {
+        let (s, now) = slot(typing(), 10_000);
+        let l = layout();
+        let coffee = has_desk_coffee(&s, now, &l);
+        assert!(!coffee.has_cup, "Active agents should not have desk coffee");
+    }
+
+    #[test]
+    fn no_desk_coffee_in_thinking_window() {
+        let (mut s, now) = slot(ActivityState::Idle, 5_000);
+        s.last_event_at = now - Duration::from_secs(5);
+        let l = layout();
+        let coffee = has_desk_coffee(&s, now, &l);
+        assert!(
+            !coffee.has_cup,
+            "agent in thinking window should not have desk coffee"
+        );
+    }
+
+    #[test]
+    fn desk_coffee_steam_fades_after_window() {
+        let (test_slot, _) = slot(ActivityState::Idle, 0);
+        let l = layout();
+        let cycle = cycle_ms_for(test_slot.agent_id);
+        let trip_n = first_trip_cycle_to_kind(test_slot.agent_id, &l, WaypointKind::Pantry)
+            .expect("agent should visit Pantry within 2000 cycles");
+        // Find a non-trip cycle after the pantry trip so the cup persists.
+        let next_stay = ((trip_n + 1)..2000)
+            .find(|n| !takes_trip(test_slot.agent_id, *n));
+        if let Some(stay_n) = next_stay {
+            if stay_n == trip_n + 1 {
+                // 130 seconds into the next cycle — past the 120s steam window.
+                let t = stay_n * cycle + 130_000;
+                let (s, now) = slot(ActivityState::Idle, t);
+                let coffee = has_desk_coffee(&s, now, &l);
+                assert!(coffee.has_cup, "cup should still be present");
+                assert!(!coffee.has_steam, "steam should have faded after 120s");
+            }
         }
     }
 }

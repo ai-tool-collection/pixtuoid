@@ -480,6 +480,12 @@ pub fn render_to_rgb_buffer(
             .and_then(|a| now.duration_since(a.created_at).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let coffee = occupant
+            .map(|a| ascii_agents_core::pose::has_desk_coffee(a, now, layout))
+            .unwrap_or(ascii_agents_core::pose::DeskCoffee {
+                has_cup: false,
+                has_steam: false,
+            });
         drawables.push(Drawable {
             anchor_y: desk.y + 8,
             kind: DrawableKind::DeskCubicle {
@@ -488,6 +494,8 @@ pub fn render_to_rgb_buffer(
                 has_cabinet: i % 2 == 0,
                 screen_glow,
                 session_age_secs,
+                has_coffee: coffee.has_cup,
+                coffee_steam: coffee.has_steam,
             },
         });
     }

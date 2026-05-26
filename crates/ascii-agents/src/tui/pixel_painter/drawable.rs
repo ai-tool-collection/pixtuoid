@@ -49,6 +49,8 @@ pub(super) enum DrawableKind<'a> {
         has_cabinet: bool,
         screen_glow: Option<Rgb>,
         session_age_secs: u64,
+        has_coffee: bool,
+        coffee_steam: bool,
     },
     Character {
         agent: &'a AgentSlot,
@@ -280,6 +282,8 @@ pub(super) fn paint_drawable(
             has_cabinet,
             screen_glow,
             session_age_secs,
+            has_coffee,
+            coffee_steam,
         } => {
             let divider = theme.office.cubicle_divider;
             if !is_last_col {
@@ -313,7 +317,7 @@ pub(super) fn paint_drawable(
                     blit_frame(bin, bin_x, bin_y, buf);
                 }
             }
-            paint_desk_personalization(buf, *desk, *session_age_secs, theme);
+            paint_desk_personalization(buf, *desk, *session_age_secs, *has_coffee, *coffee_steam, now, theme);
             if let Some(tint) = screen_glow {
                 paint_screen_glow(buf, desk.x, desk.y, now, *tint, theme);
             }
@@ -580,9 +584,12 @@ fn paint_desk_personalization(
     buf: &mut RgbBuffer,
     desk: Point,
     age_secs: u64,
+    has_coffee: bool,
+    coffee_steam: bool,
+    now: SystemTime,
     theme: &crate::tui::theme::Theme,
 ) {
-    if age_secs == 0 {
+    if age_secs == 0 && !has_coffee {
         return;
     }
     let put = |buf: &mut RgbBuffer, x: u16, y: u16, c: Rgb| {
@@ -590,13 +597,24 @@ fn paint_desk_personalization(
             buf.put(x, y, c);
         }
     };
-    if age_secs >= 600 {
+    if has_coffee {
         let cx = desk.x + 2;
         let cy = desk.y + 2;
         put(buf, cx, cy, theme.furniture.coffee_cup);
         put(buf, cx + 1, cy, theme.furniture.coffee_cup);
         put(buf, cx, cy + 1, theme.furniture.coffee_cup_shadow);
         put(buf, cx + 1, cy + 1, theme.furniture.coffee_cup_shadow);
+        if coffee_steam {
+            paint_coffee_steam(
+                buf,
+                Point {
+                    x: cx,
+                    y: cy,
+                },
+                now,
+                theme,
+            );
+        }
     }
     if age_secs >= 1800 {
         let px = desk.x + DESK_W - 2;
