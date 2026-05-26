@@ -67,11 +67,27 @@ Running multiple AI agents in the terminal is like managing a sweatshop you can'
 
 ## Themes
 
-Press `t` to switch themes with live preview. Your choice is saved to `~/.config/ascii-agents/config.toml` and persists across sessions. 6 built-in:
+Press `t` to switch themes with live preview. Your choice persists across sessions. 6 built-in:
 
 <p align="center">
   <img src="docs/images/themes-composite.png" alt="6 themes: Normal, Cyberpunk, Dracula, Tokyo Night, Catppuccin, Gruvbox" width="800" />
 </p>
+
+## Configuration
+
+Settings are stored in `~/.config/ascii-agents/config.toml` (respects `$XDG_CONFIG_HOME`):
+
+```toml
+theme = "cyberpunk"
+max-desks = 12
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `theme` | `"normal"` | Color theme — `normal`, `cyberpunk`, `dracula`, `tokyo-night`, `catppuccin`, `gruvbox` |
+| `max-desks` | `16` | Initial desk capacity per floor. Agents beyond this overflow to additional floors. |
+
+CLI flags override config: `ascii-agents run --theme dracula --max-desks 8`
 
 ## Quick Start
 
