@@ -1,0 +1,451 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+use tokio::sync::Mutex;
+use tracing::{debug, warn};
+
+use crate::source::{AgentEvent, TaggedSender, Transport};
+use crate::AgentId;
+
+pub type LineDecoder = fn(&str, &str, serde_json::Value) -> Result<Vec<AgentEvent>>;
+pub type LabelDeriver = fn(&Path, &str, &Path) -> String;
+pub type SessionEndChecker = fn(&[u8]) -> bool;
+
+pub struct JsonlWatcher {
+    root: PathBuf,
+    initial_window: Duration,
+    source_name: String,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    check_session_ended: SessionEndChecker,
+}
+
+const DEFAULT_INITIAL_WINDOW: Duration = Duration::from_secs(3600);
+
+impl JsonlWatcher {
+    pub fn new(
+        root: PathBuf,
+        source: String,
+        decode_line: LineDecoder,
+        derive_label: LabelDeriver,
+        check_session_ended: SessionEndChecker,
+    ) -> Self {
+        Self {
+            root,
+            initial_window: DEFAULT_INITIAL_WINDOW,
+            source_name: source,
+            decode_line,
+            derive_label,
+            check_session_ended,
+        }
+    }
+
+    pub fn with_initial_window(mut self, window: Duration) -> Self {
+        self.initial_window = window;
+        self
+    }
+
+    pub async fn run(self, tx: TaggedSender) -> Result<()> {
+        let cursors: Arc<Mutex<HashMap<PathBuf, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let seen_sessions: Arc<Mutex<HashMap<PathBuf, bool>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
+        let mut watcher: RecommendedWatcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    for path in event.paths {
+                        if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                            let _ = notify_tx.send(path);
+                        }
+                    }
+                }
+            })?;
+        let _ = tokio::fs::create_dir_all(&self.root).await;
+        watcher.watch(&self.root, RecursiveMode::Recursive)?;
+
+        let source_arc: Arc<str> = Arc::from(self.source_name.as_str());
+        let decode_line = self.decode_line;
+        let derive_label = self.derive_label;
+        let check_ended = self.check_session_ended;
+
+        initial_seed_root(
+            &self.root,
+            self.initial_window,
+            &source_arc,
+            decode_line,
+            derive_label,
+            check_ended,
+            &cursors,
+            &seen_sessions,
+            &tx,
+        )
+        .await;
+
+        // Re-scan shortly after startup to catch files that APFS read_dir
+        // missed during the initial seed walk (metadata propagation race).
+        // walk_jsonl is idempotent (cursor == file_len → no-op).
+        let mut rescan_done = false;
+        let rescan_delay = tokio::time::sleep(Duration::from_millis(250));
+        tokio::pin!(rescan_delay);
+
+        loop {
+            let source_arc = source_arc.clone();
+            tokio::select! {
+                Some(path) = notify_rx.recv() => {
+                    walk_jsonl(&path, &source_arc, decode_line, derive_label, &cursors, &seen_sessions, &tx).await;
+                }
+                _ = &mut rescan_delay, if !rescan_done => {
+                    rescan_done = true;
+                    scan_root(&self.root, &source_arc, decode_line, derive_label, &cursors, &seen_sessions, &tx).await;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                    scan_root(&self.root, &source_arc, decode_line, derive_label, &cursors, &seen_sessions, &tx).await;
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn initial_seed_root(
+    root: &Path,
+    window: Duration,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    check_ended: SessionEndChecker,
+    cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
+    seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
+    tx: &TaggedSender,
+) {
+    if let Ok(mut read) = tokio::fs::read_dir(root).await {
+        while let Ok(Some(entry)) = read.next_entry().await {
+            initial_seed_walk(
+                &entry.path(),
+                window,
+                source,
+                decode_line,
+                derive_label,
+                check_ended,
+                cursors,
+                seen,
+                tx,
+            )
+            .await;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn initial_seed_walk(
+    path: &Path,
+    window: Duration,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    check_ended: SessionEndChecker,
+    cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
+    seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
+    tx: &TaggedSender,
+) {
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if meta.is_dir() {
+        if let Ok(mut read) = tokio::fs::read_dir(path).await {
+            while let Ok(Some(entry)) = read.next_entry().await {
+                Box::pin(initial_seed_walk(
+                    &entry.path(),
+                    window,
+                    source,
+                    decode_line,
+                    derive_label,
+                    check_ended,
+                    cursors,
+                    seen,
+                    tx,
+                ))
+                .await;
+            }
+        }
+        return;
+    }
+    if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+        return;
+    }
+
+    let recent = meta
+        .modified()
+        .ok()
+        .map(|mtime| {
+            // elapsed() returns Err when mtime is in the future (clock jitter
+            // on APFS nanosecond-precision filesystems). A future mtime is
+            // necessarily within any recency window.
+            let elapsed = mtime.elapsed().unwrap_or(Duration::ZERO);
+            elapsed <= window
+        })
+        .unwrap_or(false);
+
+    if recent {
+        let ended = check_session_ended(path, check_ended).await;
+        if ended {
+            cursors.lock().await.insert(path.to_path_buf(), meta.len());
+        } else {
+            walk_jsonl(path, source, decode_line, derive_label, cursors, seen, tx).await;
+        }
+    } else {
+        cursors.lock().await.insert(path.to_path_buf(), meta.len());
+    }
+}
+
+async fn scan_root(
+    root: &Path,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
+    seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
+    tx: &TaggedSender,
+) {
+    if let Ok(mut read) = tokio::fs::read_dir(root).await {
+        while let Ok(Some(entry)) = read.next_entry().await {
+            walk_jsonl(
+                &entry.path(),
+                source,
+                decode_line,
+                derive_label,
+                cursors,
+                seen,
+                tx,
+            )
+            .await;
+        }
+    }
+}
+
+async fn walk_jsonl(
+    path: &Path,
+    source: &Arc<str>,
+    decode_line: LineDecoder,
+    derive_label: LabelDeriver,
+    cursors: &Arc<Mutex<HashMap<PathBuf, u64>>>,
+    seen: &Arc<Mutex<HashMap<PathBuf, bool>>>,
+    tx: &TaggedSender,
+) {
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if meta.is_dir() {
+        if let Ok(mut read) = tokio::fs::read_dir(path).await {
+            while let Ok(Some(entry)) = read.next_entry().await {
+                Box::pin(walk_jsonl(
+                    &entry.path(),
+                    source,
+                    decode_line,
+                    derive_label,
+                    cursors,
+                    seen,
+                    tx,
+                ))
+                .await;
+            }
+        }
+        return;
+    }
+    if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+        return;
+    }
+
+    let file_len = meta.len();
+    const MAX_PENDING_BYTES: u64 = 1 << 20;
+
+    let cursor_now: u64 = {
+        let cursors_g = cursors.lock().await;
+        *cursors_g.get(path).unwrap_or(&0)
+    };
+    if cursor_now > file_len {
+        warn!(
+            "{} truncated below cursor ({} < {}), resetting cursor",
+            path.display(),
+            file_len,
+            cursor_now
+        );
+        cursors.lock().await.insert(path.to_path_buf(), 0);
+        return;
+    }
+    if cursor_now == file_len {
+        return;
+    }
+    if file_len - cursor_now > MAX_PENDING_BYTES {
+        warn!(
+            "{} has > {} pending bytes with no newline; skipping to end",
+            path.display(),
+            MAX_PENDING_BYTES
+        );
+        cursors.lock().await.insert(path.to_path_buf(), file_len);
+        return;
+    }
+
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("open {} failed: {e}", path.display());
+            return;
+        }
+    };
+    if let Err(e) = file.seek(SeekFrom::Start(cursor_now)).await {
+        warn!("seek {} failed: {e}", path.display());
+        return;
+    }
+    let mut new_chunk = Vec::with_capacity((file_len - cursor_now) as usize);
+    if let Err(e) = file.read_to_end(&mut new_chunk).await {
+        warn!("read tail of {} failed: {e}", path.display());
+        return;
+    }
+
+    let safe_end_relative = match new_chunk.iter().rposition(|&b| b == b'\n') {
+        Some(i) => i + 1,
+        None => 0,
+    };
+    if safe_end_relative == 0 {
+        return;
+    }
+    let new_cursor = cursor_now + safe_end_relative as u64;
+    {
+        let mut cursors_g = cursors.lock().await;
+        cursors_g.insert(path.to_path_buf(), new_cursor);
+    }
+
+    let new_bytes = &new_chunk[..safe_end_relative];
+    let transcript_path_str = path.to_string_lossy().into_owned();
+
+    {
+        let mut seen = seen.lock().await;
+        if seen.insert(path.to_path_buf(), true).is_none() {
+            let id = AgentId::from_parts(source, &transcript_path_str);
+            let session_id = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let cwd = extract_cwd(new_bytes).unwrap_or_default();
+            let parent_id = detect_parent_id(path, source);
+            let _ = tx
+                .send((
+                    Transport::Jsonl,
+                    AgentEvent::SessionStart {
+                        agent_id: id,
+                        source: source.to_string(),
+                        session_id: session_id.clone(),
+                        cwd: cwd.clone(),
+                        parent_id,
+                    },
+                ))
+                .await;
+
+            let label = derive_label(path, source, &cwd);
+            let _ = tx
+                .send((
+                    Transport::Jsonl,
+                    AgentEvent::Rename {
+                        agent_id: id,
+                        label,
+                    },
+                ))
+                .await;
+        }
+    }
+
+    for line in new_bytes.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let s = match std::str::from_utf8(line) {
+            Ok(s) => s,
+            Err(_) => {
+                warn!("non-utf8 line in {}", path.display());
+                continue;
+            }
+        };
+        let v: serde_json::Value = match serde_json::from_str(s) {
+            Ok(v) => v,
+            Err(e) => {
+                debug!("skip non-json line in {}: {e}", path.display());
+                continue;
+            }
+        };
+        match decode_line(&transcript_path_str, source, v) {
+            Ok(events) => {
+                for ev in events {
+                    if tx.send((Transport::Jsonl, ev)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(e) => warn!("decode error in {}: {e}", path.display()),
+        }
+    }
+}
+
+/// Read the tail of a file and delegate to the source-specific checker.
+async fn check_session_ended(path: &Path, checker: SessionEndChecker) -> bool {
+    const TAIL_BYTES: u64 = 8192;
+    let Ok(meta) = tokio::fs::metadata(path).await else {
+        return false;
+    };
+    let file_len = meta.len();
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    let start = file_len.saturating_sub(TAIL_BYTES);
+    if tokio::io::AsyncSeekExt::seek(&mut file, SeekFrom::Start(start))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = Vec::with_capacity(TAIL_BYTES as usize);
+    if tokio::io::AsyncReadExt::read_to_end(&mut file, &mut buf)
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    checker(&buf)
+}
+
+/// Detect if this transcript is a subagent by checking for a "subagents"
+/// component in the path. If found, derive the parent's AgentId from the
+/// grandparent directory (the parent session's transcript directory).
+fn detect_parent_id(path: &Path, source: &str) -> Option<AgentId> {
+    let path_str = path.to_string_lossy();
+    let idx = path_str.find("/subagents/")?;
+    let parent_dir = &path_str[..idx];
+    let parent_jsonl = format!("{parent_dir}.jsonl");
+    Some(AgentId::from_parts(source, &parent_jsonl))
+}
+
+fn extract_cwd(bytes: &[u8]) -> Option<PathBuf> {
+    for line in bytes.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(s) = std::str::from_utf8(line) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
+            continue;
+        };
+        if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+            return Some(PathBuf::from(cwd));
+        }
+    }
+    None
+}
