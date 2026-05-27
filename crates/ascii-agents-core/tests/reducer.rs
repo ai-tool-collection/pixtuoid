@@ -962,6 +962,51 @@ fn active_ms_does_not_double_count_on_duplicate_activity_end() {
 }
 
 #[test]
+fn active_ms_preserved_when_task_arrives_during_active_tool() {
+    use ascii_agents_core::source::ToolDetail;
+
+    let mut scene = SceneState::uniform(4);
+    let mut r = Reducer::new();
+    let id = AgentId::from_transcript_path("/p/task-active.jsonl");
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    start(&mut r, &mut scene, id);
+
+    // Tool starts
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("t1".into()),
+            detail: None,
+        },
+        t0,
+        Transport::Hook,
+    );
+
+    // 2 seconds later, Task arrives while still Active (within grace window)
+    let t1 = t0 + Duration::from_secs(2);
+    r.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            activity: Activity::Typing,
+            tool_use_id: Some("task-1".into()),
+            detail: Some(ToolDetail::Task),
+        },
+        t1,
+        Transport::Jsonl,
+    );
+
+    let slot = scene.agents.get(&id).unwrap();
+    assert!(
+        slot.active_ms >= 2000,
+        "expected >= 2000ms active from pre-Task tool span, got {}",
+        slot.active_ms
+    );
+}
+
+#[test]
 fn session_end_cascades_to_children() {
     let mut scene = SceneState::uniform(8);
     let mut r = Reducer::new();

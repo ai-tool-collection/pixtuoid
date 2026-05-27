@@ -155,6 +155,13 @@ impl Reducer {
                     .or_default()
                     .insert(tuid.clone());
                 if let Some(slot) = scene.agents.get_mut(agent_id) {
+                    if matches!(slot.state, ActivityState::Active { .. }) {
+                        let elapsed = now
+                            .duration_since(slot.state_started_at)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        slot.active_ms += elapsed;
+                    }
                     slot.state = ActivityState::Active {
                         activity: crate::source::Activity::Typing,
                         tool_use_id: Some(Arc::<str>::from(tuid.as_str())),
