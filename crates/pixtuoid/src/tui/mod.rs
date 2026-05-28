@@ -37,6 +37,26 @@ pub async fn run_tui(
     let pack = embedded_pack::load_sprite_pack(pack_dir)?;
     let term = setup_terminal()?;
     let mut renderer = TuiRenderer::new(term, theme, enabled_pets);
+    let mut version_popup = {
+        let current_ver = env!("CARGO_PKG_VERSION");
+        let cfg = crate::config::load(&config_path);
+        let should_show = match &cfg.last_seen_version {
+            None => false,
+            Some(last) => {
+                crate::version::is_newer_version(current_ver, last)
+                    && crate::version::release_notes(current_ver).is_some()
+            }
+        };
+        // Persist the current version immediately so the popup shows at
+        // most once per upgrade, regardless of how the user exits this run
+        // (Enter to dismiss, Esc/q/Ctrl+C to quit, or terminal close).
+        if should_show || cfg.last_seen_version.is_none() {
+            if let Err(e) = crate::config::save_version(&config_path, current_ver) {
+                tracing::warn!("failed to persist version: {e}");
+            }
+        }
+        should_show
+    };
     let mut last_layout_sig: Option<(u16, u16)> = None;
     let mut paused = false;
     let mut frozen_now: Option<SystemTime> = None;
@@ -64,6 +84,7 @@ pub async fn run_tui(
                 last_layout_sig = Some(sig);
             }
             renderer.set_theme_picker(theme_picker);
+            renderer.set_version_popup(version_popup);
             renderer.render(&snapshot, &pack, now)?;
 
             // Auto-compute per-floor desk capacity from the current
@@ -102,7 +123,19 @@ pub async fn run_tui(
             while polled {
                 match event::read()? {
                     Event::Key(k) => {
-                        if let Some(idx) = theme_picker.as_mut() {
+                        if version_popup {
+                            match (k.code, k.modifiers) {
+                                (KeyCode::Enter, _) => {
+                                    version_popup = false;
+                                }
+                                (KeyCode::Char('q'), _)
+                                | (KeyCode::Esc, _)
+                                | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                    quit = true;
+                                }
+                                _ => {}
+                            }
+                        } else if let Some(idx) = theme_picker.as_mut() {
                             match k.code {
                                 KeyCode::Up | KeyCode::Char('k') => {
                                     if *idx > 0 {
@@ -162,6 +195,36 @@ pub async fn run_tui(
                                     }
                                 }
                                 _ => {}
+                            }
+                        }
+                    }
+                    Event::Mouse(m) if version_popup => {
+                        // While the popup is visible, only the URL link is
+                        // clickable; all other clicks are swallowed so they
+                        // don't fall through to the scene behind.
+                        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+                            if let Ok((cols, rows)) = crossterm::terminal::size() {
+                                let bounds = ratatui::layout::Rect {
+                                    x: 0,
+                                    y: 0,
+                                    width: cols,
+                                    height: rows,
+                                };
+                                let notes_len =
+                                    crate::version::release_notes(env!("CARGO_PKG_VERSION"))
+                                        .map(|n| n.len())
+                                        .unwrap_or(0);
+                                if let Some(rect) =
+                                    widgets::version_popup_url_rect(notes_len, bounds)
+                                {
+                                    if m.column >= rect.x
+                                        && m.column < rect.x + rect.width
+                                        && m.row >= rect.y
+                                        && m.row < rect.y + rect.height
+                                    {
+                                        let _ = open::that(widgets::VERSION_POPUP_URL);
+                                    }
+                                }
                             }
                         }
                     }

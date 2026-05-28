@@ -277,6 +277,103 @@ pub(in crate::tui) fn paint_wall_display(
     }
 }
 
+/// URL shown on the "More details" line and opened on click.
+pub(in crate::tui) const VERSION_POPUP_URL: &str = "https://github.com/IvanWng97/pixtuoid/releases";
+/// Prefix rendered before the URL. Its byte-length determines the URL's
+/// click-rect x-offset; keep `paint_version_popup` and
+/// `version_popup_url_rect` consistent by using this constant.
+const URL_PREFIX: &str = "  More details: ";
+
+pub(in crate::tui) fn paint_version_popup(
+    f: &mut ratatui::Frame<'_>,
+    version: &str,
+    notes: &[&str],
+    bounds: Rect,
+    theme: &crate::tui::theme::Theme,
+) {
+    use ratatui::style::Modifier;
+    use ratatui::text::{Line, Span as TSpan};
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let needed_w = 2 + URL_PREFIX.len() as u16 + VERSION_POPUP_URL.len() as u16 + 2;
+    let w = needed_w.min(bounds.width);
+    let h = (notes.len() as u16 + 6).min(bounds.height);
+    if w < 4 || h < 3 {
+        return;
+    }
+    let x = bounds.x + bounds.width.saturating_sub(w) / 2;
+    let y = bounds.y + bounds.height.saturating_sub(h) / 2;
+    let area = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, area);
+
+    let mut items: Vec<Line> = Vec::with_capacity(notes.len() + 3);
+    items.push(Line::from(""));
+    for note in notes {
+        items.push(Line::from(TSpan::styled(
+            format!("  \u{00b7} {note}"),
+            Style::default().fg(to_color(theme.ui.label_idle)),
+        )));
+    }
+    items.push(Line::from(""));
+    items.push(Line::from(vec![
+        TSpan::styled(
+            URL_PREFIX,
+            Style::default().fg(to_color(theme.ui.label_idle)),
+        ),
+        TSpan::styled(
+            VERSION_POPUP_URL,
+            Style::default()
+                .fg(to_color(theme.ui.neon_brand))
+                .add_modifier(Modifier::UNDERLINED),
+        ),
+    ]));
+
+    let title = format!(" What's new in v{version} \u{2014} Enter to close ");
+    let block = Block::default()
+        .title(TSpan::styled(
+            title,
+            Style::default()
+                .fg(to_color(theme.ui.neon_brand))
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(to_color(theme.ui.neon_brand)))
+        .style(Style::default().bg(to_color(theme.ui.tooltip_bg)));
+
+    f.render_widget(Paragraph::new(items).block(block), area);
+}
+
+/// Computes the screen rect of the clickable URL inside the version popup.
+/// Returns None if the popup would be too small to render. Mirrors the
+/// geometry inside `paint_version_popup` (kept in sync by sharing the same
+/// width calculation).
+pub(in crate::tui) fn version_popup_url_rect(notes_len: usize, bounds: Rect) -> Option<Rect> {
+    let needed_w = 2 + URL_PREFIX.len() as u16 + VERSION_POPUP_URL.len() as u16 + 2;
+    let w = needed_w.min(bounds.width);
+    let h = (notes_len as u16 + 6).min(bounds.height);
+    if w < 4 || h < 3 {
+        return None;
+    }
+    let popup_x = bounds.x + bounds.width.saturating_sub(w) / 2;
+    let popup_y = bounds.y + bounds.height.saturating_sub(h) / 2;
+    // URL line layout inside popup (Block with Borders::ALL has 1-cell border):
+    //   y = popup_y + 1 (border) + 1 (blank) + notes_len (notes) + 1 (blank)
+    //   x = popup_x + 1 (border) + URL_PREFIX.len()
+    let url_y = popup_y + notes_len as u16 + 3;
+    let url_x = popup_x + 1 + URL_PREFIX.len() as u16;
+    Some(Rect {
+        x: url_x,
+        y: url_y,
+        width: VERSION_POPUP_URL.len() as u16,
+        height: 1,
+    })
+}
+
 pub(in crate::tui) fn paint_elevator_indicator(
     f: &mut ratatui::Frame<'_>,
     door: crate::tui::layout::Point,

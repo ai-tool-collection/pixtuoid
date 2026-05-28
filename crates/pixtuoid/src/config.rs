@@ -19,6 +19,12 @@ pub struct AppConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub enabled_pets: Option<Vec<String>>,
+    #[serde(
+        rename = "last-seen-version",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_seen_version: Option<String>,
 }
 
 pub fn resolve_pack_dir(config: &AppConfig, cli_pack_dir: Option<PathBuf>) -> Option<PathBuf> {
@@ -69,10 +75,16 @@ pub fn load(path: &Path) -> AppConfig {
     }
 }
 
-pub fn save(path: &Path, theme_name: &str) -> Result<()> {
-    // Resolve symlinks so atomic rename targets the real file,
-    // not the symlink itself (critical for stow-managed configs).
-    // canonicalize handles relative symlink targets correctly.
+/// Load-modify-write the config atomically. `mutate` is called on the
+/// loaded (or default) config to apply changes; the resulting struct is
+/// serialized and atomically renamed into place.
+///
+/// Resolves symlinks so the atomic rename targets the real file, not the
+/// symlink itself (critical for stow-managed configs).
+fn update_config<F>(path: &Path, mutate: F) -> Result<()>
+where
+    F: FnOnce(&mut AppConfig),
+{
     let real_path = crate::install::io::resolve_symlink(path);
     if let Some(parent) = real_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -87,7 +99,7 @@ pub fn save(path: &Path, theme_name: &str) -> Result<()> {
     } else {
         AppConfig::default()
     };
-    cfg.theme = Some(theme_name.to_string());
+    mutate(&mut cfg);
 
     let contents = toml::to_string_pretty(&cfg)?;
     let tmp = real_path.with_extension("toml.tmp");
@@ -96,6 +108,16 @@ pub fn save(path: &Path, theme_name: &str) -> Result<()> {
     fs2::FileExt::unlock(&lock_file).ok();
     let _ = std::fs::remove_file(&lock_path);
     Ok(())
+}
+
+pub fn save(path: &Path, theme_name: &str) -> Result<()> {
+    update_config(path, |cfg| cfg.theme = Some(theme_name.to_string()))
+}
+
+pub fn save_version(path: &Path, version: &str) -> Result<()> {
+    update_config(path, |cfg| {
+        cfg.last_seen_version = Some(version.to_string())
+    })
 }
 
 pub fn resolve_theme(config: &AppConfig, cli_theme: Option<String>) -> String {
@@ -402,5 +424,27 @@ mod tests {
         };
         let pets = resolve_pets(&cfg);
         assert!(pets.is_empty());
+    }
+
+    // --- save_version ---------------------------------------------------------
+
+    #[test]
+    fn save_version_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        save_version(&path, "0.4.0").unwrap();
+        let cfg = load(&path);
+        assert_eq!(cfg.last_seen_version.as_deref(), Some("0.4.0"));
+    }
+
+    #[test]
+    fn save_version_preserves_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"cyberpunk\"\n").unwrap();
+        save_version(&path, "0.4.0").unwrap();
+        let cfg = load(&path);
+        assert_eq!(cfg.theme.as_deref(), Some("cyberpunk"));
+        assert_eq!(cfg.last_seen_version.as_deref(), Some("0.4.0"));
     }
 }
