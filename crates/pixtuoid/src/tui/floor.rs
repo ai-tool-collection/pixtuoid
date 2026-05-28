@@ -40,7 +40,10 @@ impl FloorMeta {
             floor_idx,
             altitude,
             floor_seed: (floor_idx as u64).wrapping_mul(FLOOR_SEED_MULTIPLIER),
-            sunlight_boost: altitude * 0.3,
+            // Indoor lighting is uniform across floors — building interiors
+            // share the same overhead lighting regardless of altitude. The
+            // `altitude` field still drives skyline depth in the windows.
+            sunlight_boost: 0.0,
         }
     }
 
@@ -50,13 +53,14 @@ impl FloorMeta {
 }
 
 /// Per-floor rendering state. Each floor gets its own pathfinder,
-/// occupancy overlay, pose history, and recolored-frame cache so floors
-/// are fully independent.
+/// occupancy overlay, pose history, recolored-frame cache, and lighting
+/// fade state so floors are fully independent.
 pub struct FloorCtx {
     pub router: AStarRouter,
     pub overlay: OccupancyOverlay,
     pub history: PoseHistory,
     pub cache: FrameCache,
+    pub light: LightingState,
 }
 
 impl Default for FloorCtx {
@@ -72,7 +76,86 @@ impl FloorCtx {
             overlay: OccupancyOverlay::new(),
             history: PoseHistory::new(),
             cache: FrameCache::new(),
+            light: LightingState::new(),
         }
+    }
+}
+
+/// Per-floor indoor-lighting fade state.
+///
+/// Behavior:
+/// * Populated → empty: hold the lights for `EMPTY_DEBOUNCE_MS`, then ease
+///   toward `MIN_LEVEL` with time constant `FADE_TAU_MS`. This avoids
+///   flicker when agents briefly disappear between transcripts.
+/// * Empty → populated: snap target to 1.0 immediately (motion-sensor
+///   feel). The same ease still smooths the rise over a frame or two.
+pub struct LightingState {
+    level: f32,
+    empty_since: Option<SystemTime>,
+    last_update: Option<SystemTime>,
+}
+
+impl Default for LightingState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LightingState {
+    pub const MIN_LEVEL: f32 = 0.10;
+    pub const EMPTY_DEBOUNCE_MS: u64 = 5_000;
+    pub const FADE_TAU_MS: u64 = 800;
+    /// Multiplier applied to the time-of-day floor-darken overlay when
+    /// the floor is fully empty. Tunes "how dark" empty looks; the only
+    /// knob to reach for if empty floors read as too dark / too bright.
+    pub const EMPTY_FLOOR_DIM_BOOST: f32 = 2.4;
+
+    pub fn new() -> Self {
+        Self {
+            level: 1.0,
+            empty_since: None,
+            last_update: None,
+        }
+    }
+
+    /// Current smoothed lit level in `[MIN_LEVEL, 1.0]`.
+    pub fn level(&self) -> f32 {
+        self.level
+    }
+
+    /// Force the lit level straight to `MIN_LEVEL`, bypassing the
+    /// debounce + ease. Static snapshots use this so the rendered PNG
+    /// catches the steady-state empty look instead of frame-0 of the fade.
+    pub fn snap_to_empty(&mut self) {
+        self.level = Self::MIN_LEVEL;
+    }
+
+    /// Advance the fade one frame. `empty` is the current per-floor
+    /// occupancy. Returns the new lit level in `[MIN_LEVEL, 1.0]`.
+    pub fn tick(&mut self, empty: bool, now: SystemTime) -> f32 {
+        let target = if empty {
+            let since = *self.empty_since.get_or_insert(now);
+            let elapsed = now.duration_since(since).unwrap_or_default().as_millis() as u64;
+            if elapsed >= Self::EMPTY_DEBOUNCE_MS {
+                Self::MIN_LEVEL
+            } else {
+                1.0
+            }
+        } else {
+            self.empty_since = None;
+            1.0
+        };
+
+        let dt_ms = self
+            .last_update
+            .and_then(|prev| now.duration_since(prev).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.last_update = Some(now);
+
+        let alpha = 1.0 - (-(dt_ms as f32) / Self::FADE_TAU_MS as f32).exp();
+        self.level += (target - self.level) * alpha.clamp(0.0, 1.0);
+        self.level
     }
 }
 
@@ -352,5 +435,145 @@ mod tests {
         let past = start + Duration::from_millis(1000);
         assert!((tr.t(past) - 1.0).abs() < f32::EPSILON);
         assert!(tr.is_done(past));
+    }
+
+    // ---- LightingState ----------------------------------------------------
+
+    fn t0() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
+    }
+
+    #[test]
+    fn light_steady_state_populated() {
+        let mut light = LightingState::new();
+        let start = t0();
+        // Many frames over multiple seconds with `empty=false` should not
+        // move the level away from 1.0.
+        for ms in (0..3_000).step_by(33) {
+            let level = light.tick(false, start + Duration::from_millis(ms));
+            assert!(
+                (level - 1.0).abs() < 1e-6,
+                "populated steady state drifted: ms={ms} level={level}"
+            );
+        }
+    }
+
+    #[test]
+    fn light_holds_during_debounce_window() {
+        let mut light = LightingState::new();
+        let start = t0();
+        light.tick(true, start);
+        // 4 s after going empty (< 5 s debounce) — target should still be
+        // 1.0 so level holds.
+        let level = light.tick(true, start + Duration::from_millis(4_000));
+        assert!(
+            (level - 1.0).abs() < 1e-6,
+            "level dropped before debounce expired: {level}"
+        );
+    }
+
+    #[test]
+    fn light_eases_toward_min_after_debounce() {
+        let mut light = LightingState::new();
+        let start = t0();
+        light.tick(true, start);
+        // Sample at 6 s (debounce expired 1 s ago, ~1.25 tau of fade).
+        let level = light.tick(true, start + Duration::from_millis(6_000));
+        assert!(level < 0.95, "no fade started after debounce: {level}");
+        assert!(level > LightingState::MIN_LEVEL, "overshot floor: {level}");
+    }
+
+    #[test]
+    fn light_converges_to_min_when_empty_long_enough() {
+        let mut light = LightingState::new();
+        let start = t0();
+        // Step the tick at a realistic frame cadence for 30 s so the
+        // exponential ease has fully landed.
+        for ms in (0..30_000).step_by(33) {
+            light.tick(true, start + Duration::from_millis(ms));
+        }
+        let level = light.level();
+        assert!(
+            (level - LightingState::MIN_LEVEL).abs() < 1e-3,
+            "did not converge to MIN_LEVEL: {level}"
+        );
+    }
+
+    #[test]
+    fn light_rises_back_when_repopulated() {
+        let mut light = LightingState::new();
+        let start = t0();
+        // Drive level all the way down.
+        for ms in (0..20_000).step_by(33) {
+            light.tick(true, start + Duration::from_millis(ms));
+        }
+        assert!(light.level() < 0.2);
+        // Populated → target snaps to 1.0; verify the ease climbs back.
+        let later = start + Duration::from_millis(20_000);
+        for ms in (0..3_000).step_by(33) {
+            light.tick(false, later + Duration::from_millis(ms));
+        }
+        let level = light.level();
+        assert!(level > 0.95, "did not rise back when repopulated: {level}");
+    }
+
+    #[test]
+    fn light_resets_empty_since_when_repopulated() {
+        let mut light = LightingState::new();
+        let start = t0();
+        // Empty for 3 s (within debounce).
+        light.tick(true, start);
+        light.tick(true, start + Duration::from_millis(3_000));
+        // Briefly populated — should clear the debounce timer.
+        light.tick(false, start + Duration::from_millis(3_500));
+        // Empty again — debounce timer must restart from this moment, so
+        // 4 s later we should STILL be holding at 1.0, not faded.
+        light.tick(true, start + Duration::from_millis(3_600));
+        let level = light.tick(true, start + Duration::from_millis(7_500));
+        assert!(
+            (level - 1.0).abs() < 1e-6,
+            "empty_since did not reset on repopulate: {level}"
+        );
+    }
+
+    #[test]
+    fn light_large_dt_does_not_overshoot_or_nan() {
+        let mut light = LightingState::new();
+        let start = t0();
+        light.tick(true, start);
+        // Huge dt (1 day) past the debounce. exp(-dt/tau) underflows to 0
+        // so alpha = 1.0; level should land exactly at target (MIN_LEVEL),
+        // not overshoot or produce NaN.
+        let later = start + Duration::from_millis(LightingState::EMPTY_DEBOUNCE_MS + 1_000);
+        let level = light.tick(true, later);
+        assert!(level.is_finite(), "level went non-finite: {level}");
+        assert!(
+            level >= LightingState::MIN_LEVEL - 1e-6,
+            "level undershot floor: {level}"
+        );
+    }
+
+    #[test]
+    fn light_backward_clock_jump_does_not_move_level() {
+        let mut light = LightingState::new();
+        let start = t0();
+        // Bring level to a known mid value via a real tick.
+        light.tick(false, start);
+        let before = light.level();
+        // A backward "now" makes duration_since() error; the impl uses
+        // `.ok()` so dt collapses to 0 and the level should not change.
+        let backward = start - Duration::from_millis(500);
+        let level = light.tick(true, backward);
+        assert!(
+            (level - before).abs() < 1e-9,
+            "backward clock jump moved level: before={before} after={level}"
+        );
+    }
+
+    #[test]
+    fn light_snap_to_empty_forces_min_level() {
+        let mut light = LightingState::new();
+        light.snap_to_empty();
+        assert!((light.level() - LightingState::MIN_LEVEL).abs() < f32::EPSILON);
     }
 }

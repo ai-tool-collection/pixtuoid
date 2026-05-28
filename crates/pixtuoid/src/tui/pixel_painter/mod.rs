@@ -20,6 +20,7 @@ use pixtuoid_core::walkable::OccupancyOverlay;
 use pixtuoid_core::{AgentSlot, SceneState};
 
 use crate::tui::chitchat::{self, ActiveChitchat, ChitchatBubble};
+use crate::tui::floor::LightingState;
 use crate::tui::frame_cache::FrameCache;
 use crate::tui::layout::{Layout, Point, DESK_W};
 use crate::tui::pathfind::Router;
@@ -81,6 +82,7 @@ pub struct PixelCtx<'a> {
     pub chitchat_state: &'a mut HashMap<(usize, usize), ActiveChitchat>,
     pub coffee_holders: &'a std::collections::HashSet<pixtuoid_core::AgentId>,
     pub coffee_fetched_at: &'a HashMap<pixtuoid_core::AgentId, SystemTime>,
+    pub light: &'a mut crate::tui::floor::LightingState,
 }
 
 /// Paint a character at an arbitrary anchor with per-agent recolor. `flip_x`
@@ -155,15 +157,27 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         ctx.floor.altitude,
     );
 
+    // Per-floor lighting: tick the fade state with the current occupancy.
+    // `indoor_scale` smoothly travels from MIN_LEVEL (empty + past
+    // debounce) to 1.0 (populated). Windows/skyline are unaffected.
+    let indoor_scale = ctx.light.tick(ctx.scene.agents.is_empty(), ctx.now);
+    // Empty floors get an extra floor-darken boost on top of the time-of-
+    // day dim — there are no monitor/lamp light sources to balance against
+    // the overhead darkness, so without the boost they read as "lights
+    // off but room weirdly bright."
+    let min_level = LightingState::MIN_LEVEL;
+    let boost_ceiling = LightingState::EMPTY_FLOOR_DIM_BOOST;
+    let empty_floor_boost = 1.0 + (1.0 - indoor_scale) * (boost_ceiling - 1.0) / (1.0 - min_level);
+
     let dim_strength = (0.45 - ctx.floor.sunlight_boost).max(0.1);
     dim_floor_overlay(
         ctx.buf,
         top_wall_h,
         buf_h,
-        look.darkness * dim_strength,
+        look.darkness * dim_strength * empty_floor_boost,
         ctx.theme,
     );
-    let pool_strength = 0.15 + 0.30 * look.darkness;
+    let pool_strength = (0.15 + 0.30 * look.darkness) * indoor_scale;
     for desk in &ctx.layout.home_desks {
         paint_ceiling_pool(
             ctx.buf,
@@ -200,7 +214,13 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
         );
     }
     if let Some(lamp) = ctx.layout.floor_lamp {
-        paint_floor_lamp_halo(ctx.buf, lamp.x, lamp.y, look.darkness * 0.55, ctx.theme);
+        paint_floor_lamp_halo(
+            ctx.buf,
+            lamp.x,
+            lamp.y,
+            look.darkness * 0.55 * indoor_scale,
+            ctx.theme,
+        );
     }
 
     // Neon sign panel in the wall band — dark bg with glow border.
@@ -212,7 +232,9 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
 
     // Live wall clock painted after the wall (so hands sit on top of it)
     // but before wall decor — the bookshelf etc. shouldn't cover it.
-    let clock_x = buf_w / 2 - 2;
+    // 7x7 sprite, center at clock_x+3; clamp so it never collides with
+    // the 30-wide neon panel on the left.
+    let clock_x = (buf_w / 2).saturating_sub(3).max(neon_w + 2);
     paint_clock(ctx.buf, clock_x, 1, ctx.now, ctx.theme);
     // Corridor runner — painted over the floor but BEFORE walls/decor
     // so walls cleanly overlap it where they cross.

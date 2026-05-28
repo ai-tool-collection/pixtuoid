@@ -97,6 +97,11 @@ struct SnapshotArgs {
     /// Floor seed — selects floor layout variant (0–4).
     #[arg(long, default_value_t = 0)]
     floor_seed: u64,
+
+    /// Render an empty office (no agents) — useful for capturing the
+    /// dimmed empty-floor look.
+    #[arg(long)]
+    empty: bool,
 }
 
 fn default_projects_root() -> String {
@@ -110,7 +115,9 @@ fn main() -> Result<()> {
     let args = SnapshotArgs::parse();
 
     let now = SystemTime::now();
-    let scene = if args.live {
+    let scene = if args.empty {
+        SceneState::uniform(args.max_desks)
+    } else if args.live {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
@@ -157,12 +164,19 @@ fn main() -> Result<()> {
     }
 
     let mut chitchat_state = std::collections::HashMap::new();
+    let mut light = pixtuoid::tui::floor::LightingState::new();
+    // Static snapshots have no time to animate the fade — snap straight
+    // to the steady-state level for the chosen scene.
+    if args.empty {
+        light.snap_to_empty();
+    }
     let mut draw_ctx = DrawCtx {
         buf: &mut buf,
         cache: &mut cache,
         router: &mut router,
         overlay: &mut overlay,
         history: &mut history,
+        light: &mut light,
         mouse_pos: None,
         pinned_agent: None,
         ticker: &ticker,
@@ -611,6 +625,7 @@ fn save_as_gif(
     encoder.set_repeat(Repeat::Infinite)?;
 
     let mut chitchat_state = std::collections::HashMap::new();
+    let mut light = pixtuoid::tui::floor::LightingState::new();
     for i in 0..frame_count {
         let now = start_now + Duration::from_millis(i as u64 * frame_ms);
         let mut draw_ctx = DrawCtx {
@@ -619,6 +634,7 @@ fn save_as_gif(
             router,
             overlay,
             history,
+            light: &mut light,
             mouse_pos: None,
             pinned_agent: None,
             ticker: &ticker,
