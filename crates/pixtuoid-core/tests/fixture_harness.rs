@@ -1,0 +1,214 @@
+//! Golden-fixture decode + coalescing harness.
+//!
+//! For each `tests/fixtures/<source>/<scenario>/` directory, decode the
+//! transcript lines (via the source's `LineDecoder`) and the hook payloads
+//! (via `decode_hook_payload`), then:
+//!   1. snapshot the full decoded `AgentEvent` sequence (insta yaml), and
+//!   2. assert every decoded event shares ONE `AgentId` — the hook↔JSONL
+//!      coalescing contract that keeps regressing (a mismatch = two sprites
+//!      for one session).
+//!
+//! Adding a CLI = drop a fixture dir + register its decoder in `decoder_for`.
+//! No other test code; `cargo insta review` accepts the new snapshot.
+//!
+//! Snapshots stay portable because the decoder is fed the fixture's *relative*
+//! path (a stable logical key), not the machine-specific absolute path —
+//! `AgentId` is a deterministic FNV-1a hash of that key.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use pixtuoid_core::source::decoder::decode_hook_payload;
+use pixtuoid_core::source::jsonl::LineDecoder;
+use pixtuoid_core::source::{antigravity, claude_code, codex, AgentEvent, REGISTERED_SOURCES};
+
+/// Map a fixture's source directory name to its JSONL line decoder.
+/// Register a new CLI here (one line) — that plus a fixture dir is all it takes.
+fn decoder_for(source: &str) -> LineDecoder {
+    // Keyed off the source modules' own SOURCE_NAME consts so a rename is a
+    // compile error here, not a silent fixture/decoder drift. (Antigravity has
+    // no such const; its name() returns this literal.)
+    if source == codex::SOURCE_NAME {
+        codex::decode_codex_line
+    } else if source == claude_code::SOURCE_NAME {
+        claude_code::decode_cc_line
+    } else if source == "antigravity" {
+        antigravity::decode_ag_line
+    } else {
+        panic!("unknown fixture source {source:?} — register its decoder in decoder_for")
+    }
+}
+
+fn fixtures_root() -> PathBuf {
+    // Dedicated subtree — `tests/fixtures/` also holds sprite/hook/jsonl
+    // fixtures for other tests that are not per-source decode fixtures.
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sources")
+}
+
+fn read_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !l.trim().is_empty())
+        .collect()
+}
+
+fn sorted_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .collect();
+    out.sort();
+    out
+}
+
+/// One fixture's decoded events, split by transport so the test can assert each
+/// side actually contributed (a degenerate all-no-op transcript must not pass
+/// coalescing on hooks alone).
+struct Decoded {
+    jsonl: Vec<AgentEvent>,
+    hooks: Vec<AgentEvent>,
+    had_hook_file: bool,
+}
+
+/// Decode one fixture dir, feeding the decoders the fixture's *relative* path as
+/// the transcript key — `AgentId` is a deterministic FNV hash of that key, so
+/// snapshots stay machine-independent.
+fn decode_fixture(source: &str, dir: &Path) -> Decoded {
+    // The transcript is the lone non-hook .jsonl in the dir. Require exactly one
+    // — two would make selection (and the snapshot) depend on read_dir order.
+    let mut transcripts: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                && p.file_name().and_then(|s| s.to_str()) != Some("hook-payloads.jsonl")
+        })
+        .collect();
+    transcripts.sort();
+    assert_eq!(
+        transcripts.len(),
+        1,
+        "{} must contain exactly one transcript .jsonl, found {}",
+        dir.display(),
+        transcripts.len()
+    );
+    let transcript = &transcripts[0];
+
+    let logical = transcript
+        .strip_prefix(fixtures_root())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let decode = decoder_for(source);
+    let mut jsonl = Vec::new();
+    for line in read_lines(transcript) {
+        let v: serde_json::Value = serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("bad json in {}: {e}", transcript.display()));
+        match decode(&logical, source, v) {
+            Ok(evs) => jsonl.extend(evs),
+            Err(e) => panic!("decode error in {}: {e}", transcript.display()),
+        }
+    }
+
+    let hooks_path = dir.join("hook-payloads.jsonl");
+    let had_hook_file = hooks_path.exists();
+    let mut hooks = Vec::new();
+    if had_hook_file {
+        for line in read_lines(&hooks_path) {
+            // `{{TRANSCRIPT_PATH}}` lets a path-keyed hook (CC) line up with its
+            // transcript; Codex carries it too, to prove it's ignored.
+            let line = line.replace("{{TRANSCRIPT_PATH}}", &logical);
+            let v: serde_json::Value = serde_json::from_str(&line)
+                .unwrap_or_else(|e| panic!("bad hook json in {}: {e}", hooks_path.display()));
+            match decode_hook_payload(v) {
+                Ok(ev) => hooks.push(ev),
+                Err(e) => panic!("hook decode error in {}: {e}", hooks_path.display()),
+            }
+        }
+    }
+    Decoded {
+        jsonl,
+        hooks,
+        had_hook_file,
+    }
+}
+
+/// Every registered source MUST ship a coalescing fixture. Without this,
+/// `all_source_fixtures_decode_and_coalesce` only covers sources that happen to
+/// have a dir — a contributor could register a new CLI (decoder + label prefix)
+/// and ship a broken decoder while the harness stays green. Registration is not
+/// coverage; this makes the fixture mandatory.
+#[test]
+fn every_registered_source_has_a_coalescing_fixture() {
+    let root = fixtures_root();
+    for src in REGISTERED_SOURCES {
+        let dir = root.join(src);
+        assert!(
+            dir.is_dir(),
+            "registered source {src:?} has no fixture dir {} — add a coalescing fixture (transcript.jsonl [+ hook-payloads.jsonl])",
+            dir.display()
+        );
+        assert!(
+            !sorted_dirs(&dir).is_empty(),
+            "registered source {src:?} fixture dir {} has no scenario subdir",
+            dir.display()
+        );
+    }
+}
+
+#[test]
+fn all_source_fixtures_decode_and_coalesce() {
+    let root = fixtures_root();
+    let mut ran = 0;
+    for source_dir in sorted_dirs(&root) {
+        let source = source_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for scenario_dir in sorted_dirs(&source_dir) {
+            let scenario = scenario_dir
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let d = decode_fixture(&source, &scenario_dir);
+
+            // Each transport must actually contribute — else a degenerate
+            // fixture (e.g. all-no-op JSONL) could pass coalescing on hooks
+            // alone, silently skipping the JSONL keying path this test guards.
+            assert!(
+                !d.jsonl.is_empty(),
+                "{source}/{scenario}: transcript decoded to ZERO events"
+            );
+            if d.had_hook_file {
+                assert!(
+                    !d.hooks.is_empty(),
+                    "{source}/{scenario}: hook-payloads.jsonl decoded to ZERO events"
+                );
+            }
+
+            let events: Vec<AgentEvent> = d.jsonl.iter().chain(d.hooks.iter()).cloned().collect();
+
+            // Contract 1: the decoded event sequence is stable (golden snapshot).
+            insta::assert_yaml_snapshot!(format!("{source}__{scenario}"), events);
+
+            // Contract 2: hook + JSONL events for one session coalesce to ONE
+            // AgentId. This is the dup-sprite bug class — assert it directly.
+            let ids: BTreeSet<_> = events.iter().map(|e| e.agent_id()).collect();
+            assert_eq!(
+                ids.len(),
+                1,
+                "{source}/{scenario}: hook+JSONL events must coalesce to ONE agent_id, got {}: {:?}",
+                ids.len(),
+                ids
+            );
+            ran += 1;
+        }
+    }
+    assert!(ran > 0, "no fixtures found under {}", root.display());
+}

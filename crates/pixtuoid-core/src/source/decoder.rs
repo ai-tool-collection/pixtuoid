@@ -21,15 +21,32 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
         .and_then(|s| s.as_str())
         .ok_or_else(|| anyhow!("missing session_id"))?
         .to_string();
-    let transcript_path = obj
-        .get("transcript_path")
-        .and_then(|s| s.as_str())
-        .ok_or_else(|| anyhow!("missing transcript_path"))?;
+    // CLI attribution comes ONLY from the shim-owned `_pixtuoid_source` (the
+    // shim stamps it from `PIXTUOID_SOURCE`). We must NOT read the public
+    // `source` field: CC's SessionStart payload uses `source` for the start
+    // *reason* (startup/resume/clear/compact), which would namespace the agent
+    // under "startup" and split it from the claude-code-keyed tool/JSONL/
+    // SessionEnd events (an un-reapable ghost). Absent the private key (bare
+    // `pixtuoid-hook` with no env, i.e. CC), default to claude-code.
     let source = obj
-        .get("source")
+        .get("_pixtuoid_source")
         .and_then(|s| s.as_str())
         .unwrap_or(crate::source::claude_code::SOURCE_NAME);
-    let agent_id = AgentId::from_parts(source, transcript_path);
+    // `transcript_path` is the preferred stable per-session key for CC (its hook
+    // and JSONL both carry the same transcript path, so they coalesce on it).
+    // Codex is different: its hooks send `transcript_path` as `string | null`,
+    // and its JSONL source keys on the rollout-filename UUID (== `session_id`).
+    // So Codex MUST key on `session_id` regardless of any `transcript_path`, or
+    // hook and JSONL events would hash to different AgentIds (two sprites).
+    let id_key = if source == crate::source::codex::SOURCE_NAME {
+        session_id.as_str()
+    } else {
+        obj.get("transcript_path")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(session_id.as_str())
+    };
+    let agent_id = AgentId::from_parts(source, id_key);
 
     match event {
         "SessionStart" => {
@@ -77,6 +94,34 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
                 reason: msg.into(),
             })
         }
+        // Codex's permission prompt is a "waiting on the human" signal — maps to
+        // the same Waiting state as Claude's Notification.
+        "PermissionRequest" => Ok(AgentEvent::Waiting {
+            agent_id,
+            reason: "permission".into(),
+        }),
+        // Codex turn lifecycle. Verified live (Codex 0.135): the ONLY hook events
+        // that fire are UserPromptSubmit + Stop — SessionStart and PreToolUse do
+        // NOT fire. So UserPromptSubmit is our agent-creation signal: emit
+        // SessionStart from its cwd (idempotent in the reducer — ignored if the
+        // agent already exists). The fresh `last_event_at` makes the cx· agent
+        // show seated-thinking, so it reads as "working" right after a prompt.
+        "UserPromptSubmit" => {
+            let cwd = obj.get("cwd").and_then(|s| s.as_str()).unwrap_or("").into();
+            Ok(AgentEvent::SessionStart {
+                agent_id,
+                source: source.to_string(),
+                session_id,
+                cwd,
+                parent_id: None,
+            })
+        }
+        // Turn end — Codex fires no SessionEnd, so keep the slot; just settle to
+        // idle (harmless no-op if the agent is already idle).
+        "Stop" => Ok(AgentEvent::ActivityEnd {
+            agent_id,
+            tool_use_id: None,
+        }),
         "SessionEnd" => Ok(AgentEvent::SessionEnd { agent_id }),
         other => bail!("unsupported hook_event_name: {other}"),
     }
@@ -114,4 +159,158 @@ pub(crate) fn describe_tool_target(tool: &str, input: Option<&Value>) -> String 
         s.push('…');
     }
     format!(": {s}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn codex_session_start_without_transcript_path_uses_session_id() {
+        // Codex sends transcript_path as string|null; decode must still work,
+        // namespacing the AgentId under the explicit "codex" source.
+        let ev = decode_hook_payload(json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "codex-sess-1",
+            "_pixtuoid_source": "codex",
+            "cwd": "/Users/me/work/myrepo"
+        }))
+        .expect("decodes without transcript_path");
+        match ev {
+            AgentEvent::SessionStart {
+                agent_id,
+                source,
+                cwd,
+                ..
+            } => {
+                assert_eq!(source, "codex");
+                assert_eq!(agent_id, AgentId::from_parts("codex", "codex-sess-1"));
+                assert_eq!(cwd, std::path::PathBuf::from("/Users/me/work/myrepo"));
+            }
+            other => panic!("expected SessionStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_permission_request_maps_to_waiting() {
+        let ev = decode_hook_payload(json!({
+            "hook_event_name": "PermissionRequest",
+            "session_id": "s",
+            "_pixtuoid_source": "codex"
+        }))
+        .expect("decodes");
+        assert!(matches!(ev, AgentEvent::Waiting { .. }));
+    }
+
+    #[test]
+    fn codex_user_prompt_submit_creates_agent_via_session_start() {
+        // Codex 0.135 fires NO SessionStart/PreToolUse — only UserPromptSubmit +
+        // Stop (verified live). So UserPromptSubmit is the agent-creation signal:
+        // it carries source + cwd and decodes to a SessionStart the reducer turns
+        // into a cx· agent.
+        let ev = decode_hook_payload(json!({
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "codex-sess",
+            "_pixtuoid_source": "codex",
+            "cwd": "/Users/me/work/myrepo",
+            "transcript_path": "/Users/me/.codex/sessions/x.jsonl"
+        }))
+        .expect("decodes");
+        match ev {
+            AgentEvent::SessionStart {
+                agent_id,
+                source,
+                cwd,
+                ..
+            } => {
+                assert_eq!(source, "codex");
+                assert_eq!(cwd, std::path::PathBuf::from("/Users/me/work/myrepo"));
+                // Coalescing contract: Codex keys on session_id, NOT the
+                // (here non-null) transcript_path — so hook events and the
+                // JSONL source (which keys on the rollout-filename UUID ==
+                // session_id) hash to the SAME AgentId. Keying on the path
+                // would produce two sprites for one session.
+                assert_eq!(agent_id, AgentId::from_parts("codex", "codex-sess"));
+            }
+            other => panic!("expected SessionStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_stop_maps_to_activity_end() {
+        let ev = decode_hook_payload(json!({
+            "hook_event_name": "Stop",
+            "session_id": "s",
+            "_pixtuoid_source": "codex"
+        }))
+        .expect("decodes");
+        assert!(matches!(ev, AgentEvent::ActivityEnd { .. }));
+    }
+
+    // Regression: CC's SessionStart hook payload carries `source: "startup"`
+    // (the start *reason* — startup/resume/clear/compact), which is NOT a CLI
+    // name. Reading it as the CLI source namespaced the agent under "startup",
+    // splitting it from the claude-code-keyed tool/JSONL/SessionEnd events — an
+    // un-reapable `startup·…` ghost. The public `source` field must never drive
+    // CLI attribution; only the shim-owned `_pixtuoid_source` does.
+    #[test]
+    fn cc_session_start_reason_source_does_not_hijack_cli_source() {
+        let tp = "/Users/me/.claude/projects/x/ses-abc.jsonl";
+        let ev = decode_hook_payload(json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "ses-abc",
+            "transcript_path": tp,
+            "cwd": "/repo",
+            "source": "startup"
+        }))
+        .expect("decodes");
+        match ev {
+            AgentEvent::SessionStart {
+                agent_id, source, ..
+            } => {
+                assert_eq!(source, crate::source::claude_code::SOURCE_NAME);
+                assert_eq!(
+                    agent_id,
+                    AgentId::from_parts(crate::source::claude_code::SOURCE_NAME, tp),
+                    "must coalesce with tool/JSONL/SessionEnd events on the claude-code id"
+                );
+            }
+            other => panic!("expected SessionStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pixtuoid_source_private_key_drives_cli_attribution() {
+        // The shim stamps the trusted CLI source under `_pixtuoid_source`.
+        let ev = decode_hook_payload(json!({
+            "hook_event_name": "Stop",
+            "session_id": "codex-sess",
+            "_pixtuoid_source": "codex"
+        }))
+        .expect("decodes");
+        assert_eq!(
+            ev.agent_id(),
+            AgentId::from_parts("codex", "codex-sess"),
+            "Codex Stop keys on session_id under the codex namespace"
+        );
+    }
+
+    #[test]
+    fn absent_source_still_defaults_to_claude() {
+        // A payload with no `source` (legacy / un-stamped) must remain CC.
+        let ev = decode_hook_payload(json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "s",
+            "transcript_path": "/p/a.jsonl",
+            "cwd": "/repo"
+        }))
+        .expect("decodes");
+        match ev {
+            AgentEvent::SessionStart { source, .. } => {
+                assert_eq!(source, crate::source::claude_code::SOURCE_NAME)
+            }
+            other => panic!("expected SessionStart, got {other:?}"),
+        }
+    }
 }

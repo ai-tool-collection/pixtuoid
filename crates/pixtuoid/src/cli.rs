@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -28,6 +28,10 @@ pub enum Cmd {
         socket: Option<PathBuf>,
         #[arg(long)]
         projects_root: Option<PathBuf>,
+        /// Override the Codex sessions root (default ~/.codex/sessions).
+        /// Point at a temp dir to replay fixtures into a headless run.
+        #[arg(long)]
+        codex_sessions_root: Option<PathBuf>,
         #[arg(long)]
         pack_dir: Option<PathBuf>,
         /// Cap desks per floor (auto-computed from terminal size if unset).
@@ -38,17 +42,26 @@ pub enum Cmd {
         #[arg(long, default_value_t = false)]
         headless: bool,
     },
-    /// Install Claude Code hooks into ~/.claude/settings.json.
+    /// Install pixtuoid hooks into agent CLI config(s).
     InstallHooks {
         #[arg(long)]
         hook_path: Option<PathBuf>,
-        #[arg(long)]
-        settings: Option<PathBuf>,
+        /// Config file override (single target only; conflicts with --target all).
+        #[arg(long, alias = "settings")]
+        config: Option<PathBuf>,
+        #[arg(long, value_enum)]
+        target: Option<TargetName>,
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
-    /// Remove pixtuoid hook entries from settings.json.
+    /// Remove pixtuoid hook entries from agent CLI config(s).
     UninstallHooks {
-        #[arg(long)]
-        settings: Option<PathBuf>,
+        #[arg(long, alias = "settings")]
+        config: Option<PathBuf>,
+        #[arg(long, value_enum)]
+        target: Option<TargetName>,
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Validate a custom sprite pack directory.
     ValidatePack {
@@ -65,6 +78,23 @@ pub enum Cmd {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum TargetName {
+    Claude,
+    Codex,
+    All,
+}
+
+impl TargetName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TargetName::Claude => "claude",
+            TargetName::Codex => "codex",
+            TargetName::All => "all",
+        }
+    }
+}
+
 impl Cli {
     pub fn cmd_or_default(self) -> (String, Option<String>, Cmd) {
         let level = self.log_level;
@@ -72,6 +102,7 @@ impl Cli {
         let cmd = self.cmd.unwrap_or(Cmd::Run {
             socket: None,
             projects_root: None,
+            codex_sessions_root: None,
             pack_dir: None,
             max_desks: None,
             headless: false,
@@ -107,7 +138,11 @@ mod tests {
     #[test]
     fn cmd_or_default_preserves_explicit_subcommand() {
         let cli = Cli {
-            cmd: Some(Cmd::UninstallHooks { settings: None }),
+            cmd: Some(Cmd::UninstallHooks {
+                config: None,
+                target: None,
+                yes: false,
+            }),
             log_level: "debug".into(),
             theme: Some("cyberpunk".into()),
         };

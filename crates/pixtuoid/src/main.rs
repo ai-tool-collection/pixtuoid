@@ -48,6 +48,7 @@ fn main() -> Result<()> {
         Cmd::Run {
             socket,
             projects_root,
+            codex_sessions_root,
             pack_dir,
             max_desks: cli_max_desks,
             headless,
@@ -61,6 +62,7 @@ fn main() -> Result<()> {
             runtime::run(
                 socket,
                 projects_root,
+                codex_sessions_root,
                 pack_dir,
                 desk_cap,
                 headless,
@@ -71,9 +73,24 @@ fn main() -> Result<()> {
         }
         Cmd::InstallHooks {
             hook_path,
-            settings,
-        } => install::install(hook_path, settings),
-        Cmd::UninstallHooks { settings } => install::uninstall(settings),
+            config,
+            target,
+            yes,
+        } => install::install(install::InstallArgs {
+            hook_path,
+            config,
+            target: target.map(|t| t.as_str().to_string()),
+            yes,
+        }),
+        Cmd::UninstallHooks {
+            config,
+            target,
+            yes,
+        } => install::uninstall(install::UninstallArgs {
+            config,
+            target: target.map(|t| t.as_str().to_string()),
+            yes,
+        }),
         Cmd::ValidatePack { pack_dir } => validate::validate_pack(&pack_dir),
         Cmd::InitPack { dest, force } => init_pack::init_pack(&dest, force),
     }

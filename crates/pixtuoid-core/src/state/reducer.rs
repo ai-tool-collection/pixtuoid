@@ -40,6 +40,20 @@ pub const STALE_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const STALE_WAITING_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub const STALE_UNKNOWN_CWD_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
+/// Display prefix for a source's labels (`cc·`, `ag·`, `cx·`). Single source of
+/// truth applied at `SessionStart`. The JSONL `LabelDeriver` Renames (e.g.
+/// `cc_derive_label`/`derive_ag_label`) produce the same prefixed string and so
+/// reinforce this idempotently; Codex arrives only via the shared hook socket
+/// (no JSONL Rename), so this is the sole place its `cx·` label is established.
+fn source_label_prefix(source: &str) -> &str {
+    match source {
+        crate::source::claude_code::SOURCE_NAME => "cc",
+        "antigravity" => "ag",
+        crate::source::codex::SOURCE_NAME => "cx",
+        other => other,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Reducer {
     /// Track recent hook-derived events so JSONL duplicates can be dropped.
@@ -51,6 +65,16 @@ pub struct Reducer {
     /// ActivityStart/End events for that AgentId are dropped — JSONL has
     /// correct attribution to the subagent's own AgentId.
     active_tasks: HashMap<AgentId, HashSet<String>>,
+    /// `tool_use_id` that was Active immediately before an agent entered
+    /// `Waiting` (a CC permission `Notification` fires mid-tool). When THAT
+    /// tool's `ActivityEnd` (its `PostToolUse`) arrives, the permission has been
+    /// resolved and the gated tool ran — so the Waiting resolves (debounced to
+    /// Idle) instead of lingering until the agent's next tool. A *parallel*
+    /// tool ending carries a different id, so it can't false-clear a still-
+    /// pending permission (preserves `parallel_tool_end_while_waiting_keeps_waiting`).
+    /// Codex never populates this (its tool events carry no `tool_use_id`), so
+    /// its permission resume stays on the `ActivityStart` path.
+    gated_before_waiting: HashMap<AgentId, Arc<str>>,
     /// Monotonic counter for human-readable labels.
     next_label_n: u32,
 }
@@ -73,6 +97,8 @@ impl Reducer {
         // Clean up active_tasks entries for agents that never got a
         // SessionStart (Task event arrived before JSONL created the slot).
         self.active_tasks
+            .retain(|id, _| scene.agents.contains_key(id));
+        self.gated_before_waiting
             .retain(|id, _| scene.agents.contains_key(id));
     }
 
@@ -182,11 +208,15 @@ impl Reducer {
                         handled_by_task_tracking = true;
                         if let Some(slot) = scene.agents.get_mut(agent_id) {
                             slot.last_event_at = now;
-                            if set.is_empty() {
-                                // Debounce: stay visually Active for
-                                // ACTIVE_GRACE_WINDOW; expire_pending_idles
-                                // flips to Idle if no new tool starts
-                                // inside the window.
+                            // Debounce: stay visually Active for
+                            // ACTIVE_GRACE_WINDOW; expire_pending_idles flips to
+                            // Idle if no new tool starts inside the window. Only
+                            // arm when actually Active — if the parent is Waiting
+                            // (its own permission prompt fired during delegation)
+                            // a Task drain must NOT arm the idle-resolve, or the
+                            // expiry would false-clear a still-pending permission.
+                            if set.is_empty() && matches!(slot.state, ActivityState::Active { .. })
+                            {
                                 slot.pending_idle_at = Some(now);
                             }
                         }
@@ -219,16 +249,15 @@ impl Reducer {
                 };
                 let floor_idx = scene.floor_of(desk_index);
                 self.next_label_n += 1;
-                let has_cwd = cwd
+                let base = cwd
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .filter(|s| !s.is_empty())
-                    .is_some();
-                let label: Arc<str> = if has_cwd {
-                    Arc::<str>::from(cwd.file_name().and_then(|n| n.to_str()).unwrap_or(&source))
-                } else {
-                    let prefix: String = source.chars().take(2).collect();
-                    Arc::<str>::from(format!("{prefix}#{}", self.next_label_n).as_str())
+                    .filter(|s| !s.is_empty());
+                let has_cwd = base.is_some();
+                let prefix = source_label_prefix(&source);
+                let label: Arc<str> = match base {
+                    Some(b) => Arc::<str>::from(format!("{prefix}·{b}").as_str()),
+                    None => Arc::<str>::from(format!("{prefix}#{}", self.next_label_n).as_str()),
                 };
                 // Disambiguation for multiple sessions sharing a cwd happens
                 // at render time, not here — we don't want to suffix unique
@@ -263,6 +292,9 @@ impl Reducer {
                 detail,
             } => {
                 if !handled_by_task_start {
+                    // Resuming to Active (next tool / Codex function_call_output)
+                    // makes any pending gated-permission correlation moot.
+                    self.gated_before_waiting.remove(&agent_id);
                     if let Some(slot) = scene.agents.get_mut(&agent_id) {
                         if !detail.as_ref().is_some_and(|d| d.is_task()) {
                             slot.tool_call_count += 1;
@@ -285,14 +317,32 @@ impl Reducer {
                     }
                 }
             }
-            AgentEvent::ActivityEnd { agent_id, .. } => {
+            AgentEvent::ActivityEnd {
+                agent_id,
+                ref tool_use_id,
+            } => {
                 // Skip if this end was already processed by task tracking above.
                 if !handled_by_task_tracking {
+                    // A CC permission's *gated* tool finishing resolves the
+                    // Wait: its tool_use_id matches the one that was Active when
+                    // Waiting began. A parallel tool ending has a different id,
+                    // so it can't false-clear a still-pending permission.
+                    let resolves_wait = matches!(
+                        scene.agents.get(&agent_id).map(|s| &s.state),
+                        Some(ActivityState::Waiting { .. })
+                    ) && tool_use_id.is_some()
+                        && self.gated_before_waiting.get(&agent_id).map(|g| &**g)
+                            == tool_use_id.as_deref();
+                    if resolves_wait {
+                        self.gated_before_waiting.remove(&agent_id);
+                    }
                     if let Some(slot) = scene.agents.get_mut(&agent_id) {
-                        // Only arm the idle debounce when actually Active — an
-                        // ActivityEnd arriving while Idle or Waiting is a stale
-                        // duplicate and should not re-arm the timer.
-                        if matches!(slot.state, ActivityState::Active { .. }) {
+                        // Arm the idle debounce when Active (normal tool end) or
+                        // when a gated permission just resolved — in both cases
+                        // the slot settles to Idle after ACTIVE_GRACE_WINDOW. A
+                        // stale ActivityEnd while Idle, or a parallel tool ending
+                        // while Waiting, leaves the timer alone.
+                        if matches!(slot.state, ActivityState::Active { .. }) || resolves_wait {
                             slot.pending_idle_at = Some(now);
                         }
                         slot.last_event_at = now;
@@ -301,6 +351,17 @@ impl Reducer {
             }
             AgentEvent::Waiting { agent_id, reason } => {
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
+                    // Remember the mid-flight tool so its later PostToolUse
+                    // (same tool_use_id) can resolve this permission Wait.
+                    if let ActivityState::Active {
+                        tool_use_id: Some(tuid),
+                        ..
+                    } = &slot.state
+                    {
+                        self.gated_before_waiting.insert(agent_id, tuid.clone());
+                    } else {
+                        self.gated_before_waiting.remove(&agent_id);
+                    }
                     if matches!(slot.state, ActivityState::Active { .. }) {
                         let elapsed = now
                             .duration_since(slot.state_started_at)
@@ -364,10 +425,11 @@ impl Reducer {
     /// state to Idle if the debounce window has elapsed. Resets
     /// `state_started_at` to `now` so the Idle wander state machine
     /// starts fresh from the visible transition, not from the
-    /// (now-stale) original ActivityEnd time. Slots already in a
-    /// non-Active state (e.g. Waiting from a parallel permission
-    /// prompt) are left alone — only the originating Active slot
-    /// gets flipped.
+    /// (now-stale) original ActivityEnd time. Applies to Active slots
+    /// (normal tool end) and to a Waiting slot whose *gated* permission
+    /// tool resolved (the ActivityEnd arm armed the timer). A Waiting
+    /// slot with a still-pending or parallel-tool prompt never has the
+    /// timer set, so it is left alone.
     fn expire_pending_idles(&mut self, scene: &mut SceneState, now: SystemTime) {
         for slot in scene.agents.values_mut() {
             let Some(pending) = slot.pending_idle_at else {
@@ -377,14 +439,26 @@ impl Reducer {
                 .duration_since(pending)
                 .is_ok_and(|d| d >= ACTIVE_GRACE_WINDOW)
             {
-                if matches!(slot.state, ActivityState::Active { .. }) {
-                    let elapsed = pending
-                        .duration_since(slot.state_started_at)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    slot.active_ms += elapsed;
-                    slot.state = ActivityState::Idle;
-                    slot.state_started_at = now;
+                match &slot.state {
+                    ActivityState::Active { .. } => {
+                        let elapsed = pending
+                            .duration_since(slot.state_started_at)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        slot.active_ms += elapsed;
+                        slot.state = ActivityState::Idle;
+                        slot.state_started_at = now;
+                    }
+                    // A Waiting slot only carries `pending_idle_at` when its
+                    // gated permission tool resolved (ActivityEnd arm). Settle it
+                    // to Idle — it renders as seated-thinking via the recent
+                    // `last_event_at`. A *parallel*-prompt Waiting never gets the
+                    // timer armed, so it is untouched here.
+                    ActivityState::Waiting { .. } => {
+                        slot.state = ActivityState::Idle;
+                        slot.state_started_at = now;
+                    }
+                    ActivityState::Idle => {}
                 }
                 slot.pending_idle_at = None;
             }
@@ -454,5 +528,28 @@ fn event_tool_use_id(ev: &AgentEvent) -> Option<&str> {
         AgentEvent::ActivityStart { tool_use_id, .. }
         | AgentEvent::ActivityEnd { tool_use_id, .. } => tool_use_id.as_deref(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_label_prefix;
+    use crate::source::REGISTERED_SOURCES;
+
+    /// Every registered source needs an explicit 2-char prefix arm. The
+    /// `other => other` catch-all silently degrades a missing arm to the long
+    /// source name (e.g. "opencode·proj" instead of "oc·proj"), which then
+    /// collides visually with another source sharing a cwd. Driven by the same
+    /// REGISTERED_SOURCES list as the fixture conformance test.
+    #[test]
+    fn every_registered_source_has_two_char_label_prefix() {
+        for src in REGISTERED_SOURCES {
+            let prefix = source_label_prefix(src);
+            assert_eq!(
+                prefix.chars().count(),
+                2,
+                "source {src:?} has no 2-char label prefix (got {prefix:?}) — add an arm to source_label_prefix"
+            );
+        }
     }
 }
