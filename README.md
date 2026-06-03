@@ -132,7 +132,16 @@ omit any key to use its default.
 theme = "cyberpunk"
 max-desks = 8
 pack-dir = "~/.config/pixtuoid/packs/robot"
-enabled-pets = ["cat", "dog"]
+
+# One stanza per pet. Omit the whole section to show all pets with default
+# names; use `pets = []` to disable all pets. `name` is optional (shown in
+# the pet's hover tooltip). Keep [[pets]] last — it's a table section.
+[[pets]]
+kind = "cat"
+name = "Whiskers"   # optional — omit for "Office Cat"
+
+[[pets]]
+kind = "dog"        # name omitted → "Office Dog"
 ```
 
 **User settings** (safe to edit):
@@ -142,7 +151,7 @@ enabled-pets = ["cat", "dog"]
 | `theme` | `"normal"` | Color theme — `normal`, `cyberpunk`, `dracula`, `tokyo-night`, `catppuccin`, `gruvbox` |
 | `max-desks` | auto | Cap desks per floor. If unset, auto-computed from terminal size. Excess agents overflow to additional floors. |
 | `pack-dir` | — | Custom sprite pack directory. Supports `~` expansion. |
-| `enabled-pets` | `["cat", "dog"]` | Which pets appear in the office. Omit or list a subset (`["cat"]`) to disable some. |
+| `[[pets]]` | all kinds, default names | One stanza per pet. `kind` (`"cat"`/`"dog"`) is required; `name` is optional (the hover-tooltip label, default `Office Cat`/`Office Dog`). Omit the section for all pets; `pets = []` for none; an unknown `kind` is skipped without affecting other settings. Keep it last (it's a table section). |
 
 **System-managed** (don't edit — pixtuoid writes these for you):
 

@@ -96,7 +96,11 @@ pub struct DrawCtx<'a> {
     pub floor: crate::tui::floor::FloorMeta,
     pub active_pet: Option<&'a PetState>,
     pub last_pet_pos: Option<(Point, &'static str, PetKind)>,
-    pub floor_pet_kind: Option<PetKind>,
+    /// The pet assigned to this floor — its kind AND resolved display name.
+    /// `None` when no pets are configured or none maps to this floor seed.
+    /// Replaces the former `floor_pet_kind` + `pet_names` pair: the name rides
+    /// along, so the tooltip reads `floor_pet.name` directly (no lookup).
+    pub floor_pet: Option<&'a crate::tui::pet::Pet>,
     pub chitchat_state: &'a mut std::collections::HashMap<
         crate::tui::chitchat::VenueKey,
         crate::tui::chitchat::ActiveChitchat,
@@ -239,7 +243,7 @@ pub fn draw_scene<B: Backend<Error: Send + Sync + 'static>>(
         theme,
         floor,
         active_pet: ctx.active_pet,
-        floor_pet_kind: ctx.floor_pet_kind,
+        floor_pet: ctx.floor_pet,
         chitchat_state: ctx.chitchat_state,
         coffee_holders: ctx.coffee_holders,
         coffee_fetched_at: ctx.coffee_fetched_at,
@@ -324,7 +328,25 @@ pub fn draw_scene<B: Backend<Error: Send + Sync + 'static>>(
                 } else if let Some((pet_pos, anim, kind)) = ctx.last_pet_pos {
                     if hit_test_pet(kind, pet_pos, anim, mx, my) {
                         let on_cooldown = ctx.active_pet.is_some_and(|p| p.is_active(now));
-                        paint_pet_tooltip(f, kind, anim, on_cooldown, mx, my, actual_scene, theme);
+                        // `last_pet_pos` is only Some on the normal render path,
+                        // where it was written from `floor_pet` — so their kinds
+                        // agree and `floor_pet.name` is the right label. The
+                        // `default_name` arm is defense-in-depth, not a live path.
+                        let display_name = ctx
+                            .floor_pet
+                            .map(|p| p.name.as_str())
+                            .unwrap_or_else(|| kind.default_name());
+                        paint_pet_tooltip(
+                            f,
+                            kind,
+                            anim,
+                            on_cooldown,
+                            display_name,
+                            mx,
+                            my,
+                            actual_scene,
+                            theme,
+                        );
                     } else if let Some(label) = hit_test_furniture(&layout, mx, my) {
                         paint_furniture_tooltip(f, label, mx, my, actual_scene, theme);
                     }

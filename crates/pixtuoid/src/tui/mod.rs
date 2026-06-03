@@ -132,6 +132,7 @@ fn dispatch_key(code: KeyCode, mods: KeyModifiers, ctx: KeyCtx) -> KeyAction {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
     mut scene_rx: SceneRx,
     pack_dir: Option<std::path::PathBuf>,
@@ -139,11 +140,11 @@ pub async fn run_tui(
     theme: &'static theme::Theme,
     config_path: std::path::PathBuf,
     desk_cap: Option<usize>,
-    enabled_pets: Vec<pet::PetKind>,
+    pets: Vec<pet::Pet>,
 ) -> Result<()> {
     let pack = embedded_pack::load_sprite_pack(pack_dir)?;
     let term = setup_terminal()?;
-    let mut renderer = TuiRenderer::new(term, theme, enabled_pets);
+    let mut renderer = TuiRenderer::new(term, theme, pets);
     let mut version_popup = {
         let current_ver = env!("CARGO_PKG_VERSION");
         let cfg = crate::config::load(&config_path);

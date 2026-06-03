@@ -66,7 +66,19 @@ fn normal_theme() -> &'static crate::tui::theme::Theme {
 fn dark_theme() -> &'static crate::tui::theme::Theme {
     crate::tui::theme::theme_by_name("cyberpunk").expect("cyberpunk theme")
 }
-fn build(cols: u16, rows: u16, pets: Vec<PetKind>) -> TuiRenderer<TestBackend> {
+/// Build a renderer with the given pet KINDS, each using its default name.
+fn build(cols: u16, rows: u16, kinds: Vec<PetKind>) -> TuiRenderer<TestBackend> {
+    build_pets(
+        cols,
+        rows,
+        kinds
+            .into_iter()
+            .map(crate::tui::pet::Pet::defaulted)
+            .collect(),
+    )
+}
+/// Build a renderer with fully-specified pets (kind + custom name).
+fn build_pets(cols: u16, rows: u16, pets: Vec<crate::tui::pet::Pet>) -> TuiRenderer<TestBackend> {
     TuiRenderer::new(
         Terminal::new(TestBackend::new(cols, rows)).expect("test backend"),
         normal_theme(),
@@ -669,7 +681,7 @@ fn injected_coffee_changes_desk_render() {
 #[test]
 fn no_pet_when_pets_disabled() {
     let scene = scene_with(vec![active("/pet/0.jsonl", 0, "Edit", t0())], 16);
-    let mut r = build(100, 40, vec![]); // empty enabled_pets
+    let mut r = build(100, 40, vec![]); // no pets
     r.render(&scene, &pack(), t0()).unwrap();
     assert!(r.cached_pet_pos().is_none(), "no pet when none enabled");
 }
@@ -717,6 +729,102 @@ fn petting_freezes_pet_position() {
         .unwrap();
     let (pos2, _, _) = r.cached_pet_pos().expect("pet still placed");
     assert_eq!(pos, pos2, "a petted pet holds its position");
+}
+
+#[test]
+fn pet_walk_is_frame_stable() {
+    // Same `now` rendered by two independent renderers must yield the same pet
+    // position — proves A* on (static mask + empty overlay) is deterministic
+    // (no per-frame flash).
+    let scene = scene_with(vec![active("/pstab/0.jsonl", 0, "Edit", t0())], 16);
+    let now = t0() + Duration::from_millis(5_000); // mid walk-phase of cycle 0
+    let mut r1 = build(160, 80, vec![PetKind::Cat]);
+    let mut r2 = build(160, 80, vec![PetKind::Cat]);
+    r1.render(&scene, &pack(), now).unwrap();
+    r2.render(&scene, &pack(), now).unwrap();
+    assert_eq!(
+        r1.cached_pet_pos().map(|(p, _, _)| (p.x, p.y)),
+        r2.cached_pet_pos().map(|(p, _, _)| (p.x, p.y)),
+        "identical `now` must give identical pet position (no flash)"
+    );
+}
+
+#[test]
+fn pet_walk_never_clips_through_furniture() {
+    // Across 4 cycles (many prev/dest pairs) × the whole 35% walk phase, every
+    // walking frame must land on a walkable cell — i.e. routed around furniture.
+    let scene = scene_with(vec![active("/pwalk/0.jsonl", 0, "Edit", t0())], 16);
+    let mut r = build(160, 80, vec![PetKind::Cat]);
+    r.render(&scene, &pack(), t0()).unwrap();
+    let layout = r.cached_layout().expect("layout after prime").clone();
+    for cycle in 0u64..4 {
+        for step in 0..35u64 {
+            let now = t0() + Duration::from_millis(cycle * 40_000 + step * 400);
+            r.render(&scene, &pack(), now).unwrap();
+            if let Some((pos, anim, _)) = r.cached_pet_pos() {
+                if anim == PetKind::Cat.walk_anim() {
+                    // Coarse-cell walkable = the predicate A* itself guarantees
+                    // (same grid every agent sprite rides). Per-pixel is_walkable
+                    // is stricter than the router delivers (pad band / diagonal
+                    // corner-graze) and would hold the pet to a higher bar than
+                    // the agents.
+                    assert!(
+                        crate::tui::pathfind::point_in_walkable_cell(&layout.walkable, pos),
+                        "walking pet at ({},{}) is in a blocked routing cell (cycle={cycle} step={step})",
+                        pos.x,
+                        pos.y
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pet_rest_pos_is_walkable() {
+    let scene = scene_with(vec![active("/prest/0.jsonl", 0, "Edit", t0())], 16);
+    let mut r = build(160, 80, vec![PetKind::Cat]);
+    r.render(&scene, &pack(), t0()).unwrap();
+    let layout = r.cached_layout().expect("layout after prime").clone();
+    for cycle in 0u64..4 {
+        for step in 0..10u64 {
+            let now = t0() + Duration::from_millis(cycle * 40_000 + 14_200 + step * 2_600);
+            r.render(&scene, &pack(), now).unwrap();
+            if let Some((pos, anim, _)) = r.cached_pet_pos() {
+                if anim != PetKind::Cat.walk_anim() {
+                    // Rest pose is a snapped cell center, so it should satisfy the
+                    // stronger per-pixel check — assert that directly.
+                    assert!(
+                        layout.walkable.is_walkable(pos.x, pos.y),
+                        "resting pet at ({},{}) is on a blocked cell (cycle={cycle} step={step})",
+                        pos.x,
+                        pos.y
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pet_leg_boundary_no_pop() {
+    // The snapped rest anchor == the next leg's snapped walk-start anchor, so
+    // the pet must not teleport across the 40s leg boundary.
+    let scene = scene_with(vec![active("/pbnd/0.jsonl", 0, "Edit", t0())], 16);
+    let mut r = build(160, 80, vec![PetKind::Cat]);
+    r.render(&scene, &pack(), t0() + Duration::from_millis(39_600))
+        .unwrap();
+    let before = r.cached_pet_pos().map(|(p, _, _)| (p.x, p.y));
+    r.render(&scene, &pack(), t0() + Duration::from_millis(40_040))
+        .unwrap();
+    let after = r.cached_pet_pos().map(|(p, _, _)| (p.x, p.y));
+    if let (Some((x0, y0)), Some((x1, y1))) = (before, after) {
+        let gap = (x0 as i32 - x1 as i32).unsigned_abs() + (y0 as i32 - y1 as i32).unsigned_abs();
+        assert!(
+            gap <= 16,
+            "pet leg boundary teleports (gap={gap}px, ({x0},{y0})→({x1},{y1}))"
+        );
+    }
 }
 
 // ===================================================================
@@ -1050,6 +1158,45 @@ fn pet_tooltip_on_hover() {
     assert!(
         text.contains("Cat") || text.contains("purr"),
         "hovering the cat shows its tooltip"
+    );
+}
+
+#[test]
+fn pet_tooltip_shows_custom_name() {
+    let scene = scene_with(vec![active("/tt/cn.jsonl", 0, "Edit", t0())], 16);
+    let cat = crate::tui::pet::Pet {
+        kind: PetKind::Cat,
+        name: "Luna".to_string(),
+    };
+    let mut r = build_pets(140, 48, vec![cat]);
+    r.render(&scene, &pack(), t0()).unwrap();
+    let (pos, _, _) = r.cached_pet_pos().expect("cat placed");
+    r.set_mouse_pos(Some((pos.x, pos.y / 2)));
+    r.render(&scene, &pack(), t0()).unwrap();
+    let text = frame_text(r.frame_buffer());
+    assert!(
+        text.contains("Luna"),
+        "hovering the cat shows its custom name; got:\n{text}"
+    );
+    assert!(
+        !text.contains("Office Cat"),
+        "custom name replaces the default, not appended"
+    );
+}
+
+#[test]
+fn pet_tooltip_falls_back_to_default_name_when_not_configured() {
+    let scene = scene_with(vec![active("/tt/fb.jsonl", 0, "Edit", t0())], 16);
+    // No custom name → default ("Office Cat"). `build` defaults the name.
+    let mut r = build(140, 48, vec![PetKind::Cat]);
+    r.render(&scene, &pack(), t0()).unwrap();
+    let (pos, _, _) = r.cached_pet_pos().expect("cat placed");
+    r.set_mouse_pos(Some((pos.x, pos.y / 2)));
+    r.render(&scene, &pack(), t0()).unwrap();
+    let text = frame_text(r.frame_buffer());
+    assert!(
+        text.contains("Office Cat"),
+        "an unconfigured cat falls back to the default name; got:\n{text}"
     );
 }
 
