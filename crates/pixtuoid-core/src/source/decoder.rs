@@ -22,6 +22,29 @@ pub(crate) fn cwd_basename_label(prefix: &str, cwd: &Path) -> Option<String> {
     Some(format!("{prefix}·{base}"))
 }
 
+/// Canonical form of a transcript-path STRING before it becomes an `AgentId`
+/// key. Identity on Unix. On Windows: `\`→`/` + lowercase — CC emits
+/// backslash paths in hook payloads but mixes `\`/`/` forms of the same file
+/// internally, and NTFS is case-insensitive; without folding, the hook key
+/// and the watcher key hash to two different AgentIds and every session
+/// renders as TWO sprites. Applied at exactly FOUR sites: the hook decoder's
+/// transcript_path, the watcher's default_id_from_path, walk_jsonl's
+/// transcript_path_str handed to the line decoders, and the subagent
+/// detect_parent_id's rebuilt parent key (ALL must agree or events land on
+/// phantom ids / the scope tree breaks).
+pub(crate) fn normalize_path_key(s: &str) -> String {
+    normalize_key_inner(cfg!(windows), s)
+}
+
+/// Pure core, separated so the Windows arm is unit-testable on any platform.
+fn normalize_key_inner(windows: bool, s: &str) -> String {
+    if windows {
+        s.replace('\\', "/").to_lowercase()
+    } else {
+        s.to_string()
+    }
+}
+
 pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
     let obj = v
         .as_object()
@@ -72,13 +95,29 @@ pub fn decode_hook_payload(v: Value) -> Result<AgentEvent> {
     // keying on the path would split hook and JSONL into two sprites. Unknown
     // sources get the CC-shaped default.
     use crate::source::registry::IdKey;
+    // Normalized transcript_path: fold `\`→`/` + lowercase on Windows so the
+    // hook key and the JSONL watcher key (which walks real Path strings) hash to
+    // the same AgentId. The session_id fallback is a UUID — NOT normalized
+    // (UUIDs are already canonical and case-normalized UUIDs could collide on
+    // case-only variants, which no real UUID generator produces anyway). The
+    // `.filter(!is_empty)` guard is preserved: an empty transcript_path must
+    // still fall back to session_id.
+    let normalized_transcript_path: String;
     let id_key = match desc.map_or(IdKey::TranscriptPathThenSessionId, |d| d.hook.id_key) {
         IdKey::SessionId => session_id.as_str(),
-        IdKey::TranscriptPathThenSessionId => obj
-            .get("transcript_path")
-            .and_then(|s| s.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(session_id.as_str()),
+        IdKey::TranscriptPathThenSessionId => {
+            match obj
+                .get("transcript_path")
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                Some(tp) => {
+                    normalized_transcript_path = normalize_path_key(tp);
+                    &normalized_transcript_path
+                }
+                None => session_id.as_str(),
+            }
+        }
     };
     let agent_id = AgentId::from_parts(source, id_key);
 
@@ -228,6 +267,29 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn normalize_path_key_is_identity_on_unix() {
+        // The unix arm must be byte-identity — every existing AgentId
+        // (and golden) depends on it.
+        assert_eq!(
+            normalize_key_inner(false, "/Users/Me/.claude/projects/X/s.jsonl"),
+            "/Users/Me/.claude/projects/X/s.jsonl"
+        );
+    }
+
+    #[test]
+    fn normalize_path_key_folds_separators_and_case_on_windows() {
+        // CC mixes \ and / forms of the same path, and NTFS is
+        // case-insensitive — both fold to one key (windows arm is pure
+        // string code, testable on any platform).
+        let a = normalize_key_inner(true, r"C:\Users\Me\.claude\projects\X\s.jsonl");
+        assert_eq!(a, "c:/users/me/.claude/projects/x/s.jsonl");
+        assert_eq!(
+            normalize_key_inner(true, r"C:\Users\Me\x\s.jsonl"),
+            normalize_key_inner(true, "C:/users/me/X/s.jsonl")
+        );
+    }
+
+    #[test]
     fn codex_session_start_without_transcript_path_uses_session_id() {
         // Codex sends transcript_path as string|null; decode must still work,
         // namespacing the AgentId under the explicit "codex" source.
@@ -333,7 +395,13 @@ mod tests {
                 assert_eq!(source, crate::source::claude_code::SOURCE_NAME);
                 assert_eq!(
                     agent_id,
-                    AgentId::from_parts(crate::source::claude_code::SOURCE_NAME, tp),
+                    // Through the same fold the decoder applies — a raw
+                    // from_parts(tp) expectation breaks on the windows
+                    // runner (casefold).
+                    AgentId::from_parts(
+                        crate::source::claude_code::SOURCE_NAME,
+                        &normalize_path_key(tp)
+                    ),
                     "must coalesce with tool/JSONL/SessionEnd events on the claude-code id"
                 );
             }

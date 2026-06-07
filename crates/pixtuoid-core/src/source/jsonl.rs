@@ -23,7 +23,7 @@ pub type SessionEndChecker = fn(&[u8]) -> bool;
 pub type IdDeriver = fn(&Path) -> String;
 
 fn default_id_from_path(p: &Path) -> String {
-    p.to_string_lossy().into_owned()
+    crate::source::decoder::normalize_path_key(&p.to_string_lossy())
 }
 
 /// The per-source decode/label/end/id fn-pointers (the invariant-#3 seam)
@@ -334,7 +334,12 @@ async fn walk_jsonl(path: &Path, decoders: SourceDecoders, ctx: &WatchCtx<'_>) {
     }
 
     let new_bytes = &new_chunk[..safe_end_relative];
-    let transcript_path_str = path.to_string_lossy().into_owned();
+    // The FOURTH keying site: line decoders hash this string into per-event
+    // AgentIds (CC keys on it directly; Codex extracts its lowercase UUID, so
+    // the fold is identity there) — it must match the normalized SessionStart
+    // key from id_derive below or every JSONL event lands on a phantom id on
+    // Windows (caught by the PR #160 security review).
+    let transcript_path_str = crate::source::decoder::normalize_path_key(&path.to_string_lossy());
 
     // Take the `seen` lock ONLY to claim first-sight, then drop it before the
     // awaited sends — holding it across `tx.send` would block on a slow consumer
@@ -455,8 +460,11 @@ pub(crate) fn is_subagent_path(path: &Path) -> bool {
 /// Codex subagent parent links come from the `SubagentStart` hook, not the path.
 ///
 /// The parent key is rebuilt from the components BEFORE the first `subagents`
-/// (`<parent-dir>.jsonl`), using native separators — byte-identical to the
-/// parent transcript's own watcher-derived key on every platform.
+/// (`<parent-dir>.jsonl`) and folded through `normalize_path_key` — the THIRD
+/// keying site, and it must stay byte-identical to the parent transcript's own
+/// watcher-derived key (`default_id_from_path`) or the subagent's `parent_id`
+/// points at a nonexistent agent and the whole scope tree (liveness↑,
+/// cascade↓, b1 drain) silently no-ops on Windows.
 fn detect_parent_id(path: &Path, source: &str) -> Option<AgentId> {
     let mut parent_dir = PathBuf::new();
     let mut found = false;
@@ -471,7 +479,10 @@ fn detect_parent_id(path: &Path, source: &str) -> Option<AgentId> {
         return None;
     }
     let parent_jsonl = format!("{}.jsonl", parent_dir.display());
-    Some(AgentId::from_parts(source, &parent_jsonl))
+    Some(AgentId::from_parts(
+        source,
+        &crate::source::decoder::normalize_path_key(&parent_jsonl),
+    ))
 }
 
 fn extract_cwd(bytes: &[u8]) -> Option<PathBuf> {
@@ -504,11 +515,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_id_from_path_returns_full_path_string() {
-        let p = Path::new("/Users/me/.claude/projects/x/abc.jsonl");
+    fn default_id_from_path_returns_normalized_path_key() {
+        // Lowercase literal: identity on every platform (the Windows fold is
+        // pinned by decoder.rs's normalize_path_key unit tests + the backslash
+        // test below).
+        let p = Path::new("/users/me/.claude/projects/x/abc.jsonl");
         assert_eq!(
             default_id_from_path(p),
-            "/Users/me/.claude/projects/x/abc.jsonl"
+            "/users/me/.claude/projects/x/abc.jsonl"
         );
     }
 
@@ -517,13 +531,15 @@ mod tests {
     // the algorithm inline and silently pinned the superseded string-scan).
     #[test]
     fn detect_parent_id_derives_grandparent_transcript_key() {
-        // Built via PathBuf so separators are NATIVE on every platform: the
-        // rebuilt parent key uses native separators, matching the watcher's
-        // own to_string_lossy for the parent transcript (a separator-literal
-        // expectation broke on the windows runner — backslash rebuild).
+        // THE contract: the derived parent_id must equal the AgentId the
+        // watcher itself derives for the parent transcript — expectation goes
+        // through the REAL watcher keying fn (default_id_from_path), so the
+        // two keying sites can't drift apart on any platform.
         let parent: PathBuf = ["projects", "x", "abc123"].iter().collect();
         let p = parent.join("subagents").join("agent-1.jsonl");
-        let expected = AgentId::from_parts("claude-code", &format!("{}.jsonl", parent.display()));
+        let parent_transcript = PathBuf::from(format!("{}.jsonl", parent.display()));
+        let expected =
+            AgentId::from_parts("claude-code", &default_id_from_path(&parent_transcript));
         assert_eq!(detect_parent_id(&p, "claude-code"), Some(expected));
         assert!(is_subagent_path(&p));
     }
@@ -554,12 +570,19 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn detect_parent_id_handles_backslash_paths() {
-        let p = Path::new(r"C:\Users\me\.claude\projects\x\abc123\subagents\agent-1.jsonl");
+        let p = Path::new(r"C:\Users\Me\.claude\projects\x\abc123\subagents\agent-1.jsonl");
+        // Same real-contract formulation: the parent_id must match what the
+        // watcher derives for the parent transcript (normalized — lowercase,
+        // forward slashes), NOT the raw backslash rebuild.
         let expected = AgentId::from_parts(
             "claude-code",
-            r"C:\Users\me\.claude\projects\x\abc123.jsonl",
+            &default_id_from_path(Path::new(r"C:\Users\Me\.claude\projects\x\abc123.jsonl")),
         );
         assert_eq!(detect_parent_id(p, "claude-code"), Some(expected));
+        assert_eq!(
+            default_id_from_path(Path::new(r"C:\Users\Me\.claude\projects\x\abc123.jsonl")),
+            "c:/users/me/.claude/projects/x/abc123.jsonl"
+        );
         assert!(is_subagent_path(p));
     }
 

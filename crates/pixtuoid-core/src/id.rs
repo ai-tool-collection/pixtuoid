@@ -16,12 +16,18 @@ pub(crate) fn splitmix64(z: u64) -> u64 {
 }
 
 impl AgentId {
-    /// CC-specific shortcut — same as `from_parts("claude-code", path)`. A
-    /// test/example ergonomics shim only: production code calls `from_parts`
-    /// with an explicit source. Kept because the test + snapshot suites lean on
-    /// it heavily.
+    /// CC-specific shortcut — `from_parts("claude-code", normalize_path_key(path))`,
+    /// i.e. the id production derives for a transcript path on every platform
+    /// (identity on Unix; `\`→`/` + casefold on Windows). A test/example
+    /// ergonomics shim only: production code calls `from_parts` with an
+    /// explicit source at the three normalized keying sites. Kept because the
+    /// test + snapshot suites lean on it heavily — and normalizing here keeps
+    /// every expectation they build platform-consistent by construction.
     pub fn from_transcript_path(path: &str) -> Self {
-        Self::from_parts("claude-code", path)
+        Self::from_parts(
+            "claude-code",
+            &crate::source::decoder::normalize_path_key(path),
+        )
     }
 
     /// Source-agnostic factory. `source` is the source's name (matches the
@@ -102,8 +108,9 @@ mod tests {
 
     #[test]
     fn from_transcript_path_routes_through_from_parts() {
-        // Backwards-compat: existing CC IDs are exactly
-        // `from_parts("claude-code", path)`.
+        // For an already-normalized path (lowercase, forward slashes) the shim
+        // equals raw from_parts on every platform — the fold only rewrites
+        // backslash/uppercase forms (pinned in source::decoder's unit tests).
         let a = AgentId::from_transcript_path("/x.jsonl");
         let b = AgentId::from_parts("claude-code", "/x.jsonl");
         assert_eq!(a, b);
