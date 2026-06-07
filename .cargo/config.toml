@@ -1,0 +1,17 @@
+# Link with lld on x86_64 Linux — every ubuntu-latest CI job links natively
+# for this target (test binaries, smoke, deb) and the runner image ships lld.
+# Linux contributors need it too (`apt install lld`); see docs/CONTRIBUTING.md.
+#
+# Deliberately NOT set for aarch64-unknown-linux-gnu: no CI job builds that
+# target natively — it is only ever built through `cross` Docker containers
+# (release.yml build + deb matrices), whose images carry a gcc cross
+# toolchain without lld, so the flag would break the release at tag time.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+# For local macOS developers: Xcode 15+'s default linker is already fast.
+# If linking is still your bottleneck, `brew install lld` and uncomment:
+# [target.aarch64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+# [target.x86_64-apple-darwin]
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
