@@ -1,5 +1,5 @@
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -15,29 +15,61 @@ fn main() -> Result<()> {
         || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&log_level));
 
     // Log routing:
-    //   TUI mode: silent by default (no file, no stderr). Only logs when
-    //     $PIXTUOID_LOG is set or --log-level is debug/trace.
+    //   TUI mode: ALWAYS log to the file (#157) — the alternate screen owns
+    //     the terminal, so the log file is the only place a runtime error
+    //     ("source died", decode failures) can surface. The default floor is
+    //     `warn`; $RUST_LOG, $PIXTUOID_LOG, or --log-level raise/shape it.
     //     Crash reporting is handled separately by the panic hook.
     //   Non-TUI (install-hooks, uninstall-hooks, --headless): stderr.
     let tui_active = matches!(&cmd, Cmd::Run { headless, .. } if !*headless);
     let wants_verbose = matches!(log_level.as_str(), "debug" | "trace");
-    let explicit_log_file = std::env::var("PIXTUOID_LOG").is_ok();
+    // The env var's VALUE is the log file path — an empty value would
+    // "enable" file mode with an unopenable path; treat it as unset.
+    let explicit_log_file = std::env::var("PIXTUOID_LOG").is_ok_and(|v| !v.is_empty());
 
-    if tui_active && (wants_verbose || explicit_log_file) {
-        if let Ok(path) = log_file_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(f) = OpenOptions::new().create(true).append(true).open(&path) {
+    if tui_active {
+        // Explicit verbosity keeps today's semantics (the full --log-level /
+        // RUST_LOG filter); the always-on default floors at warn so the file
+        // captures errors without accumulating info-level noise. RUST_LOG
+        // set-but-EMPTY parses as Ok(zero directives) = everything OFF —
+        // treat it as unset, or it silently defeats the always-on floor
+        // (the exact silent-failure class #157 exists to kill).
+        let rust_log_set = std::env::var("RUST_LOG").is_ok_and(|v| !v.is_empty());
+        let filter = if wants_verbose || explicit_log_file {
+            make_filter()
+        } else if rust_log_set {
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
+        } else {
+            EnvFilter::new(match log_level.as_str() {
+                lvl @ ("warn" | "error") => lvl,
+                _ => "warn",
+            })
+        };
+        let path = log_file_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        rotate_if_large(&path);
+        match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(f) => {
                 let writer = Arc::new(Mutex::new(f));
                 tracing_subscriber::fmt()
-                    .with_env_filter(make_filter())
+                    .with_env_filter(filter)
                     .with_ansi(false)
                     .with_writer(move || MutexFileWriter(writer.clone()))
                     .init();
             }
+            Err(e) => {
+                // The footer's "see log" advice would point at nothing —
+                // say so on the pre-altscreen stderr channel rather than
+                // degrading silently (the #157 failure class).
+                eprintln!(
+                    "⚠ pixtuoid: cannot open log file {} ({e}) — runtime warnings will not be recorded",
+                    path.display()
+                );
+            }
         }
-    } else if !tui_active {
+    } else {
         tracing_subscriber::fmt()
             .with_env_filter(make_filter())
             .with_writer(std::io::stderr)
@@ -54,11 +86,23 @@ fn main() -> Result<()> {
             headless,
         } => {
             let cfg_path = config::config_path();
-            let cfg = config::load(&cfg_path);
-            let theme = config::resolve_theme(&cfg, cli_theme.as_deref())?;
+            let mut cfg_warnings = Vec::new();
+            let cfg = config::load(&cfg_path, &mut cfg_warnings);
+            let theme = config::resolve_theme(&cfg, cli_theme.as_deref(), &mut cfg_warnings)?;
             let desk_cap = cli_max_desks.or(cfg.max_desks);
             let pack_dir = config::resolve_pack_dir(&cfg, pack_dir);
-            let pets = config::resolve_pets(&cfg);
+            let pets = config::resolve_pets(&cfg, &mut cfg_warnings);
+            // Config problems must reach the user's eyes, not only the log
+            // file (#87): print to stderr BEFORE the alternate screen takes
+            // the terminal (visible again in scrollback after exit — the
+            // crash hook's channel). Headless already has a stderr tracing
+            // subscriber, so the warns above reached stderr there; printing
+            // again would duplicate them.
+            if !headless {
+                for w in &cfg_warnings {
+                    eprintln!("⚠ pixtuoid: {w}");
+                }
+            }
             runtime::run(runtime::RunConfig {
                 socket,
                 projects_root,
@@ -253,19 +297,51 @@ fn crash_log_path() -> PathBuf {
     std::env::temp_dir().join("pixtuoid-crash.log")
 }
 
-fn log_file_path() -> Result<PathBuf> {
+fn log_file_path() -> PathBuf {
+    // Empty value = unset (the value is the PATH, not an on/off toggle; an
+    // empty path would silently fail to open and log nothing).
     if let Ok(p) = std::env::var("PIXTUOID_LOG") {
-        return Ok(PathBuf::from(p));
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
     }
     if let Ok(state) = std::env::var("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(format!("{state}/pixtuoid/log")));
+        return PathBuf::from(format!("{state}/pixtuoid/log"));
     }
-    let home = pixtuoid::install::io::user_home()
-        .ok_or_else(|| anyhow::anyhow!("no HOME/USERPROFILE for the log dir"))?;
-    Ok(PathBuf::from(home)
-        .join(".cache")
-        .join("pixtuoid")
-        .join("log"))
+    if let Some(home) = pixtuoid::install::io::user_home() {
+        return PathBuf::from(home)
+            .join(".cache")
+            .join("pixtuoid")
+            .join("log");
+    }
+    // No home dir at all: mirror crash_log_path's temp fallback — the log
+    // must exist somewhere, it is the only runtime diagnostics channel (#157).
+    std::env::temp_dir().join("pixtuoid.log")
+}
+
+/// The append-only log was opt-in before #157; now that it is always on in
+/// TUI mode it needs a growth bound. One-deep rotation at startup (log →
+/// log.old) keeps the last two generations without a rotation dependency.
+/// Known accepted edge: with several pixtuoid instances sharing the default
+/// path, one instance's startup rotation renames the file out from under a
+/// running sibling (its fd follows; a later rotation strands it on an
+/// unlinked inode) — startup-only one-deep rotation is the deliberate
+/// no-dependency trade-off.
+const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+
+fn rotate_if_large(path: &Path) {
+    let too_large = std::fs::metadata(path).is_ok_and(|m| m.len() > LOG_ROTATE_BYTES);
+    if too_large {
+        // APPEND ".old" rather than with_extension: a custom $PIXTUOID_LOG
+        // like app.log must rotate to app.log.old (not clobber a sibling
+        // app.old), and a path already ending in .old must not rename onto
+        // itself (a no-op that would never rotate). OsString concatenation,
+        // not format!/display(): display() is lossy on non-UTF-8 paths, and
+        // a U+FFFD-mangled target would silently break the rotation.
+        let mut old = path.as_os_str().to_os_string();
+        old.push(".old");
+        let _ = std::fs::rename(path, &old);
+    }
 }
 
 /// Adapter that gives `tracing-subscriber` a `Write`-able file behind a Mutex.
@@ -291,6 +367,46 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn rotate_if_large_rotates_once_past_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+
+        // Small file: untouched.
+        std::fs::write(&log, b"recent").unwrap();
+        rotate_if_large(&log);
+        assert!(log.exists(), "under-cap log must not rotate");
+
+        // Over the cap (sparse via set_len — no real 5MB write).
+        let f = std::fs::OpenOptions::new().write(true).open(&log).unwrap();
+        f.set_len(LOG_ROTATE_BYTES + 1).unwrap();
+        drop(f);
+        rotate_if_large(&log);
+        assert!(!log.exists(), "over-cap log rotates away");
+        assert!(
+            dir.path().join("log.old").exists(),
+            "one prior generation is kept"
+        );
+    }
+
+    #[test]
+    fn rotate_if_large_appends_old_to_dotted_custom_paths() {
+        // A custom $PIXTUOID_LOG like app.log must rotate to app.log.old —
+        // replacing the extension would clobber an unrelated app.old, and a
+        // *.old path would rename onto itself and never rotate.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("app.log");
+        let f = std::fs::File::create(&log).unwrap();
+        f.set_len(LOG_ROTATE_BYTES + 1).unwrap();
+        drop(f);
+        rotate_if_large(&log);
+        assert!(!log.exists());
+        assert!(
+            dir.path().join("app.log.old").exists(),
+            ".old is appended, not substituted"
+        );
+    }
 
     #[test]
     fn truncate_ascii() {

@@ -10,6 +10,10 @@ pub(super) use hud::{
     paint_elevator_indicator, paint_footer, paint_theme_picker, paint_version_popup,
     paint_wall_display, version_popup_url_rect, VERSION_POPUP_URL,
 };
+// `pub`: the snapshot example reuses the real formatter for its
+// --source-warning screenshots so the wording cannot drift from production
+// (the pixtuoid lib target is not a semver surface).
+pub use hud::source_warning_message;
 pub use tooltip::paint_chitchat_bubbles;
 pub(super) use tooltip::{paint_coffee_tooltip, paint_furniture_tooltip, paint_pet_tooltip};
 pub(crate) use tooltip::{paint_hover_tooltip, paint_label_widgets};
@@ -259,10 +263,67 @@ mod tests {
 
     const QUIT_SUFFIX: &str = " [?]help [p]ause [t]heme [q]uit ";
 
+    // --- source-death footer warning (#157) -------------------------------
+
+    #[test]
+    fn source_warning_message_formats_by_death_count() {
+        use pixtuoid_core::source::manager::SourceDeath;
+        let d = |s: &str| SourceDeath::new(s, "boom");
+        assert_eq!(super::source_warning_message(&[]), None);
+        assert_eq!(
+            super::source_warning_message(&[d("claude-code")]).unwrap(),
+            "claude-code source died — its agents are frozen; restart pixtuoid (see log)"
+        );
+        assert_eq!(
+            super::source_warning_message(&[d("claude-code"), d("codex")]).unwrap(),
+            "2 sources died — restart pixtuoid (see log)"
+        );
+    }
+
+    #[test]
+    fn footer_source_warning_replaces_stats_and_keeps_quit() {
+        let s = scene_of(vec![idle("myproject")]);
+        let line = build_status_summary(
+            &s,
+            100,
+            None,
+            Some("claude-code source died — its agents are frozen; restart pixtuoid (see log)"),
+        );
+        assert!(line.contains('⚠'), "warning marker present: {line}");
+        assert!(line.contains("claude-code source died"), "got: {line}");
+        assert!(line.ends_with(" [q]uit "), "quit hint survives: {line}");
+        assert!(
+            !line.contains(" 1 agents") && !line.contains("idle"),
+            "stale stats are replaced by the warning: {line}"
+        );
+        insta::assert_snapshot!(line);
+    }
+
+    #[test]
+    fn footer_source_warning_survives_every_width() {
+        let s = scene_of(vec![idle("myproject")]);
+        for w in [20u16, 30, 40, 60, 80] {
+            let line = build_status_summary(
+                &s,
+                w,
+                None,
+                Some("claude-code source died — its agents are frozen; restart pixtuoid (see log)"),
+            );
+            assert!(
+                line.contains('⚠') || line.contains('…'),
+                "warning must never be tiered away (w={w}): {line}"
+            );
+            assert!(
+                line.chars().count() <= w as usize,
+                "must fit the row (w={w}): {line:?}"
+            );
+        }
+    }
+
     #[test]
     fn footer_zero_agents() {
         let s = scene_of(vec![]);
-        let line = build_status_summary(&s, 80, None);
+        let line = build_status_summary(&s, 80, None, None);
         assert_eq!(line.len(), 80, "should pad to full width");
         insta::assert_snapshot!(line);
     }
@@ -270,7 +331,7 @@ mod tests {
     #[test]
     fn footer_single_idle_agent() {
         let s = scene_of(vec![idle("myproject")]);
-        let line = build_status_summary(&s, 80, None);
+        let line = build_status_summary(&s, 80, None, None);
         insta::assert_snapshot!(line);
     }
 
@@ -286,7 +347,7 @@ mod tests {
             idle("g"),
             idle("h"),
         ]);
-        let line = build_status_summary(&s, 120, None);
+        let line = build_status_summary(&s, 120, None, None);
         insta::assert_snapshot!(line);
     }
 
@@ -297,7 +358,7 @@ mod tests {
             waiting("b"),
             idle("c"),
         ]);
-        let line = build_status_summary(&s, 60, None);
+        let line = build_status_summary(&s, 60, None, None);
         assert!(
             !line.contains("3 agents"),
             "full tier should not fit at width 60"
@@ -309,7 +370,7 @@ mod tests {
     fn footer_minimal_width() {
         let s = scene_of(vec![idle("a"), idle("b")]);
         let w = QUIT_SUFFIX.len() + 6;
-        let line = build_status_summary(&s, w as u16, None);
+        let line = build_status_summary(&s, w as u16, None, None);
         assert_eq!(line.len(), w);
         insta::assert_snapshot!(line);
     }
@@ -318,7 +379,7 @@ mod tests {
     fn footer_quit_only_below_threshold() {
         let s = scene_of(vec![idle("a")]);
         let w = QUIT_SUFFIX.len();
-        let line = build_status_summary(&s, w as u16, None);
+        let line = build_status_summary(&s, w as u16, None, None);
         insta::assert_snapshot!(line);
     }
 
@@ -332,7 +393,7 @@ mod tests {
             active_with("Grep x", "e"),
             active_with("Glob x", "f"),
         ]);
-        let line = build_status_summary(&s, 200, None);
+        let line = build_status_summary(&s, 200, None, None);
         let crosses = line.matches('\u{00d7}').count();
         assert_eq!(crosses, 4, "expected <=4 tools in breakdown");
         insta::assert_snapshot!(line);
@@ -353,7 +414,7 @@ mod tests {
     #[test]
     fn footer_with_floor_info() {
         let s = scene_of(vec![idle("a"), idle("b")]);
-        let line = build_status_summary(&s, 120, Some(fi(2, 3, 5)));
+        let line = build_status_summary(&s, 120, Some(fi(2, 3, 5)), None);
         insta::assert_snapshot!(line);
     }
 
@@ -363,7 +424,7 @@ mod tests {
     #[test]
     fn count_str_single_floor_shows_bare_n() {
         let s = scene_of(vec![idle("a"), idle("b")]);
-        let line = build_status_summary(&s, 120, None);
+        let line = build_status_summary(&s, 120, None, None);
         assert!(line.contains(" 2 agents "), "got: {line}");
         assert!(
             !line.contains("2/"),
@@ -374,7 +435,7 @@ mod tests {
     #[test]
     fn count_str_multi_floor_shows_n_slash_total() {
         let s = scene_of(vec![idle("a"), idle("b")]);
-        let line = build_status_summary(&s, 120, Some(fi(2, 3, 5)));
+        let line = build_status_summary(&s, 120, Some(fi(2, 3, 5)), None);
         assert!(line.contains(" 2/5 agents "), "got: {line}");
     }
 
@@ -383,7 +444,7 @@ mod tests {
         // All agents happen to be on the visible floor — still show "/n"
         // to signal the multi-floor context.
         let s = scene_of(vec![idle("a"), idle("b")]);
-        let line = build_status_summary(&s, 120, Some(fi(1, 3, 2)));
+        let line = build_status_summary(&s, 120, Some(fi(1, 3, 2)), None);
         assert!(line.contains(" 2/2 agents "), "got: {line}");
     }
 
@@ -392,7 +453,7 @@ mod tests {
         // The whole point of `total_agents`: when the current floor is
         // empty but other floors have agents, the footer must signal that.
         let s = scene_of(vec![]);
-        let line = build_status_summary(&s, 120, Some(fi(2, 3, 5)));
+        let line = build_status_summary(&s, 120, Some(fi(2, 3, 5)), None);
         assert!(line.contains(" 0/5 agents "), "got: {line}");
     }
 
@@ -401,7 +462,7 @@ mod tests {
         // "5/12a" is ambiguous at narrow widths; medium/min tiers must
         // drop the slash form regardless of multi-floor status.
         let s = scene_of(vec![idle("a"), idle("b"), idle("c")]);
-        let line = build_status_summary(&s, 60, Some(fi(1, 3, 10)));
+        let line = build_status_summary(&s, 60, Some(fi(1, 3, 10)), None);
         assert!(
             !line.contains("3/10"),
             "medium tier should not show slash: {line}"
@@ -430,8 +491,8 @@ mod tests {
             (10, None),
             (120, Some(fi(2, 3, 9))),
         ] {
-            let summary = build_status_summary(&s, w, fl);
-            let spans_text: String = build_status_spans(&s, w, fl, theme)
+            let summary = build_status_summary(&s, w, fl, None);
+            let spans_text: String = build_status_spans(&s, w, fl, theme, None)
                 .iter()
                 .map(|sp| sp.content.as_ref())
                 .collect();
@@ -447,7 +508,7 @@ mod tests {
             waiting("b"),
             idle("c"),
         ]);
-        let spans = build_status_spans(&s, 120, None, theme);
+        let spans = build_status_spans(&s, 120, None, theme, None);
         let active = spans
             .iter()
             .find(|sp| sp.content.contains("active"))
