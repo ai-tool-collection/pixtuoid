@@ -26,9 +26,6 @@ pub fn default_config_path() -> PathBuf {
     pixtuoid_core::source::codex::codex_home().join("config.toml")
 }
 
-#[cfg(unix)]
-use crate::install::io::shell_single_quote;
-
 /// The Codex hook `command`. Codex runs it under a shell — `/bin/sh -lc` on Unix,
 /// `cmd.exe /C` on Windows (verified in codex-rs `command_runner.rs`, which spawns
 /// `Command::new(cmd.exe).arg("/C").arg(command)`; codex runs the plain `command`
@@ -49,7 +46,7 @@ use crate::install::io::shell_single_quote;
 ///   codex injects no per-hook env we could set instead. A pixtuoid-hook.exe under
 ///   a path containing a SPACE or cmd metacharacter (`& | < > ( ) ^ %`) can't be
 ///   invoked unquoted (a space truncates; `&` splits the command), so
-///   `io::windows_bare_hook_command` substitutes the path's DOS 8.3 SHORT name
+///   `hook_cmd::windows::windows_bare_hook_command` substitutes the path's DOS 8.3 SHORT name
 ///   (`C:\PROGRA~1\…`, space/metachar-free) and only REJECTS if 8.3 generation is
 ///   disabled on the volume (#195). Ordinary install paths
 ///   (`%USERPROFILE%\.cargo\bin`, npm prefix) skip 8.3 entirely.
@@ -57,15 +54,11 @@ pub fn hook_command(resolved: &Path) -> Result<String> {
     let p = resolved
         .to_str()
         .ok_or_else(|| anyhow!("pixtuoid-hook path is non-UTF-8: {}", resolved.display()))?;
-    // Windows: bare `<path> --source codex` via the shared guard (codex shells
-    // through cmd.exe /C; the cmd-unsafe-path rejection lives in ONE place,
-    // io::windows_bare_hook_command, shared with Reasonix so it can't drift).
-    // Unix: POSIX env-prefix form.
-    #[cfg(windows)]
-    let cmd = crate::install::io::windows_bare_hook_command(p, "codex")?;
-    #[cfg(unix)]
-    let cmd = format!("PIXTUOID_SOURCE=codex {}", shell_single_quote(p));
-    Ok(cmd)
+    // One OS fork for the cmd.exe-shelling strategy lives in
+    // hook_cmd::shell_hook_command (Unix env-prefix form / Windows bare
+    // `<path> --source codex`), shared with Reasonix so the platform halves can't
+    // drift.
+    crate::install::hook_cmd::shell_hook_command(p, "codex")
 }
 
 fn parse_or_empty(content: &str) -> Result<toml::Value> {
@@ -377,7 +370,7 @@ command = "/old/pixtuoid-hook"
     // (`&` splits → relative-tail execution from CWD) is substituted by its 8.3
     // short name when available, else rejected. These test paths don't exist on
     // the runner, so GetShortPathNameW fails → the reject fallback fires (the
-    // 8.3-success path is covered by io.rs's injected resolve_windows_command
+    // 8.3-success path is covered by hook_cmd/windows.rs's injected resolve_windows_command
     // tests). Either way an unsafe path is never written as a raw hook command.
     #[test]
     #[cfg(windows)]

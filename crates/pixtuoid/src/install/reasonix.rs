@@ -31,8 +31,6 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
 
 use crate::install::io;
-#[cfg(unix)]
-use crate::install::io::shell_single_quote;
 use crate::install::target::MergeOutcome;
 
 const SENTINEL_KEY: &str = "_pixtuoid";
@@ -72,20 +70,17 @@ pub fn detect_installed() -> bool {
 /// `detect_installed` probes `~/.config/reasonix` on Windows, which Reasonix never
 /// creates, so auto-detection would always miss), else `$XDG_CONFIG_HOME` falling
 /// back to `~/.config`.
+///
+/// The OS->dir decision is a PURE core fn (`platform::resolve_user_config_dir`)
+/// so every arm is unit-testable on any host; this site just injects the live
+/// OS + env + home values once.
 fn user_config_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        io::home_relative("Library/Application Support")
-    } else if cfg!(windows) {
-        match std::env::var("APPDATA") {
-            Ok(a) if !a.is_empty() => PathBuf::from(a),
-            _ => io::home_relative("AppData/Roaming"),
-        }
-    } else {
-        match std::env::var("XDG_CONFIG_HOME") {
-            Ok(x) if !x.is_empty() => PathBuf::from(x),
-            _ => io::home_relative(".config"),
-        }
-    }
+    pixtuoid_core::platform::resolve_user_config_dir(
+        std::env::consts::OS,
+        std::env::var("APPDATA").ok(),
+        std::env::var("XDG_CONFIG_HOME").ok(),
+        &io::home_relative(""),
+    )
 }
 
 /// Reasonix runs the `command` string under a shell — `sh -c` on Unix, `cmd.exe
@@ -94,7 +89,7 @@ fn user_config_dir() -> PathBuf {
 /// mirror codex::hook_command exactly:
 /// - **Unix**: env-prefix `PIXTUOID_SOURCE=reasonix '<abs-path>'` (single-quoted).
 /// - **Windows**: BARE `<abs-path> --source reasonix` via the shared
-///   `io::windows_bare_hook_command` (cmd.exe can't express the env-prefix; the
+///   `hook_cmd::windows::windows_bare_hook_command` (cmd.exe can't express the env-prefix; the
 ///   source rides as the shim's `--source` flag). That helper substitutes the 8.3
 ///   short name for a space/metacharacter path, rejecting only if 8.3 is disabled
 ///   (#195) — a quoted path can't survive cmd /C.
@@ -104,11 +99,9 @@ pub fn hook_command(resolved: &Path) -> Result<String> {
     let p = resolved
         .to_str()
         .ok_or_else(|| anyhow!("pixtuoid-hook path is non-UTF-8: {}", resolved.display()))?;
-    #[cfg(windows)]
-    let cmd = io::windows_bare_hook_command(p, "reasonix")?;
-    #[cfg(unix)]
-    let cmd = format!("PIXTUOID_SOURCE=reasonix {}", shell_single_quote(p));
-    Ok(cmd)
+    // Same OS fork as Codex, in one place (hook_cmd::shell_hook_command): Unix
+    // env-prefix form / Windows bare `<path> --source reasonix`.
+    crate::install::hook_cmd::shell_hook_command(p, "reasonix")
 }
 
 fn parse_or_empty(content: &str) -> Result<Value> {
@@ -343,7 +336,7 @@ mod tests {
     }
 
     // Windows: a space/metacharacter path uses its 8.3 short name when available,
-    // else rejects (shared io::windows_bare_hook_command — see #195). These test
+    // else rejects (shared hook_cmd::shell_hook_command — see #195). These test
     // paths don't exist on the runner, so the reject fallback fires.
     #[test]
     #[cfg(windows)]
