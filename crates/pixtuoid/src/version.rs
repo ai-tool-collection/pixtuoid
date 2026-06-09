@@ -58,6 +58,14 @@ pub fn release_notes(version: &str) -> Option<&'static [&'static str]> {
         // anchoring on a marker is whitespace-independent — matching the `match`
         // brace would silently break if the indentation ever shifted.
         // [bump-inject-here]
+        "0.7.0" => Some(&[
+            "Agent dashboard: Tab opens a foldable agent tree with per-CLI badges; Enter jumps floors",
+            "Offices now stack up to 10 floors (was 5)",
+            "Windows: Codex + Reasonix hooks and the Antigravity watcher work end-to-end",
+            "Subagent links survive git-worktree cwd splits (CC agents key on the session UUID)",
+            "Big transcripts appear on first sight instead of after their next write",
+            "Fixed a render crash on non-ASCII project paths; headless output is escape-sanitized",
+        ]),
         // 0.6.1 re-runs the 0.6.0 release with the npm-launcher publish fix
         // (#186) — 0.6.0 shipped to crates.io/homebrew but the `pixtuoid` npm
         // launcher failed, so 0.6.1 is the first fully-published version. Same
