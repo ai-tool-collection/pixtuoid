@@ -307,7 +307,9 @@ fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> usize {
 }
 
 fn crash_log_path() -> PathBuf {
-    if let Ok(state) = std::env::var("XDG_STATE_HOME") {
+    // Empty XDG_STATE_HOME = unset (see io::nonempty_env) — left unfiltered,
+    // "" yields the root-absolute `/pixtuoid/...` (unwritable for non-root).
+    if let Some(state) = pixtuoid::install::io::nonempty_env("XDG_STATE_HOME") {
         return PathBuf::from(format!("{state}/pixtuoid/crash.log"));
     }
     if let Some(home) = pixtuoid::install::io::user_home() {
@@ -339,7 +341,7 @@ fn log_file_path() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    if let Ok(state) = std::env::var("XDG_STATE_HOME") {
+    if let Some(state) = pixtuoid::install::io::nonempty_env("XDG_STATE_HOME") {
         return PathBuf::from(format!("{state}/pixtuoid/log"));
     }
     if let Some(home) = pixtuoid::install::io::user_home() {
@@ -414,6 +416,18 @@ mod tests {
             filter_directives(Some("info,pixtuoid=debug"), "warn"),
             "info,pixtuoid=debug"
         );
+    }
+
+    #[test]
+    fn nonempty_treats_empty_and_whitespace_as_unset() {
+        // The shared io::nonempty filter backs XDG_STATE_HOME here: an
+        // unfiltered empty value would route the crash log / runtime log to
+        // the root-absolute `/pixtuoid/...`.
+        use pixtuoid::install::io::nonempty;
+        assert_eq!(nonempty(None), None);
+        assert_eq!(nonempty(Some(String::new())), None);
+        assert_eq!(nonempty(Some("   ".into())), None);
+        assert_eq!(nonempty(Some("/state".into())), Some("/state".to_string()));
     }
 
     #[test]
