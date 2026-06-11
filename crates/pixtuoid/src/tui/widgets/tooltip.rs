@@ -73,11 +73,7 @@ pub(crate) fn paint_label_widgets(
         let needs_disambig = label_counts.get(&*agent.label).copied().unwrap_or(0) > 1
             && agent.session_id.chars().count() >= 4;
         let raw: std::borrow::Cow<'_, str> = if needs_disambig {
-            // CHAR-safe prefix, not `&session_id[..4]`: a Reasonix session_id IS
-            // the raw cwd path, so byte 4 can fall inside a multi-byte UTF-8
-            // codepoint (e.g. `/naïveté/app`) and a byte slice would panic the
-            // per-frame render loop. `take(4)` is saturating + boundary-safe.
-            let id4: String = agent.session_id.chars().take(4).collect();
+            let id4 = disambig_suffix(&agent.session_id);
             std::borrow::Cow::Owned(format!("{}·{id4}", agent.label))
         } else {
             std::borrow::Cow::Borrowed(&*agent.label)
@@ -386,5 +382,61 @@ pub fn paint_chitchat_bubbles(
                 .fg(Color::White);
             f.render_widget(Paragraph::new(Span::styled(text, style)), r);
         }
+    }
+}
+
+/// 4-hex-char disambiguation suffix, hashed from the whole `session_id` —
+/// shape-agnostic where any SLICE of the id is not: a session_id can be a
+/// UUID (CC/Codex — head and tail both unique), a normalized full transcript
+/// path (Antigravity — constant head, varying stem tail), or a raw cwd
+/// (Reasonix — labels collide exactly when BASENAMES collide, so head AND
+/// tail are both constant: `/x/app` vs `/y/app`). Only a digest of the full
+/// string distinguishes every shape. Hashing also sidesteps byte-slice
+/// panics on multi-byte ids (e.g. `/naïveté/app`) by construction.
+/// (`DefaultHasher` is deterministic within a process — the suffix is a
+/// per-frame display aid, not a persisted identifier.)
+fn disambig_suffix(session_id: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    session_id.hash(&mut h);
+    format!("{:04x}", h.finish() & 0xffff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::disambig_suffix;
+
+    #[test]
+    fn uuid_ids_get_distinct_suffixes() {
+        let a = disambig_suffix("c0f7fb3f-dc9c-47c3-840d-f775dd2855a3");
+        let b = disambig_suffix("019ea57d-7fa7-7812-b864-bdcb9b6c7e17");
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 4);
+    }
+
+    #[test]
+    fn ag_full_path_ids_get_distinct_suffixes() {
+        // Antigravity session_ids are normalized full transcript paths: two
+        // same-cwd sessions share the whole prefix; only the stem differs.
+        let a = disambig_suffix("/users/me/.gravity/sessions/proj/alpha-01.jsonl");
+        let b = disambig_suffix("/users/me/.gravity/sessions/proj/beta-02.jsonl");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn rx_cwd_ids_with_colliding_basenames_get_distinct_suffixes() {
+        // The Reasonix shape that defeats ANY slice of the id: labels collide
+        // exactly when basenames collide, so both the head and the tail are
+        // constant across the collision (`/work/client-x/app` vs `-y/app`).
+        let a = disambig_suffix("/work/client-x/app");
+        let b = disambig_suffix("/work/client-y/app");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn multibyte_ids_are_safe_and_deterministic() {
+        let a = disambig_suffix("/naïveté/app");
+        assert_eq!(a, disambig_suffix("/naïveté/app"));
+        assert_eq!(a.len(), 4);
     }
 }
