@@ -1,6 +1,9 @@
 # CLAUDE.md
 
 Instructions for Claude Code (or any AI coding agent) working in this repo.
+(`AGENTS.md` is a symlink to this file for the cross-tool standard; a Windows
+checkout without `core.symlinks` materializes it as a one-line pointer — read
+this file.)
 This is the **workspace-level** guide — conventions, invariants, and rules that
 apply everywhere. **Module-level detail and the crate-specific "sharp edges"
 live in nested `CLAUDE.md` files**, which Claude Code auto-loads when you touch
@@ -66,7 +69,7 @@ site/                   Astro marketing landing page → GitHub Pages (ivanwng97
 ```
 just build                                                           # debug build
 just build --release                                                 # release build
-just test                                                            # all tests (600+) — nextest if installed, else cargo test
+just test                                                            # all tests (1,400+) — nextest if installed, else cargo test
 cargo test -p pixtuoid --lib <filter>                                # fast iteration: one crate's unit tests only
 cargo run --release --example snapshot -- /tmp/snap.png              # render TUI to PNG
 ./target/release/pixtuoid run --headless --projects-root ~/.claude/projects   # live test against real CC
@@ -138,7 +141,9 @@ semver surface, so its `pub` paths may move without a major bump.
 `check-windows` cross-lints the workspace for `x86_64-pc-windows-msvc` on every PR (clippy, no linking).)
 
 Run `just preflight` locally to avoid the round-trip of "push → wait for CI →
-red → fix → push again."
+red → fix → push again." Never pipe its output through `tail`/`head` — the
+exit code becomes the pipe's and a real failure reads as green; redirect to a
+file (`just preflight > /tmp/pf.log 2>&1; echo $?`) and read the log."
 
 `.githooks/pre-commit` runs `just fmt-check` only (sub-second).
 `.githooks/pre-push` runs `just preflight` before pushing (honors `SKIP_PREFLIGHT=1`).
@@ -176,9 +181,11 @@ Needs cargo-edit (`just setup-tools`). See [`CONTRIBUTING.md`](docs/CONTRIBUTING
 - **No comments unless WHY.** Don't write comments that restate what the code does. Comment only when a future reader can't tell from the code why something is the way it is (a workaround, a non-obvious constraint, a surprising invariant).
 - **Errors propagate via `anyhow::Result` in app code, `thiserror` in core if a typed error becomes load-bearing.** The hook listener and JSONL watcher log + continue on malformed input — they never panic.
 - **No `unwrap()` in non-test code.** Tests can unwrap freely.
+- **No scan-the-history logic.** Don't derive state by scanning cycle history or iterating backward through time — keep persistent state (a `HashSet`, a map, a bool on the owning struct) and update it as events arrive.
 - **Match the surrounding shell:** scripts in this repo target zsh (interactive) or POSIX sh. `shellcheck` any `.sh` you touch.
 - **macOS first.** BSD-flavored CLI, brew, launchd for daemons. The hook shim uses a Unix socket on Unix (`std::os::unix::net::UnixStream`) and a named pipe on Windows — transport selection is in `pixtuoid-hook/src/transport.rs`.
 - **Keep docs current.** When a change alters module structure, architecture, developer workflow, or the public API surface, update the relevant `CLAUDE.md` (workspace or nested) and `README.md` in the same commit. Stale docs cost more than the 5 minutes to update them.
+- **Every review adjudication leaves a trace.** Whole-codebase / multi-agent review verdicts are recorded in [`docs/REVIEW-LEDGER.md`](docs/REVIEW-LEDGER.md) (the usage protocol — premise-anchored matching, demote-don't-kill — is in its header; review economics baselines live in `docs/review-metrics/`). A finding refuted as "deliberate design" MUST either cite an existing sharp edge or add one in the same change — an undocumented refutation will be re-paid at the next review.
 - **Track every deferred finding as a GitHub issue.** When a review finding, bug, or improvement is real but you consciously defer it (out of scope for the current PR, low-priority, needs broader design), `gh issue create` to capture it BEFORE moving on — don't let it live only in a chat message or a PR comment that scrolls away. The issue body should state the problem, why it was deferred, and a concrete fix sketch (link the PR/review that surfaced it). A deferred finding with no issue is a silently-dropped finding. (Verify the finding is real first — see "Don't blindly accept reviewer findings" below; never file an issue for a hallucinated/refuted one.)
 - **Sprite changes require visual verification.** After editing any `.sprite` file: (1) rebuild the snapshot example, (2) render at `--cols 192 --rows 80`, (3) crop the relevant quadrant with `scripts/crop-snapshot.py --scale 3`, (4) read the cropped PNG and self-critique — does a stranger recognize the intended pose/object? Iterate until it reads at half-block scale. Then rebuild the release binary (`just build --release`). Commit messages should include iteration history (which designs were tried and why they were rejected). See `.claude/skills/beautify-decoration/SKILL.md` for the full checklist.
 
@@ -226,7 +233,8 @@ Don't be surprised by these. **Full explanation (the WHY) lives in the nested `C
 - Don't add `--no-verify` / hook-skipping flags to any git operations performed in this repo.
 - Don't generate a README / CLAUDE.md / CHANGELOG / docs in PRs unless explicitly asked.
 - Don't `git push` without explicit user confirmation, even after committing.
-- Don't merge a PR without running the code review process (2+ agents: explorer/reviewer/architect). No exceptions — PR #23 was merged without review and had a critical path-traversal vulnerability.
+- Don't leave stale `Closes #N` in commit/squash bodies or PR text on a re-scope — GitHub fires the keyword from EITHER place, and conditional phrasing ("Closes #N if …") still fires (#246 was auto-closed this way).
+- Don't merge a PR without the **two-lens review**: 2+ agents, lenses differentiated — one correctness/grounding (does the code do what it claims; are cited anchors real), one design/blast-radius (API shape, downstream consumers, docs). Both briefs follow [`.github/prompts/pr-review.prompt.md`](.github/prompts/pr-review.prompt.md) (reasoning-before-verdict, negative-space list, integer confidence + file:line, ledger check, three-valued verdict). No exceptions — PR #23 was merged without review and had a critical path-traversal vulnerability.
 - Don't blindly accept reviewer findings. Verify the premise before coding a fix — the reviewer may have incomplete context about design intent. Check the relevant "Known sharp edges" and existing comments first. If a fix contradicts an earlier design decision, trace the code path manually.
 
 ## Where to look (cross-cutting)
