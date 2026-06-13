@@ -165,7 +165,7 @@ pub struct ApplianceColors {
 }
 
 /// Per-CLI badge hues for the agent-dashboard popup. One color per agent
-/// source (cc/cx/rx/ag), drawn as a leading `[xx]` badge. Each theme supplies
+/// source (cc/cx/rx/ag/cw), drawn as a leading `[xx]` badge. Each theme supplies
 /// its own so the badge harmonizes with the palette and stays legible on
 /// `tooltip_bg` (guarded by `source_badges_legible_for_every_theme`).
 #[derive(Debug, Clone)]
@@ -174,6 +174,7 @@ pub struct SourceColors {
     pub codex: Rgb,
     pub reasonix: Rgb,
     pub antigravity: Rgb,
+    pub codewhale: Rgb,
 }
 
 pub static ALL_THEMES: &[&Theme] = &[
@@ -305,10 +306,33 @@ mod tests {
         fn lum(c: Rgb) -> u32 {
             c.r as u32 + c.g as u32 + c.b as u32
         }
+        // Per-channel sum-of-abs-diff. Distinct from `lum` on purpose: two hues
+        // can share a luminance yet read as different colors (catppuccin's sky
+        // and teal were lum 592 vs 587 — a lum-only floor would miss them), so
+        // mutual distinguishability is a Manhattan-distance question, not a
+        // brightness one.
+        fn manhattan(a: Rgb, b: Rgb) -> u32 {
+            (a.r as u32).abs_diff(b.r as u32)
+                + (a.g as u32).abs_diff(b.g as u32)
+                + (a.b as u32).abs_diff(b.b as u32)
+        }
+        // Floor at which two source badges read as different colors at the 2-char
+        // badge scale. The tightest legitimate pair across the bundled themes is
+        // 82 (normal codex-vs-codewhale: blue vs teal), so 60 leaves margin while
+        // still failing loudly on a near-collision (a 39-distance regression once
+        // shipped on catppuccin). New themes/sources must clear this, not merely
+        // differ by one bit.
+        const MIN_SOURCE_HUE_DIST: u32 = 60;
         for t in ALL_THEMES {
             let s = &t.source;
             let bg = t.ui.tooltip_bg;
-            let hues = [s.claude_code, s.codex, s.reasonix, s.antigravity];
+            let hues = [
+                s.claude_code,
+                s.codex,
+                s.reasonix,
+                s.antigravity,
+                s.codewhale,
+            ];
             // Each hue must contrast the popup bg (lum-sum delta >= 80).
             for (i, h) in hues.iter().enumerate() {
                 assert!(
@@ -317,12 +341,13 @@ mod tests {
                     t.name
                 );
             }
-            // All four mutually distinct (no two CLIs share a badge color).
+            // Every pair must be mutually distinguishable, not merely unequal.
             for i in 0..hues.len() {
                 for j in (i + 1)..hues.len() {
-                    assert_ne!(
-                        hues[i], hues[j],
-                        "{}: source hues {i} and {j} collide",
+                    let d = manhattan(hues[i], hues[j]);
+                    assert!(
+                        d >= MIN_SOURCE_HUE_DIST,
+                        "{}: source hues {i} and {j} too close ({d} < {MIN_SOURCE_HUE_DIST})",
                         t.name
                     );
                 }

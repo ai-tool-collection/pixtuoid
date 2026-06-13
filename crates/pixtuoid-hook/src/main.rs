@@ -41,35 +41,53 @@ fn now_ms() -> u64 {
 fn main() -> Result<()> {
     let socket = default_socket_path();
 
-    let mut buf = String::new();
-    if std::io::stdin()
-        .take(STDIN_CAP)
-        .read_to_string(&mut buf)
-        .is_err()
-    {
-        return Ok(());
-    }
-    let mut payload: Value = match serde_json::from_str(&buf) {
-        Ok(v) => v,
-        // If we can't parse, exit 0 silently so CC isn't blocked.
-        Err(_) => return Ok(()),
+    // `args_os` + lossy, NOT `args()`: `std::env::args()` PANICS on any
+    // non-Unicode argument (legal Unix argv), breaching invariant #5's silent
+    // exit-0. Lossy rather than filter_map: dropping a non-UTF-8 arg would
+    // shift `--source <value>`/`--event <value>` pairing so the NEXT arg gets
+    // read as the value; lossy preserves arity, and a U+FFFD-mangled value
+    // simply fails the daemon's lookup downstream.
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+
+    let mut payload: Value = match event_from_argv(&args) {
+        // CodeWhale env-mode: CodeWhale's hooks deliver identity as `DEEPSEEK_*`
+        // ENV VARS, not a stdin JSON payload, and the registered command bakes
+        // `--event <name>` (the event name is absent from the env). Critically,
+        // for env-only events (session_start/tool_call_*/session_end) CodeWhale
+        // does NOT pipe stdin, so the hook child INHERITS the TUI's terminal
+        // stdin — a blind `read_to_string(stdin)` would BLOCK (and tool_call_before
+        // runs synchronously, freezing the user's tool call until the hook
+        // timeout). So when `--event` is present we build the envelope from env
+        // and NEVER touch stdin. Verified against CodeWhale 0.8.59
+        // hooks.rs::execute_sync_inner + a live capture (2026-06-12).
+        Some(event) => Value::Object(env_payload(&event)),
+        None => {
+            let mut buf = String::new();
+            if std::io::stdin()
+                .take(STDIN_CAP)
+                .read_to_string(&mut buf)
+                .is_err()
+            {
+                return Ok(());
+            }
+            match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                // If we can't parse, exit 0 silently so CC isn't blocked.
+                Err(_) => return Ok(()),
+            }
+        }
     };
 
     if let Value::Object(map) = &mut payload {
         // Source precedence: the `--source <name>` argv flag (the Windows install
         // form — cmd.exe /C can't express a POSIX `VAR=value cmd` env-prefix) wins,
         // then the `PIXTUOID_SOURCE` env var (the Unix install form). Either way the
-        // daemon only ever sees the resulting `_pixtuoid_source` stamp.
-        //
-        // `args_os` + lossy, NOT `args()`: `std::env::args()` PANICS on any
-        // non-Unicode argument (legal Unix argv), breaching invariant #5's
-        // silent exit-0. Lossy rather than filter_map: dropping a non-UTF-8
-        // arg would shift `--source <value>` pairing so the NEXT arg gets
-        // read as the value; lossy preserves arity, and a U+FFFD-mangled
-        // value simply fails the daemon's registry lookup downstream.
-        let args: Vec<String> = std::env::args_os()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        // daemon only ever sees the resulting `_pixtuoid_source` stamp. NB:
+        // `--event` (env-mode) is orthogonal to source — CodeWhale's Unix install
+        // resolves source via the env-prefix arm, its Windows install via `--source`;
+        // `--event` never implies a source.
         let source = source_from_argv(&args).or_else(|| std::env::var("PIXTUOID_SOURCE").ok());
         enrich_payload(map, source, now_ms());
     }
@@ -80,6 +98,129 @@ fn main() -> Result<()> {
     line.push(b'\n');
     transport::send_line(&socket, &line);
     Ok(())
+}
+
+/// CodeWhale env-mode: synthesize the hook envelope from `DEEPSEEK_*` env vars
+/// (CodeWhale's hooks carry identity there, not on stdin). `event` is the
+/// baked `--event <name>`; `cwd` (the AgentId key), `tool`, and `tool_args` are
+/// read from env. Pure assembly split from the `std::env` read so it is
+/// testable without mutating process-global env (the source/socket env tests
+/// are the crate's only env-touching ones — see `default_socket_path_branches`).
+fn env_payload(event: &str) -> serde_json::Map<String, Value> {
+    // CodeWhale runs the hook with current_dir = its working dir (= the
+    // workspace), so the shim's own cwd is the reliable cwd fallback when
+    // DEEPSEEK_WORKSPACE is unset (see env_payload_from).
+    let cwd_fallback = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned());
+    env_payload_from(event, cwd_fallback, cw_parent_pid(), |k| {
+        std::env::var(k).ok()
+    })
+}
+
+/// CodeWhale's pid, for the daemon's liveness watch — stamped as `_pid` so an
+/// abrupt CodeWhale exit (kill/crash/terminal-close, which fires no
+/// `session_end`) ends the sprite promptly instead of ghosting until the
+/// stale-sweep. `sh -c` EXEC's the hook (verified: the hook's getppid() ==
+/// CodeWhale's pid), so the shim's parent IS CodeWhale — on UNIX. On Windows the
+/// hook runs under `cmd /C`, so the parent is `cmd.exe` (the WRONG pid, and it
+/// exits right after spawning the shim → a false exit), so we send no pid there
+/// and CodeWhale falls back to `session_end` + the stale-sweep.
+#[cfg(unix)]
+fn cw_parent_pid() -> Option<u32> {
+    // getppid() is always safe (no args, infallible) and gives the hook's
+    // parent — CodeWhale, since `sh -c` exec's the hook (verified).
+    u32::try_from(unsafe { libc::getppid() }).ok()
+}
+#[cfg(not(unix))]
+fn cw_parent_pid() -> Option<u32> {
+    None
+}
+
+/// Per-field byte cap on env-mode values. The stdin arm enforces `STDIN_CAP`
+/// (≈1 MiB) before parsing, so a stamped stdin payload always fits the daemon's
+/// pipe quota; the env arm has no such gate, and `DEEPSEEK_TOOL_ARGS` can be
+/// large (a big write/edit tool's input). Capping each of the ≤3 folded fields
+/// keeps the serialized line well under 1 MiB (3 × 128 KiB ≪ 1 MiB), so a large
+/// tool's `tool_call_before` still delivers instead of building a >1 MiB line
+/// the 200 ms watchdog would drop (invariant #5 holds either way, but the event
+/// — the sprite's "working" pulse — would otherwise be lost).
+const ENV_FIELD_CAP: usize = 128 * 1024;
+
+/// Byte-bounded, char-SAFE truncation (never split a UTF-8 scalar — same idiom
+/// CodeWhale itself uses; the shim must never produce invalid UTF-8). `cwd` is
+/// the AgentId key but a real workspace path is far under the cap, so it is
+/// never truncated in practice; a crafted oversized one is bounded to a stable
+/// prefix (two such events still coalesce — correct). A truncated `tool_args`
+/// just yields no target suffix (the decoder degrades gracefully on unparseable
+/// JSON).
+fn cap_env_field(mut val: String) -> String {
+    if val.len() > ENV_FIELD_CAP {
+        let end = val
+            .char_indices()
+            .take_while(|(i, _)| *i < ENV_FIELD_CAP)
+            .last()
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        val.truncate(end);
+    }
+    val
+}
+
+fn env_payload_from(
+    event: &str,
+    cwd_fallback: Option<String>,
+    pid: Option<u32>,
+    get: impl Fn(&str) -> Option<String>,
+) -> serde_json::Map<String, Value> {
+    let mut map = serde_json::Map::new();
+    map.insert("event".into(), Value::from(event));
+    // CodeWhale's pid for the daemon's liveness watch (see `cw_parent_pid`).
+    if let Some(pid) = pid {
+        map.insert("_pid".into(), Value::from(pid));
+    }
+    // cwd is the AgentId KEY (the decoder drops a cwd-less event). Prefer
+    // DEEPSEEK_WORKSPACE, but fall back to the hook child's own working dir:
+    // CodeWhale runs the hook with current_dir = its working dir (= the
+    // workspace), and DEEPSEEK_WORKSPACE is UNSET for a fresh `codewhale`
+    // launched without `-C` until the workspace resolves — so `session_start`
+    // would otherwise carry no cwd and never register a sprite (caught by live
+    // testing 2026-06-13; the `-C` capture + unit tests masked it). The
+    // fallback resolves to the same path the workspace eventually does, so all
+    // of a session's events coalesce on one AgentId.
+    if let Some(cwd) = get("DEEPSEEK_WORKSPACE")
+        .filter(|v| !v.is_empty())
+        .or_else(|| cwd_fallback.filter(|v| !v.is_empty()))
+    {
+        map.insert("cwd".into(), Value::from(cap_env_field(cwd)));
+    }
+    // (env var, envelope field) — the remaining fields `source/codewhale.rs`
+    // reads. A missing or empty value is omitted; a present value is capped.
+    for (env_key, field) in [
+        ("DEEPSEEK_TOOL_NAME", "tool"),
+        ("DEEPSEEK_TOOL_ARGS", "tool_args"),
+    ] {
+        if let Some(val) = get(env_key).filter(|v| !v.is_empty()) {
+            map.insert(field.into(), Value::from(cap_env_field(val)));
+        }
+    }
+    map
+}
+
+/// The baked event name from `--event <name>` (or `--event=<name>`) in argv —
+/// CodeWhale's env-mode trigger. Absent or empty → `None` (the shim reads its
+/// payload from stdin, the unchanged CC/Codex/Reasonix path). Total + panic-free
+/// per invariant #5, mirroring `source_from_argv`.
+fn event_from_argv(args: &[String]) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if let Some(val) = arg.strip_prefix("--event=") {
+            return Some(val).filter(|s| !s.is_empty()).map(str::to_string);
+        }
+        if arg == "--event" {
+            return it.next().filter(|s| !s.is_empty()).cloned();
+        }
+    }
+    None
 }
 
 /// The trusted CLI source from `--source <name>` (or `--source=<name>`) in argv.
@@ -255,6 +396,157 @@ mod tests {
         assert_eq!(
             source_from_argv(&argv(&["pixtuoid-hook", "--source="])),
             None
+        );
+    }
+
+    #[test]
+    fn event_from_argv_reads_both_forms_and_rejects_empty() {
+        assert_eq!(
+            event_from_argv(&argv(&[
+                "pixtuoid-hook",
+                "--source",
+                "codewhale",
+                "--event",
+                "session_start"
+            ])),
+            Some("session_start".into())
+        );
+        assert_eq!(
+            event_from_argv(&argv(&["pixtuoid-hook", "--event=tool_call_before"])),
+            Some("tool_call_before".into())
+        );
+        assert_eq!(event_from_argv(&argv(&["pixtuoid-hook"])), None);
+        assert_eq!(event_from_argv(&argv(&["pixtuoid-hook", "--event"])), None);
+        assert_eq!(
+            event_from_argv(&argv(&["pixtuoid-hook", "--event", ""])),
+            None
+        );
+        assert_eq!(event_from_argv(&argv(&["pixtuoid-hook", "--event="])), None);
+    }
+
+    #[test]
+    fn env_payload_folds_codewhale_env_into_the_envelope() {
+        // The live-captured shape: cwd (the AgentId key), tool, tool_args (raw
+        // JSON string). Pure getter — no process-global env mutation.
+        let env: std::collections::HashMap<&str, &str> = [
+            ("DEEPSEEK_WORKSPACE", "/repo"),
+            ("DEEPSEEK_TOOL_NAME", "exec_shell"),
+            ("DEEPSEEK_TOOL_ARGS", r#"{"command":"ls -la"}"#),
+        ]
+        .into_iter()
+        .collect();
+        let map = env_payload_from("tool_call_before", None, Some(4321), |k| {
+            env.get(k).map(|s| s.to_string())
+        });
+        assert_eq!(map["event"], json!("tool_call_before"));
+        assert_eq!(map["cwd"], json!("/repo"));
+        assert_eq!(map["tool"], json!("exec_shell"));
+        assert_eq!(map["tool_args"], json!(r#"{"command":"ls -la"}"#));
+        assert_eq!(
+            map["_pid"],
+            json!(4321),
+            "CodeWhale's pid is stamped for the liveness watch"
+        );
+    }
+
+    #[test]
+    fn env_payload_omits_missing_and_empty_env() {
+        // session_start carries only DEEPSEEK_WORKSPACE (no tool) — empty/absent
+        // tool fields must be omitted, not written as "".
+        let env: std::collections::HashMap<&str, &str> =
+            [("DEEPSEEK_WORKSPACE", "/repo"), ("DEEPSEEK_TOOL_NAME", "")]
+                .into_iter()
+                .collect();
+        let map = env_payload_from("session_start", None, None, |k| {
+            env.get(k).map(|s| s.to_string())
+        });
+        assert_eq!(map["cwd"], json!("/repo"));
+        assert!(
+            !map.contains_key("tool"),
+            "empty DEEPSEEK_TOOL_NAME must be omitted"
+        );
+        assert!(
+            !map.contains_key("tool_args"),
+            "absent tool_args must be omitted"
+        );
+        assert!(!map.contains_key("_pid"), "no pid → no _pid");
+        assert_eq!(map.len(), 2, "exactly event + cwd");
+    }
+
+    #[test]
+    fn env_payload_caps_oversized_fields_at_a_char_boundary() {
+        // A large DEEPSEEK_TOOL_ARGS (e.g. a big write/edit tool's input) must be
+        // capped so the serialized line stays under the daemon's 1 MiB pipe quota
+        // — extending the stdin arm's STDIN_CAP guarantee to env-mode, so a large
+        // tool's tool_call_before still delivers instead of being watchdog-dropped.
+        // Multi-byte value: a byte-slice cap would split a UTF-8 scalar.
+        let huge = "é".repeat(ENV_FIELD_CAP); // ~2·CAP bytes, well over the cap
+        let env: std::collections::HashMap<&str, String> = [
+            ("DEEPSEEK_WORKSPACE", "/repo".to_string()),
+            ("DEEPSEEK_TOOL_ARGS", huge),
+        ]
+        .into_iter()
+        .collect();
+        let map = env_payload_from("tool_call_before", None, None, |k| env.get(k).cloned());
+        let args = map["tool_args"].as_str().unwrap();
+        assert!(
+            args.len() <= ENV_FIELD_CAP,
+            "tool_args must be capped to <= {ENV_FIELD_CAP} bytes, got {}",
+            args.len()
+        );
+        assert!(
+            args.len() > ENV_FIELD_CAP - 4,
+            "cap should truncate NEAR the limit (last char boundary), not collapse"
+        );
+        assert!(
+            args.chars().all(|c| c == 'é'),
+            "no mid-scalar split → still valid é runs"
+        );
+        assert_eq!(
+            map["cwd"],
+            json!("/repo"),
+            "the AgentId key (a real path) is untouched"
+        );
+    }
+
+    #[test]
+    fn env_payload_falls_back_to_cwd_when_workspace_unset() {
+        // The live-testing bug (2026-06-13): a fresh `codewhale` without `-C` has
+        // no DEEPSEEK_WORKSPACE at session_start, so the cwd-less envelope was
+        // dropped (no sprite). CodeWhale runs the hook with current_dir = its
+        // working dir, so the shim must fall back to that. R0613-05.
+        let no_ws: std::collections::HashMap<&str, String> =
+            [("DEEPSEEK_TOOL_NAME", "exec_shell".to_string())]
+                .into_iter()
+                .collect();
+        let map = env_payload_from("session_start", Some("/proj/here".to_string()), None, |k| {
+            no_ws.get(k).cloned()
+        });
+        assert_eq!(
+            map["cwd"],
+            json!("/proj/here"),
+            "cwd must fall back to the hook child's working dir when DEEPSEEK_WORKSPACE is unset"
+        );
+
+        // DEEPSEEK_WORKSPACE remains authoritative over the fallback when present.
+        let ws: std::collections::HashMap<&str, String> =
+            [("DEEPSEEK_WORKSPACE", "/ws".to_string())]
+                .into_iter()
+                .collect();
+        let map = env_payload_from("session_start", Some("/proj/here".to_string()), None, |k| {
+            ws.get(k).cloned()
+        });
+        assert_eq!(
+            map["cwd"],
+            json!("/ws"),
+            "DEEPSEEK_WORKSPACE wins over the fallback"
+        );
+
+        // Neither present → no cwd (the decoder drops it; nothing to key on).
+        let map = env_payload_from("session_start", None, None, |_| None);
+        assert!(
+            !map.contains_key("cwd"),
+            "no workspace and no cwd fallback → no cwd field"
         );
     }
 

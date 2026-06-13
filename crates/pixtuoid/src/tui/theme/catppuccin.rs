@@ -486,5 +486,10 @@ pub static CATPPUCCIN: Theme = Theme {
             g: 0xe3,
             b: 0xa1,
         }, // catppuccin green
+        codewhale: Rgb {
+            r: 0x33,
+            g: 0xc0,
+            b: 0xac,
+        }, // deep teal — pulled off the pale sky codex uses (badge legibility)
     },
 };
