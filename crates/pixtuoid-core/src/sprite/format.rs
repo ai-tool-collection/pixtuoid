@@ -89,6 +89,29 @@ mod tests {
             "final-frame parse error needs line context: {msg}"
         );
     }
+
+    #[test]
+    fn recolor_palette_rejects_colliding_recolor_keys() {
+        let red = Some(Rgb { r: 200, g: 0, b: 0 });
+        // Distinct recolor keys (+ a transparent one, which never participates) → ok.
+        let mut ok = Palette::new();
+        ok.insert('B', red);
+        ok.insert('H', Some(Rgb { r: 0, g: 200, b: 0 }));
+        ok.insert('S', Some(Rgb { r: 0, g: 0, b: 200 }));
+        ok.insert('P', None);
+        assert!(validate_recolor_palette(&ok).is_ok());
+
+        // Two recolor keys sharing an RGB → bail (recolor would silently fail one).
+        let mut bad = ok.clone();
+        bad.insert('H', red); // collides with 'B'
+        let err = validate_recolor_palette(&bad).unwrap_err();
+        assert!(format!("{err:#}").contains("share RGB"), "{err:#}");
+
+        // A NON-recolor key sharing a color is fine — recolor doesn't substitute it.
+        let mut other = ok.clone();
+        other.insert('X', red);
+        assert!(validate_recolor_palette(&other).is_ok());
+    }
 }
 
 fn parse_row(line: &str, palette: &Palette) -> Result<Vec<Pixel>> {
@@ -201,6 +224,7 @@ impl Pack {
 /// no untrusted paths to escape.
 fn build_pack(parsed: PackToml, mut get_src: impl FnMut(&str) -> Result<String>) -> Result<Pack> {
     let palette = build_palette(&parsed.palette)?;
+    validate_recolor_palette(&palette)?;
     let mut animations = HashMap::new();
     for (anim_name, anim) in parsed.animations {
         let mut frames = Vec::new();
@@ -270,6 +294,33 @@ pub fn load_pack_from_strings(pack_toml: &str, frames: &[(&str, &str)]) -> Resul
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("missing embedded frame {fname}"))
     })
+}
+
+/// The base palette keys per-agent recoloring substitutes by RGB equality
+/// (shirt/hair/skin/pants). The SINGLE source of truth: the tui's `recolor_frame`
+/// consumes this exact set, and `validate_recolor_palette` guards it — so the
+/// substitution and the guard can't drift (add a 5th key here, once). They MUST
+/// map to distinct RGBs: if two share a color, recolor swaps only the first and
+/// the other key silently fails (no panic — just the wrong color on the
+/// overlapping character). Enforced at LOAD so a `--pack-dir` custom pack can't
+/// violate it undetectably — the embedded pack is also test-pinned.
+pub const RECOLOR_KEYS: [char; 4] = ['B', 'H', 'S', 'P'];
+
+/// Fail a pack whose recolor keys collide on an RGB. Only the colored
+/// (`Some(rgb)`) recolor keys participate — a transparent key isn't substituted.
+fn validate_recolor_palette(palette: &Palette) -> Result<()> {
+    let mut seen: HashMap<Rgb, char> = HashMap::new();
+    for key in RECOLOR_KEYS {
+        if let Some(Some(rgb)) = palette.get(key) {
+            if let Some(prev) = seen.insert(rgb, key) {
+                bail!(
+                    "palette recolor keys '{prev}' and '{key}' share RGB {rgb:?}; \
+                     per-agent recoloring substitutes by color and needs them distinct"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_palette(map: &HashMap<String, String>) -> Result<Palette> {
