@@ -1487,8 +1487,8 @@ fn save_backend_as_png(
             let bg = color_to_rgb(cell.bg, ImgRgb([20, 22, 28]));
 
             // For the half-block character "▀", the cell is split: top half = fg, bottom half = bg.
-            // For other characters, we approximate by drawing the cell as one bg-color tile and
-            // overlaying a roughly-centered fg-color glyph rectangle.
+            // Other characters are rasterized as real text via the 8x8 bitmap font (glyph8x8);
+            // a glyph no font set covers falls back to a centered fg block.
             let x0 = x as u32 * CELL_W;
             let y0 = y as u32 * CELL_H;
 
@@ -1497,10 +1497,17 @@ fn save_backend_as_png(
                 fill_rect(&mut img, x0, y0 + CELL_H / 2, CELL_W, CELL_H / 2, bg);
             } else if symbol.trim().is_empty() {
                 fill_rect(&mut img, x0, y0, CELL_W, CELL_H, bg);
-            } else {
-                // Background, then a small fg square in the middle to represent text.
+            } else if let Some(rows) = glyph8x8(symbol) {
                 fill_rect(&mut img, x0, y0, CELL_W, CELL_H, bg);
-                // Tiny glyph box — gives a visible indication of where text lives.
+                blit_glyph_cell(rows, x0, y0, |px, py| {
+                    if px < img_w && py < img_h {
+                        img.put_pixel(px, py, fg);
+                    }
+                });
+            } else {
+                // No glyph in any font set (a decorative symbol): keep the old
+                // centered block so the cell still reads in its fg color.
+                fill_rect(&mut img, x0, y0, CELL_W, CELL_H, bg);
                 let pad_x = 1;
                 let pad_y = 3;
                 fill_rect(
@@ -1520,8 +1527,8 @@ fn save_backend_as_png(
 }
 
 /// Rasterize a post-draw ratatui cell buffer to RGBA: half-block cells become
-/// two stacked pixels (fg = top, bg = bottom); text cells a blocky glyph pad —
-/// the same look the existing demo.gif path produces.
+/// two stacked pixels (fg = top, bg = bottom); text cells are drawn as real
+/// glyphs via the 8x8 bitmap font (glyph8x8) — same path as the PNG rasterizer.
 fn cells_to_rgba(
     term_buf: &ratatui::buffer::Buffer,
     cols: u16,
@@ -1543,6 +1550,14 @@ fn cells_to_rgba(
                 fill_rgba_rect(&mut rgba, x0, y0 + CELL_H / 2, CELL_W, CELL_H / 2, bg);
             } else if symbol.trim().is_empty() {
                 fill_rgba_rect(&mut rgba, x0, y0, CELL_W, CELL_H, bg);
+            } else if let Some(rows) = glyph8x8(symbol) {
+                fill_rgba_rect(&mut rgba, x0, y0, CELL_W, CELL_H, bg);
+                let fg_rgba = Rgba([fg[0], fg[1], fg[2], 255]);
+                blit_glyph_cell(rows, x0, y0, |px, py| {
+                    if px < img_w && py < img_h {
+                        rgba.put_pixel(px, py, fg_rgba);
+                    }
+                });
             } else {
                 fill_rgba_rect(&mut rgba, x0, y0, CELL_W, CELL_H, bg);
                 let pad_x = 1;
@@ -1763,6 +1778,53 @@ fn fill_rect(img: &mut RgbImage, x: u32, y: u32, w: u32, h: u32, color: ImgRgb<u
     }
 }
 
+/// 8x8 bitmaps for the few status glyphs font8x8 lacks but the popups lean on
+/// for at-a-glance state — the dashboard/connection dots `●` `○` `◐`. Without
+/// these all three collapse to the same fallback block, distinct only by color.
+/// Rows top→bottom, bit 0 (LSB) = leftmost pixel — same convention as font8x8,
+/// so `blit_glyph_cell` renders them unchanged.
+fn custom_glyph(ch: char) -> Option<[u8; 8]> {
+    match ch {
+        '\u{25CF}' => Some([0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C]), // ● filled disc
+        '\u{25CB}' => Some([0x3C, 0x42, 0x81, 0x81, 0x81, 0x81, 0x42, 0x3C]), // ○ ring
+        '\u{25D0}' => Some([0x3C, 0x4E, 0x8F, 0x8F, 0x8F, 0x8F, 0x4E, 0x3C]), // ◐ left-half disc
+        _ => None,
+    }
+}
+
+/// The demo rasterizer's "font": an 8x8 bitmap per char — our `custom_glyph`
+/// status dots first, then font8x8's sets (ASCII, then Latin/box/block/misc/
+/// greek). Returns rows top→bottom; within a row bit 0 (LSB) is the leftmost
+/// pixel. `None` for a glyph nothing covers — the caller draws a block.
+fn glyph8x8(symbol: &str) -> Option<[u8; 8]> {
+    use font8x8::{
+        UnicodeFonts, BASIC_FONTS, BLOCK_FONTS, BOX_FONTS, GREEK_FONTS, LATIN_FONTS, MISC_FONTS,
+    };
+    let ch = symbol.chars().next()?;
+    custom_glyph(ch)
+        .or_else(|| BASIC_FONTS.get(ch))
+        .or_else(|| LATIN_FONTS.get(ch))
+        .or_else(|| BOX_FONTS.get(ch))
+        .or_else(|| BLOCK_FONTS.get(ch))
+        .or_else(|| MISC_FONTS.get(ch))
+        .or_else(|| GREEK_FONTS.get(ch))
+}
+
+/// Blit an 8x8 glyph into one 8x16 cell, doubled vertically (1px → 2px tall) so
+/// it fills the cell. `put` paints one foreground pixel (bg is pre-filled).
+fn blit_glyph_cell(rows: [u8; 8], x0: u32, y0: u32, mut put: impl FnMut(u32, u32)) {
+    for (fr, &bits) in rows.iter().enumerate() {
+        for col in 0..CELL_W {
+            if bits & (1u8 << col) != 0 {
+                let px = x0 + col;
+                let py = y0 + fr as u32 * 2;
+                put(px, py);
+                put(px, py + 1);
+            }
+        }
+    }
+}
+
 fn color_to_rgb(c: Color, default: ImgRgb<u8>) -> ImgRgb<u8> {
     match c {
         Color::Rgb(r, g, b) => ImgRgb([r, g, b]),
@@ -1789,6 +1851,72 @@ fn color_to_rgb(c: Color, default: ImgRgb<u8>) -> ImgRgb<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glyph8x8_covers_ascii_and_custom_dots_but_not_arbitrary_symbols() {
+        // ASCII resolves via font8x8's BASIC set; · (U+00B7) via LATIN — both
+        // are the legibility win, so pin them.
+        assert!(glyph8x8("A").is_some());
+        assert!(glyph8x8("z").is_some());
+        assert!(
+            glyph8x8("\u{00b7}").is_some(),
+            "middle-dot separator must be legible"
+        );
+        // The status dots resolve via our custom_glyph table (added so they're
+        // shape-distinct, not merely color-distinct).
+        assert!(glyph8x8("\u{25cf}").is_some(), "\u{25cf} filled disc");
+        assert!(glyph8x8("\u{25cb}").is_some(), "\u{25cb} ring");
+        assert!(glyph8x8("\u{25d0}").is_some(), "\u{25d0} left-half disc");
+        // ...and the three are DISTINCT bitmaps — the whole point of custom_glyph.
+        let (filled, ring, half) = (
+            glyph8x8("\u{25cf}").unwrap(),
+            glyph8x8("\u{25cb}").unwrap(),
+            glyph8x8("\u{25d0}").unwrap(),
+        );
+        assert_ne!(filled, ring);
+        assert_ne!(filled, half);
+        assert_ne!(ring, half);
+        // A glyph nothing covers falls through to None → the caller's block fallback.
+        assert!(
+            glyph8x8("\u{2713}").is_none(),
+            "\u{2713} check has no glyph"
+        );
+        assert!(glyph8x8("").is_none(), "empty symbol → None");
+    }
+
+    #[test]
+    fn blit_glyph_cell_lsb_is_leftmost_and_doubles_vertically() {
+        // Row 0 = 0x01: only bit 0 (LSB) set → only col 0 fires, doubled to 2px.
+        // A font8x8 bit-order change would silently MIRROR all demo text — this
+        // is the guard against that (the HIGH review finding on PR #288).
+        let mut hits: Vec<(u32, u32)> = Vec::new();
+        let mut rows = [0u8; 8];
+        rows[0] = 0x01;
+        blit_glyph_cell(rows, 0, 0, |px, py| hits.push((px, py)));
+        assert_eq!(
+            hits,
+            vec![(0, 0), (0, 1)],
+            "LSB must map to the LEFTMOST column"
+        );
+
+        // Bit 7 (MSB) → rightmost col (7); font row 1 → image rows 2,3.
+        let mut hits2: Vec<(u32, u32)> = Vec::new();
+        let mut rows2 = [0u8; 8];
+        rows2[1] = 0x80;
+        blit_glyph_cell(rows2, 0, 0, |px, py| hits2.push((px, py)));
+        assert_eq!(
+            hits2,
+            vec![(7, 2), (7, 3)],
+            "MSB → rightmost col; row 1 → img rows 2,3"
+        );
+
+        // The x0/y0 origin offset is honored.
+        let mut hits3: Vec<(u32, u32)> = Vec::new();
+        let mut rows3 = [0u8; 8];
+        rows3[0] = 0x01;
+        blit_glyph_cell(rows3, 8, 16, |px, py| hits3.push((px, py)));
+        assert_eq!(hits3, vec![(8, 16), (8, 17)]);
+    }
 
     #[test]
     fn parse_navigations_happy_and_fractional() {
