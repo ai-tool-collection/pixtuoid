@@ -1,5 +1,6 @@
 use super::*;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -36,46 +37,49 @@ fn mk_slot(id: AgentId, source: &str, last_event_at: SystemTime) -> AgentSlot {
 }
 
 #[test]
-fn build_rows_from_classifies_present_absent_installed_and_jsonl() {
+fn build_rows_from_state_follows_connected_set_with_nocli_override() {
     let cc = claude_target();
-    let with = |present, installed| {
-        Some(HookFacts {
-            present,
-            installed,
+    let present = |connected| RowInput {
+        source_id: "claude",
+        label_prefix: "cc",
+        target: Some(cc),
+        facts: Some(RowFacts {
+            present: true,
             config_path: Some(PathBuf::from("/c")),
-        })
+        }),
+        connected,
+    };
+    let absent = |connected| RowInput {
+        source_id: "claude",
+        label_prefix: "cc",
+        target: Some(cc),
+        facts: Some(RowFacts {
+            present: false,
+            config_path: Some(PathBuf::from("/c")),
+        }),
+        connected,
+    };
+    let no_target = |connected| RowInput {
+        source_id: "antigravity",
+        label_prefix: "ag",
+        target: None,
+        facts: None,
+        connected,
     };
     let rows = build_rows_from(vec![
-        RowInput {
-            source_id: "claude",
-            label_prefix: "cc",
-            target: Some(cc),
-            facts: with(true, true),
-        },
-        RowInput {
-            source_id: "claude",
-            label_prefix: "cc",
-            target: Some(cc),
-            facts: with(true, false),
-        },
-        RowInput {
-            source_id: "claude",
-            label_prefix: "cc",
-            target: Some(cc),
-            facts: with(false, false),
-        },
-        RowInput {
-            source_id: "antigravity",
-            label_prefix: "ag",
-            target: None,
-            facts: None,
-        },
+        present(true),    // present + connected → Connected
+        present(false),   // present + unbound → Disconnected
+        absent(true),     // CLI absent → NoCli even if a stale flag says connected
+        no_target(true),  // no-target source binds via flag only → Connected
+        no_target(false), // → Disconnected
     ]);
-    assert_eq!(rows[0].hooks, HookState::On);
-    assert_eq!(rows[1].hooks, HookState::Off);
-    assert_eq!(rows[2].hooks, HookState::NoCli);
-    assert_eq!(rows[3].hooks, HookState::JsonlNoHooks);
+    assert_eq!(rows[0].state, ConnState::Connected);
+    assert_eq!(rows[1].state, ConnState::Disconnected);
+    assert_eq!(rows[2].state, ConnState::NoCli);
+    assert_eq!(rows[3].state, ConnState::Connected);
+    assert_eq!(rows[4].state, ConnState::Disconnected);
     assert_eq!(rows[0].display_name, "Claude Code");
+    assert_eq!(rows[0].config_path, Some(PathBuf::from("/c")));
     assert_eq!(rows[3].display_name, "Antigravity");
     assert!(rows[3].target.is_none());
     assert!(rows[3].config_path.is_none());
@@ -126,17 +130,18 @@ fn move_selection_clamps_at_both_ends() {
             source_id: "claude",
             label_prefix: "cc",
             target: Some(cc),
-            facts: Some(HookFacts {
+            facts: Some(RowFacts {
                 present: true,
-                installed: true,
                 config_path: None,
             }),
+            connected: true,
         },
         RowInput {
             source_id: "antigravity",
             label_prefix: "ag",
             target: None,
             facts: None,
+            connected: false,
         },
     ]);
     assert_eq!(move_selection(&rows, 0, -1), 0); // clamp at the low end
@@ -150,16 +155,38 @@ fn build_rows_covers_every_registry_source_with_aligned_live_view() {
     // The real registry-backed builder produces one row per source, and
     // live_view returns a parallel vec of the same length (the painter relies on
     // the index alignment).
-    let rows = build_rows();
+    let rows = build_rows(&HashSet::new());
     assert!(rows.len() >= 5, "expected the 5 install targets + sources");
     assert!(
         rows.iter()
-            .any(|r| r.source_id == "antigravity" && r.hooks == HookState::JsonlNoHooks),
-        "antigravity must appear as a JSONL/no-hooks row"
+            .any(|r| r.source_id == "antigravity" && r.target.is_none()),
+        "antigravity must appear as a no-target (JSONL) row"
     );
     let scene = SceneState::uniform(8);
     let live = live_view(SystemTime::UNIX_EPOCH, &rows, &scene, &[]);
     assert_eq!(live.len(), rows.len());
+}
+
+#[test]
+fn build_rows_honors_the_connected_set() {
+    // A source named in the connected-set renders Connected (unless its CLI is
+    // absent → NoCli); one omitted renders Disconnected/NoCli — never Connected.
+    let mut set = HashSet::new();
+    set.insert("antigravity".to_string()); // no-target → flag alone drives it
+    let rows = build_rows(&set);
+    let ag = rows.iter().find(|r| r.source_id == "antigravity").unwrap();
+    assert_eq!(ag.state, ConnState::Connected);
+    // A source NOT in the set is never Connected.
+    for r in &rows {
+        if r.source_id != "antigravity" {
+            assert_ne!(
+                r.state,
+                ConnState::Connected,
+                "source {:?} not in the set but rendered Connected",
+                r.source_id
+            );
+        }
+    }
 }
 
 // Regression guard for the claude-code-vs-claude join (review CRITICAL): the
@@ -170,29 +197,22 @@ fn build_rows_covers_every_registry_source_with_aligned_live_view() {
 #[test]
 fn build_rows_makes_every_source_with_a_target_actionable() {
     use pixtuoid_core::source::registry::REGISTRY;
-    let rows = build_rows();
+    let rows = build_rows(&HashSet::new());
     for d in REGISTRY {
         let row = rows
             .iter()
             .find(|r| r.source_id == d.name)
             .unwrap_or_else(|| panic!("no Connection row for registered source {:?}", d.name));
         let has_target = crate::install::target::by_source(d.name).is_some();
-        if has_target {
-            assert!(
-                row.target.is_some() && row.hooks != HookState::JsonlNoHooks,
-                "source {:?} has an install target but its Connection row is non-actionable \
-                 (target={:?}, hooks={:?}) — the registry/target join drifted",
-                d.name,
-                row.target.map(|t| t.name),
-                row.hooks,
-            );
-        } else {
-            assert!(
-                row.target.is_none() && row.hooks == HookState::JsonlNoHooks,
-                "source {:?} has no install target but rendered as actionable",
-                d.name,
-            );
-        }
+        // `target.is_some()` IS actionability — the connection state (Connected/
+        // Disconnected/NoCli) depends on FS presence, which is environment-specific.
+        assert_eq!(
+            row.target.is_some(),
+            has_target,
+            "source {:?} target join drifted (row target={:?}, registry has_target={has_target})",
+            d.name,
+            row.target.map(|t| t.name),
+        );
     }
     // The flagship specifically: claude-code → a "Claude Code" actionable row.
     let claude = rows.iter().find(|r| r.source_id == "claude-code").unwrap();
@@ -201,4 +221,104 @@ fn build_rows_makes_every_source_with_a_target_actionable() {
         "Claude Code row must be actionable"
     );
     assert_eq!(claude.display_name, "Claude Code");
+}
+
+#[test]
+fn format_connect_result_renders_connected_plus_backup_and_path_notes() {
+    use crate::install::{InstallOutcome, InstallReport};
+    let base = |outcome, backup, path_warning| InstallReport {
+        outcome,
+        config_path: PathBuf::from("/c"),
+        backup,
+        restart_noun: "Claude",
+        post_note: None,
+        path_warning,
+    };
+    // Both outcomes read as "connected" (the flag flip is the real action).
+    let plain = format_connect_result(&base(InstallOutcome::Installed, None, false), "Claude Code");
+    assert_eq!(plain, "\u{2713} Claude Code connected");
+    assert_eq!(
+        format_connect_result(
+            &base(InstallOutcome::AlreadyUpToDate, None, false),
+            "Claude Code"
+        ),
+        "\u{2713} Claude Code connected"
+    );
+    // Backup + PATH notes append.
+    let noted = format_connect_result(
+        &base(
+            InstallOutcome::Installed,
+            Some(PathBuf::from("/c.bak")),
+            true,
+        ),
+        "Claude Code",
+    );
+    assert!(noted.contains("connected"), "{noted}");
+    assert!(noted.contains("backup saved"), "{noted}");
+    assert!(noted.contains("PATH"), "{noted}");
+}
+
+#[test]
+fn format_disconnect_result_renders_disconnected_plus_backup_note() {
+    use crate::install::{UninstallOutcome, UninstallReport};
+    let removed = UninstallReport {
+        outcome: UninstallOutcome::Removed,
+        config_path: PathBuf::from("/c"),
+        removed_backup: Some(PathBuf::from("/c.bak")),
+        restart_noun: "Claude",
+    };
+    let s = format_disconnect_result(&removed, "Claude Code");
+    assert!(s.contains("disconnected"), "{s}");
+    assert!(s.contains("backup cleared"), "{s}");
+
+    // NothingToRemove still reads as disconnected, no backup line.
+    let nothing = UninstallReport {
+        outcome: UninstallOutcome::NothingToRemove,
+        config_path: PathBuf::from("/c"),
+        removed_backup: None,
+        restart_noun: "Codex",
+    };
+    let s2 = format_disconnect_result(&nothing, "Codex");
+    assert!(s2.contains("disconnected"), "{s2}");
+    assert!(!s2.contains("backup"), "{s2}");
+}
+
+#[test]
+fn no_action_hint_distinguishes_nocli_from_actionable() {
+    let cc = claude_target();
+    let rows = build_rows_from(vec![
+        RowInput {
+            source_id: "claude",
+            label_prefix: "cc",
+            target: Some(cc),
+            facts: Some(RowFacts {
+                present: false, // → NoCli
+                config_path: None,
+            }),
+            connected: false,
+        },
+        RowInput {
+            source_id: "claude",
+            label_prefix: "cc",
+            target: Some(cc),
+            facts: Some(RowFacts {
+                present: true, // → Disconnected (actionable)
+                config_path: None,
+            }),
+            connected: false,
+        },
+    ]);
+    assert_eq!(rows[0].state, ConnState::NoCli);
+    assert!(
+        no_action_hint(&rows[0]).contains("not detected"),
+        "NoCli hint: {}",
+        no_action_hint(&rows[0])
+    );
+    // The actionable fallback arm (not normally surfaced — the painter routes
+    // Disconnected to the action line — but the toggle effect calls it).
+    assert!(
+        no_action_hint(&rows[1]).contains("nothing to do"),
+        "fallback hint: {}",
+        no_action_hint(&rows[1])
+    );
 }
