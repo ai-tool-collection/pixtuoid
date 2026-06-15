@@ -138,7 +138,13 @@ pub fn decode_cursor_hook_payload(v: &Value) -> Result<Vec<AgentEvent>> {
             parent_id: None,
         }]),
         "preToolUse" => {
-            let tool = obj.get("tool_name").and_then(|s| s.as_str()).unwrap_or("?");
+            let tool = obj
+                .get("tool_name")
+                .and_then(|s| s.as_str())
+                .unwrap_or_else(|| {
+                    crate::source::drift::missing_field(SOURCE_NAME, "preToolUse", "tool_name");
+                    "?"
+                });
             Ok(vec![
                 identity(),
                 AgentEvent::ActivityStart {
@@ -165,7 +171,10 @@ pub fn decode_cursor_hook_payload(v: &Value) -> Result<Vec<AgentEvent>> {
             agent_id,
             as_child: false,
         }]),
-        other => bail!("unsupported cursor hook event: {other}"),
+        other => {
+            crate::source::drift::unknown_event(SOURCE_NAME, other);
+            bail!("unsupported cursor hook event: {other}")
+        }
     }
 }
 

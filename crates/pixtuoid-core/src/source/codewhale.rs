@@ -148,7 +148,10 @@ pub fn decode_cw_hook_payload(v: &Value) -> Result<Vec<AgentEvent>> {
             parent_id: None,
         }]),
         "tool_call_before" => {
-            let tool = obj.get("tool").and_then(|s| s.as_str()).unwrap_or("?");
+            let tool = obj.get("tool").and_then(|s| s.as_str()).unwrap_or_else(|| {
+                crate::source::drift::missing_field(SOURCE_NAME, "tool_call_before", "tool");
+                "?"
+            });
             Ok(vec![
                 identity(),
                 AgentEvent::ActivityStart {
@@ -169,7 +172,10 @@ pub fn decode_cw_hook_payload(v: &Value) -> Result<Vec<AgentEvent>> {
             agent_id,
             as_child: false,
         }]),
-        other => bail!("unsupported codewhale hook event: {other}"),
+        other => {
+            crate::source::drift::unknown_event(SOURCE_NAME, other);
+            bail!("unsupported codewhale hook event: {other}")
+        }
     }
 }
 
