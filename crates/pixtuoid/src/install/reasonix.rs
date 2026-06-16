@@ -76,11 +76,12 @@ pub fn default_config_path() -> Result<PathBuf> {
         })
 }
 
-/// Reasonix's `ReasonixHomeDir`: `REASONIX_HOME` (verbatim) → Windows
+/// Reasonix's `ReasonixHomeDir`: `REASONIX_HOME` (TRIMMED — `cleanEnvDir` does
+/// `TrimSpace` + `filepath.Clean`, NO `~`-expand, so `home: None`, #342) → Windows
 /// `%APPDATA%\reasonix` (`user_config_dir()/reasonix`) → else `<home>/.reasonix`.
 fn reasonix_home() -> Option<PathBuf> {
     resolve_reasonix_home(
-        io::nonempty_env("REASONIX_HOME"),
+        io::nonempty_env("REASONIX_HOME").map(|v| io::expand_tilde(&v, None)),
         cfg!(windows),
         user_config_dir(),
         io::user_home(),
@@ -96,13 +97,13 @@ fn reasonix_home() -> Option<PathBuf> {
 /// itself resolves no home (it can't read the file either), and the computed
 /// `<home>/AppData/Roaming/reasonix` is exactly the canonical `%APPDATA%` default.
 fn resolve_reasonix_home(
-    reasonix_home_env: Option<String>,
+    reasonix_home_env: Option<PathBuf>,
     windows: bool,
     windows_config_dir: PathBuf,
     unix_home: Option<String>,
 ) -> Option<PathBuf> {
     if let Some(h) = reasonix_home_env {
-        return Some(PathBuf::from(h));
+        return Some(h);
     }
     if windows {
         return Some(windows_config_dir.join("reasonix"));

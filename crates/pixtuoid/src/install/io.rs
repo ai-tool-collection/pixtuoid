@@ -32,6 +32,31 @@ pub fn nonempty_env(name: &str) -> Option<String> {
     nonempty(std::env::var(name).ok())
 }
 
+/// Normalize a config-location env override (#342): TRIM it, and — when `home` is
+/// `Some` — expand a leading `~`, `~/`, or `~\` against `home`, mirroring the CLIs
+/// that home-expand their overrides (OpenClaw's `resolveRawHomeDir`/`resolveUserPath`
+/// do exactly this `^~(?=$|[/\\])` replace). Pass `home: None` for CLIs that only
+/// TRIM and never `~`-expand (CodeWhale, Reasonix) — expanding there would DIVERGE
+/// from a CLI that takes the value verbatim. A value without a leading `~`-segment
+/// (or `home: None`) is the trimmed verbatim path, so an absolute override is
+/// untouched.
+///
+/// Returns a [`PathBuf`], NOT a `String`: paths stay in path-land end-to-end so
+/// comparisons are STRUCTURAL (component-wise), never byte-wise on a `/`-vs-`\`
+/// string — the recurring `windows-test` failure mode. The join also preserves the
+/// home's `OsString` (no lossy round-trip).
+pub fn expand_tilde(value: &str, home: Option<&Path>) -> PathBuf {
+    let v = value.trim();
+    match home {
+        Some(home) if v == "~" => home.to_path_buf(),
+        Some(home) => match v.strip_prefix("~/").or_else(|| v.strip_prefix("~\\")) {
+            Some(rest) => home.join(rest),
+            None => PathBuf::from(v),
+        },
+        None => PathBuf::from(v),
+    }
+}
+
 /// Resolve a `$HOME`-relative path, falling back to the CWD when no home dir
 /// is resolvable. Only safe for read-only PROBES (detection): a CWD-relative
 /// existence check is at worst a false positive. WRITE paths must use
@@ -322,6 +347,35 @@ pub fn resolve_symlink(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn expand_tilde_home_some_expands_leading_tilde_only() {
+        let home = Path::new("/home/u");
+        // PathBuf == PathBuf is STRUCTURAL: both sides built via `join` use the same
+        // platform separator, so this is correct on Windows AND Unix — no hardcoded
+        // `/` to drift from `\` (the windows-test trap).
+        // bare `~` → the home itself.
+        assert_eq!(expand_tilde("~", Some(home)), home.to_path_buf());
+        // `~/x` and `~\x` (Windows form) → home-joined.
+        assert_eq!(expand_tilde("~/claw", Some(home)), home.join("claw"));
+        assert_eq!(expand_tilde(r"~\claw", Some(home)), home.join("claw"));
+        // trims first, THEN expands.
+        assert_eq!(expand_tilde("  ~/claw  ", Some(home)), home.join("claw"));
+        // a leading `~` WITHOUT a separator (`~foo`) is NOT a home-prefix → verbatim
+        // (matches OpenClaw's `^~(?=$|[/\\])` anchor).
+        assert_eq!(expand_tilde("~foo", Some(home)), PathBuf::from("~foo"));
+        // an absolute path is untouched (no leading `~`).
+        assert_eq!(expand_tilde("/abs/x", Some(home)), PathBuf::from("/abs/x"));
+    }
+
+    #[test]
+    fn expand_tilde_home_none_trims_only_never_expands() {
+        // CodeWhale/Reasonix: trim, but a leading `~` stays VERBATIM (they don't
+        // home-expand, so expanding would diverge from a verbatim-taking CLI).
+        assert_eq!(expand_tilde("  /abs/x  ", None), PathBuf::from("/abs/x"));
+        assert_eq!(expand_tilde("~/claw", None), PathBuf::from("~/claw"));
+        assert_eq!(expand_tilde("~", None), PathBuf::from("~"));
+    }
 
     // rename_with_retry: the retry loop's Windows sharing-violation path is not
     // cheaply testable cross-platform (triggering os error 32 requires another

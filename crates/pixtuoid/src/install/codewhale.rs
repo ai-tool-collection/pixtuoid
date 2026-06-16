@@ -97,10 +97,12 @@ const CODEWHALE_EVENTS: &[(&str, bool)] = &[
 /// absolute override is well-defined. (Upstream additionally rejects `..`; we keep
 /// the value verbatim — a user-set env override is trusted input.)
 pub fn default_config_path() -> Result<PathBuf> {
+    // CodeWhale only TRIMS its overrides (`val.trim()` / `normalize_config_file_path`)
+    // — it does NOT `~`-expand — so pass `home: None` (trim-only, #342).
     resolve_config_path(
-        io::nonempty_env("CODEWHALE_CONFIG_PATH"),
-        io::nonempty_env("DEEPSEEK_CONFIG_PATH"),
-        io::nonempty_env("CODEWHALE_HOME"),
+        io::nonempty_env("CODEWHALE_CONFIG_PATH").map(|v| io::expand_tilde(&v, None)),
+        io::nonempty_env("DEEPSEEK_CONFIG_PATH").map(|v| io::expand_tilde(&v, None)),
+        io::nonempty_env("CODEWHALE_HOME").map(|v| io::expand_tilde(&v, None)),
         pixtuoid_core::platform::home_first_dir(),
         |p| p.exists(),
     )
@@ -114,21 +116,21 @@ pub fn default_config_path() -> Result<PathBuf> {
 /// `.deepseek` dir lives under the OS home REGARDLESS of `CODEWHALE_HOME`
 /// (`legacy_deepseek_home` ignores it).
 fn resolve_config_path(
-    codewhale_config_env: Option<String>,
-    deepseek_config_env: Option<String>,
-    codewhale_home_env: Option<String>,
+    codewhale_config_env: Option<PathBuf>,
+    deepseek_config_env: Option<PathBuf>,
+    codewhale_home_env: Option<PathBuf>,
     os_home: Option<PathBuf>,
     exists: impl Fn(&Path) -> bool,
 ) -> Result<PathBuf> {
     if let Some(p) = codewhale_config_env {
-        return Ok(PathBuf::from(p));
+        return Ok(p);
     }
     if let Some(p) = deepseek_config_env {
-        return Ok(PathBuf::from(p));
+        return Ok(p);
     }
     // Modern app dir: CODEWHALE_HOME verbatim, else <os_home>/.codewhale.
     let modern_dir = match (codewhale_home_env, &os_home) {
-        (Some(h), _) => PathBuf::from(h),
+        (Some(h), _) => h,
         (None, Some(home)) => home.join(".codewhale"),
         (None, None) => {
             return Err(anyhow!(
@@ -163,8 +165,8 @@ fn resolve_config_path(
 /// Windows shell probes the dirs CodeWhale actually uses.
 pub fn detect_installed() -> bool {
     let os_home = pixtuoid_core::platform::home_first_dir();
-    let modern = match io::nonempty_env("CODEWHALE_HOME") {
-        Some(h) => Some(PathBuf::from(h)),
+    let modern = match io::nonempty_env("CODEWHALE_HOME").map(|v| io::expand_tilde(&v, None)) {
+        Some(h) => Some(h),
         None => os_home.as_ref().map(|h| h.join(".codewhale")),
     };
     let legacy = os_home.map(|h| h.join(".deepseek"));
