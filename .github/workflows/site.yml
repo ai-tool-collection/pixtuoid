@@ -48,3 +48,20 @@ jobs:
       - run: npm run lint
       - run: npm run check
       - run: npm run build
+      # Lighthouse CI: gate a11y / SEO / best-practices (perf advisory) against
+      # the built pages — serves dist via `astro preview` (honors the /pixtuoid
+      # base) and audits each. Replaces the dropped eslint-plugin-jsx-a11y with a
+      # rendered-DOM a11y check (axe-powered) plus SEO/perf budgets. Uses the
+      # runner's pre-installed Chrome (chrome-launcher finds it).
+      - run: npm run lighthouse
+      # Keep the full HTML reports even when the gate fails (the run logs only
+      # carry the failing scores, not the element-level violations) — `path` is
+      # workspace-root-relative, so it's prefixed with site/ despite the job cwd.
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: site/.lighthouseci/
+          retention-days: 7
+          if-no-files-found: ignore
