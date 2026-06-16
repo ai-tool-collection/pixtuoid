@@ -67,6 +67,51 @@ fn resolve_codex_home(codex_home_env: Option<String>, home: String) -> PathBuf {
     PathBuf::from(home).join(".codex")
 }
 
+/// `HOME`-FIRST home resolution, then `USERPROFILE` on Windows — the precedence
+/// used by the agent CLIs that hand-roll their own home dir as `$HOME ?? <OS
+/// home>` instead of deferring to a stdlib that ignores `$HOME` on Windows. This
+/// is the OPPOSITE of pixtuoid's generic [`user_home`] (`USERPROFILE`-first on
+/// Windows, so the JSONL watcher never joins onto Git Bash's POSIX-form `HOME`).
+///
+/// The divergence is load-bearing: a Windows user who exports `HOME` (Git Bash /
+/// MSYS2 / Cygwin) has these CLIs read their config under `%HOME%\…`, so pixtuoid
+/// writing hooks to `%USERPROFILE%\…` would land them where the CLI never loads
+/// them — installed, but no sprite. The installer routes the config path for the
+/// HOME-first CLIs through THIS so the hooks reach the file the CLI reads on every
+/// shell. `None` when nothing resolves (the installer maps it to "pass --config").
+///
+/// Source-verified HOME-first CLIs (the only consumers; both hook/daemon, no
+/// watcher counterpart unlike [`codex_home`]):
+/// - **CodeWhale** — `config::effective_home_dir` = `$HOME ?? dirs::home_dir()`.
+/// - **OpenClaw** — `infra/home-dir.ts::resolveRawOsHomeDir` = `$HOME ??
+///   $USERPROFILE ?? os.homedir()` (the installer layers `OPENCLAW_HOME` on top).
+///
+/// Every OTHER CLI uses its language stdlib (Rust `dirs::home_dir`, Go
+/// `os.UserHomeDir`, Node `os.homedir`) — all `USERPROFILE`-first/only on Windows
+/// — so they correctly use the generic [`user_home`], NOT this.
+pub fn home_first_dir() -> Option<PathBuf> {
+    resolve_home_first(
+        cfg!(windows),
+        std::env::var("HOME").ok(),
+        std::env::var("USERPROFILE").ok(),
+    )
+    .map(PathBuf::from)
+}
+
+/// Pure precedence core (`HOME`-first, then `USERPROFILE` on Windows), separated
+/// so the Windows arm is unit-testable on any host. Empty/whitespace counts as
+/// unset. Unix with no `HOME` → `None`: we deliberately don't reach for
+/// `dirs::home_dir`'s getpwuid fallback (HOME is effectively always set on Unix,
+/// and the installer already errors helpfully when no home resolves).
+fn resolve_home_first(
+    windows: bool,
+    home: Option<String>,
+    userprofile: Option<String>,
+) -> Option<String> {
+    let nonempty = |v: Option<String>| v.filter(|s| !s.trim().is_empty());
+    nonempty(home).or_else(|| if windows { nonempty(userprofile) } else { None })
+}
+
 /// Pure mapping of Go's `os.UserConfigDir()` for the platforms we ship, with
 /// the OS and env values injected so every arm (incl. macOS) is unit-testable
 /// on any host — the runtime `cfg!(target_os)` if-else couldn't test its
@@ -266,6 +311,72 @@ mod tests {
             tmp
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn home_first_is_home_then_userprofile_on_windows() {
+        // HOME wins on Windows when set — the WHOLE point: the HOME-first CLIs
+        // (CodeWhale, OpenClaw) resolve home as $HOME first, so the installer must
+        // mirror that, not pixtuoid's generic USERPROFILE-first.
+        assert_eq!(
+            resolve_home_first(true, s(r"C:\Users\me"), s(r"C:\Users\other")),
+            s(r"C:\Users\me")
+        );
+        // Windows, HOME unset → USERPROFILE (== dirs::home_dir()/os.homedir()),
+        // which is why the native cmd/PowerShell case (HOME unset) was correct.
+        assert_eq!(
+            resolve_home_first(true, None, s(r"C:\Users\me")),
+            s(r"C:\Users\me")
+        );
+        // empty/whitespace HOME is unset → falls to USERPROFILE on Windows.
+        assert_eq!(
+            resolve_home_first(true, s("  "), s(r"C:\Users\me")),
+            s(r"C:\Users\me")
+        );
+        // neither set → None (installer maps to the "pass --config" error).
+        assert_eq!(resolve_home_first(true, None, None), None);
+    }
+
+    #[test]
+    fn home_first_is_home_only_on_unix() {
+        // Unix: HOME only; USERPROFILE is ignored, and no HOME → None.
+        assert_eq!(
+            resolve_home_first(false, s("/Users/me"), s(r"C:\ignored")),
+            s("/Users/me")
+        );
+        assert_eq!(resolve_home_first(false, None, s(r"C:\ignored")), None);
+        assert_eq!(resolve_home_first(false, s(""), None), None);
+    }
+
+    // The per-source Windows home-basis CONTRACT (the audit, codified). A source
+    // whose CLI resolves home $HOME-first MUST route through `home_first_dir`; one
+    // whose CLI uses a stdlib home (USERPROFILE-first/only on Windows) uses the
+    // generic `user_home`. Getting this wrong = "installed but no sprite" on a
+    // HOME-exporting Windows shell (Git Bash/MSYS2). Upstream-verified bases:
+    //   HOME-first  : codewhale (config::effective_home_dir),
+    //                 openclaw  (infra/home-dir.ts::resolveRawOsHomeDir)
+    //   USERPROFILE : codex (dirs::home_dir), reasonix (Go os.UserHomeDir),
+    //                 claude/cursor/copilot (Node os.homedir), opencode (XDG +
+    //                 os.homedir), antigravity (deliberate, see its default_paths)
+    #[test]
+    fn home_first_and_generic_user_home_diverge_on_windows_with_home_set() {
+        // The regression guard for the Windows "installed but no sprite" class:
+        // with HOME set on Windows the GENERIC resolver picks USERPROFILE while the
+        // HOME-first resolver (codewhale/openclaw installers) picks HOME. If these
+        // ever stopped diverging, a "simplification" back to the generic home would
+        // silently re-break CodeWhale + OpenClaw on Windows.
+        let home = s("/c/Users/me");
+        let userprofile = s(r"C:\Users\me");
+        assert_eq!(
+            resolve_user_home_opt(true, userprofile.clone(), home.clone()),
+            userprofile,
+            "generic resolver is USERPROFILE-first on Windows"
+        );
+        assert_eq!(
+            resolve_home_first(true, home.clone(), userprofile),
+            home,
+            "HOME-first resolver picks HOME — the two MUST diverge here"
+        );
     }
 
     #[test]
