@@ -260,21 +260,111 @@ mod tests {
     }
 
     #[test]
-    fn paint_labels_writes_glyph_pixels_into_the_surface() {
+    fn office_scale_keeps_the_office_chunky_and_never_zero() {
+        // Downscale so the office buffer stays ~OFFICE_TARGET_H (180px) tall.
+        assert_eq!(office_scale(180), 1);
+        assert_eq!(office_scale(360), 2);
+        assert_eq!(office_scale(720), 4);
+        // A short window still renders at scale 1 — never 0 (redraw divides by it).
+        assert_eq!(office_scale(90), 1);
+        assert_eq!(office_scale(0), 1);
+    }
+
+    #[test]
+    fn paint_labels_uses_the_right_color_per_tone_and_overrides_with_white_on_hover() {
         use pixtuoid_scene::layout::Point;
         use pixtuoid_scene::overlay::{LabelElement, LabelTone};
         let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let as_u32 = |c: Rgb| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
+        let badge = |tone, hovered| {
+            vec![LabelElement {
+                anchor_px: Point { x: 20, y: 20 },
+                text: "cc".into(),
+                tone,
+                hovered,
+            }]
+        };
+        // Each tone must paint its OWN theme color — not merely "some pixel". A wrong match
+        // arm (e.g. Idle returning the Active color) would fail this.
+        for (tone, expected) in [
+            (LabelTone::Active, theme.ui.label_active),
+            (LabelTone::Waiting, theme.ui.label_waiting),
+            (LabelTone::Idle, theme.ui.label_idle),
+            (LabelTone::Exiting, theme.ui.label_exiting),
+        ] {
+            let mut sb = vec![0u32; 100 * 100];
+            paint_labels_into_surface(&mut sb, 100, 100, &badge(tone, false), 2, theme);
+            assert!(
+                sb.contains(&as_u32(expected)),
+                "tone {tone:?} must paint its theme color {expected:?}"
+            );
+        }
+        // Hover OVERRIDES the tone color with white (240,240,240). Use Idle (a dim grey) so the
+        // negative assertion is meaningful: white present AND the idle grey absent.
         let mut sb = vec![0u32; 100 * 100];
-        let labels = vec![LabelElement {
-            anchor_px: Point { x: 20, y: 20 },
-            text: "cc".into(),
-            tone: LabelTone::Active,
-            hovered: false,
-        }];
-        paint_labels_into_surface(&mut sb, 100, 100, &labels, 2, theme);
+        paint_labels_into_surface(&mut sb, 100, 100, &badge(LabelTone::Idle, true), 2, theme);
         assert!(
-            sb.iter().any(|&px| px != 0),
-            "the badge text must paint at least one pixel"
+            sb.contains(&as_u32(Rgb {
+                r: 240,
+                g: 240,
+                b: 240
+            })),
+            "a hovered badge paints white"
+        );
+        assert!(
+            !sb.contains(&as_u32(theme.ui.label_idle)),
+            "hover must override the tone color, not paint the idle grey"
+        );
+    }
+
+    #[test]
+    fn labels_is_empty_before_render_then_builds_a_positioned_badge_for_a_seeded_agent() {
+        use pixtuoid_core::source::AgentEvent;
+        use pixtuoid_core::{AgentId, Reducer, Transport};
+        let pack =
+            pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
+        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let mut renderer = OfficeRenderer::new();
+
+        // One real agent, seeded the production way: a SessionStart through the reducer
+        // registers the slot and assigns it a desk on floor 0.
+        let mut scene = SceneState::new([8; pixtuoid_core::state::MAX_FLOORS]);
+        let mut reducer = Reducer::new();
+        reducer.apply(
+            &mut scene,
+            AgentEvent::SessionStart {
+                agent_id: AgentId::from_parts("claude-code", "offscreen-labels-test"),
+                source: "claude-code".to_string(),
+                session_id: "offscreen-labels-test".to_string(),
+                cwd: std::path::PathBuf::from("/home/user/demo-project"),
+                parent_id: None,
+            },
+            now,
+            Transport::Jsonl,
+        );
+
+        // No frame rendered yet → no cached layout → the guard returns empty.
+        assert!(renderer.labels(&scene, now).is_empty());
+        // After a render, labels() builds the overlay off the cached layout → one badge for the
+        // seeded agent, anchored inside the rendered 160×96 office buffer (proves the seam wires
+        // render's geometry into build_overlay, not just that the line executed).
+        renderer.render(
+            &scene,
+            &pack,
+            theme,
+            now,
+            160,
+            96,
+            FloorMeta::ground(),
+            None,
+        );
+        let labels = renderer.labels(&scene, now);
+        assert_eq!(labels.len(), 1, "one seeded agent → one name badge");
+        let anchor = labels[0].anchor_px;
+        assert!(
+            (0..160).contains(&(anchor.x as i32)) && (0..96).contains(&(anchor.y as i32)),
+            "badge anchor {anchor:?} lands inside the rendered office buffer"
         );
     }
 }
