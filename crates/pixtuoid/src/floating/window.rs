@@ -7,8 +7,10 @@
 //! office stays chunky/legible instead of 1:1-tiny. Redraw is event-driven (a
 //! `FloatingEvent::SceneChanged` from the pipeline
 //! bridge) plus a ~30fps animation tick WHILE agents are present (motion is time-driven);
-//! it idles to zero frames when the office is empty. Platform glue — codecov-ignored like
-//! `driver.rs`; the testable render seam is `floating::offscreen`.
+//! when the office is empty it drops to a slow ~1fps ambient tick (keeping the time-driven
+//! clock/weather/lightning/day-night/pet alive without the 30fps cost), never fully idle.
+//! Platform glue — codecov-ignored like `driver.rs`; the testable render seam is
+//! `floating::offscreen`.
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -64,6 +66,13 @@ pub struct FloatingApp {
 
 /// Click within this many physical px of the bottom-right corner = resize, else move.
 const RESIZE_CORNER_PX: f64 = 18.0;
+
+/// Animation tick rate WHILE agents are present — motion (walk/breathe) is time-driven.
+/// `1000 / 30 = 33ms`, the prior fixed cadence.
+const ACTIVE_FPS: u64 = 30;
+/// Slow ambient tick when the office is EMPTY — keeps the time-driven ambient layer
+/// (clock/weather/lightning/day-night/pet) moving without the 30fps cost of the active path.
+const IDLE_AMBIENT_FPS: u64 = 1;
 
 impl FloatingApp {
     #[allow(clippy::too_many_arguments)] // flat construction inputs; bundling adds no clarity
@@ -154,7 +163,7 @@ impl FloatingApp {
         // Collect office pixels (release the `self.renderer` borrow) as `0x00RRGGBB`.
         let (ow, oh) = (office.width as usize, office.height as usize);
         let opx: Vec<u32> = office
-            .pixels
+            .as_slice()
             .iter()
             .map(|p| (p.r as u32) << 16 | (p.g as u32) << 8 | p.b as u32)
             .collect();
@@ -202,14 +211,38 @@ impl FloatingApp {
 /// `tui/mod.rs`). `store` (not `fetch_max`): floating tracks its window exactly, so a shrink
 /// lowers capacity (excess agents become invisible-but-alive, like the TUI on shrink).
 fn sync_floor_caps(floor_caps: &[AtomicUsize; MAX_FLOORS], buf_w: u16, buf_h: u16) {
-    use pixtuoid_core::layout::{SceneLayout, MAX_VISIBLE_DESKS};
     for (floor_idx, cap) in floor_caps.iter().enumerate() {
-        let seed = (floor_idx as u64).wrapping_mul(pixtuoid_scene::floor::FLOOR_SEED_MULTIPLIER);
-        let capacity = SceneLayout::compute_with_seed(buf_w, buf_h, MAX_VISIBLE_DESKS, seed)
-            .map(|l| l.home_desks.len())
-            .unwrap_or(0);
+        let seed = pixtuoid_scene::floor::floor_seed(floor_idx);
+        let capacity = pixtuoid_scene::floor::floor_capacity(buf_w, buf_h, seed);
         cap.store(capacity, Ordering::Relaxed);
     }
+}
+
+/// Does the saved window rect `(x, y, w, h)` overlap ANY currently-connected monitor?
+///
+/// Guards against restoring onto a now-disconnected monitor (the off-screen-unrecoverable
+/// case). The saved position is physical px (per `persist_geometry`) and monitor
+/// position/size are physical px, so they compare directly; `w`/`h` are the saved LOGICAL
+/// dims used here only as an approximate extent — a few px of HiDPI slop is irrelevant for
+/// an on/off-screen test. Defensive: an EMPTY monitor list (winit reports none) returns
+/// `true` so we still honor the saved position rather than second-guessing the OS.
+fn position_on_a_monitor(event_loop: &ActiveEventLoop, x: i32, y: i32, w: u32, h: u32) -> bool {
+    let mut any_monitor = false;
+    let (win_l, win_t) = (x as i64, y as i64);
+    let (win_r, win_b) = (win_l + w as i64, win_t + h as i64);
+    for monitor in event_loop.available_monitors() {
+        any_monitor = true;
+        let pos = monitor.position();
+        let size = monitor.size();
+        let (mon_l, mon_t) = (pos.x as i64, pos.y as i64);
+        let (mon_r, mon_b) = (mon_l + size.width as i64, mon_t + size.height as i64);
+        // Standard axis-aligned-rect overlap (any non-empty intersection counts as on-screen).
+        if win_l < mon_r && win_r > mon_l && win_t < mon_b && win_b > mon_t {
+            return true;
+        }
+    }
+    // No monitor overlapped — but if winit reported NONE, don't override the OS.
+    !any_monitor
 }
 
 impl ApplicationHandler<FloatingEvent> for FloatingApp {
@@ -230,9 +263,14 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
                 config::FLOATING_MIN_W as f64,
                 config::FLOATING_MIN_H as f64,
             ));
-        // Restore the saved position (physical px); else the OS places it.
+        // Restore the saved position (physical px) ONLY if it still lands on a currently
+        // connected monitor; else let the OS place it. A window last closed on a now-
+        // disconnected monitor would otherwise restore fully off-screen and be
+        // unrecoverable (frameless + no taskbar + always-on-top → no way to drag it back).
         if let (Some(x), Some(y)) = (self.cfg.x, self.cfg.y) {
-            attrs = attrs.with_position(PhysicalPosition::new(x, y));
+            if position_on_a_monitor(event_loop, x, y, self.cfg.width, self.cfg.height) {
+                attrs = attrs.with_position(PhysicalPosition::new(x, y));
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -331,17 +369,20 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Agents animate continuously (walk/breathe — time-driven), so tick ~30fps WHILE
-        // any agent is present; idle to zero frames (event-driven only) when empty.
-        let animating = !self.scene_rx.borrow().agents.is_empty();
-        if animating {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(33),
-            ));
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
+        // any agent is present. When the office is EMPTY we don't go fully idle: the
+        // time-driven AMBIENT layer (clock hands, weather cycle, lightning, day/night
+        // lighting, the wandering pet) still advances, so a 0fps idle would freeze it and
+        // an empty-office window would look dead/broken. Drop to a slow ~1fps ambient tick
+        // instead — enough to keep the office alive while preserving the CPU-saving intent
+        // (nowhere near the 30fps agents-present path).
+        let next_tick = if self.scene_rx.borrow().agents.is_empty() {
+            Duration::from_millis(1000 / IDLE_AMBIENT_FPS)
         } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            Duration::from_millis(1000 / ACTIVE_FPS)
+        };
+        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + next_tick));
+        if let Some(window) = &self.window {
+            window.request_redraw();
         }
     }
 }

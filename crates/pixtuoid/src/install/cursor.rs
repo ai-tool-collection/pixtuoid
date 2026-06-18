@@ -35,8 +35,7 @@ use serde_json::{json, Map, Value};
 use crate::install::io;
 use crate::install::target::MergeOutcome;
 use crate::install::verify;
-
-const SENTINEL_KEY: &str = "_pixtuoid";
+use crate::install::SENTINEL_KEY;
 
 /// Events we register == events we decode (`source/cursor.rs`), enforced by
 /// `every_registered_cursor_event_decodes` below. The camelCase names are
@@ -119,9 +118,7 @@ pub fn detect_installed() -> bool {
 ///
 /// Err on non-UTF-8 (prevents the to_string_lossy dead-hook).
 pub fn hook_command(resolved: &Path, _explicit: bool) -> Result<String> {
-    let p = resolved
-        .to_str()
-        .ok_or_else(|| anyhow!("pixtuoid-hook path is non-UTF-8: {}", resolved.display()))?;
+    let p = verify::hook_path_str(resolved)?;
     crate::install::hook_cmd::shell_hook_command(p, "cursor")
 }
 

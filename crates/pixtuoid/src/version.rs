@@ -58,6 +58,10 @@ pub fn release_notes(version: &str) -> Option<&'static [&'static str]> {
         // anchoring on a marker is whitespace-independent — matching the `match`
         // brace would silently break if the indentation ever shifted.
         // [bump-inject-here]
+        "0.11.0" => Some(&[
+            "Windows: a `~`-prefixed `--pack-dir` / `pack-dir` now expands to your home directory (no more literal `~` in the path)",
+            "Internals tidied — a large code-quality pass (deduplication and a unified pixel-buffer type); the office renders identically, just leaner under the hood",
+        ]),
         "0.10.0" => Some(&[
             "`pixtuoid doctor` now flags an OpenClaw plugin whose files went missing — a source that would silently never load is reported broken instead of healthy",
             "Smoother Sources panel — connecting or disconnecting a CLI no longer hitches the office while it writes hook config",
@@ -96,11 +100,8 @@ pub fn release_notes(version: &str) -> Option<&'static [&'static str]> {
             "Diagnostics you can see — source-death footer warnings, config warnings on stderr, an always-on log file",
             "New project site — live demos, architecture & contributing docs, weather gallery",
         ]),
-        // LIVING DRAFT — 0.6.0 is the open breaking-dev window: the version is
-        // bumped at window START so the CI semver gate admits the batched
-        // breaking changes (#145, #131, …); the tag/publish only happens when
-        // the window stabilizes. Re-curate from `git log v0.5.0..HEAD` before
-        // tagging.
+        // 0.6.0 shipped to crates.io/homebrew but its npm launcher failed, so
+        // 0.6.1 (above) superseded it as the first fully-published release.
         "0.6.0" => Some(&[
             "Windows support — native hook transport, installer, and release builds",
             "Install via npm — `npm i -g pixtuoid` now works on macOS, Linux & Windows",

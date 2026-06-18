@@ -383,7 +383,7 @@ pub(super) fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) ->
         .map(|&k| (base_pal.get(k).flatten(), pal.get(k).flatten()))
         .collect();
     let pixels: Vec<Pixel> = frame
-        .pixels
+        .as_slice()
         .iter()
         .map(|p| match p {
             Some(rgb) => swaps
@@ -393,11 +393,7 @@ pub(super) fn recolor_frame(frame: &Frame, pal: &Palette, base_pal: &Palette) ->
             None => None,
         })
         .collect();
-    Frame {
-        width: frame.width,
-        height: frame.height,
-        pixels,
-    }
+    Frame::from_pixels(frame.width, frame.height, pixels)
 }
 
 /// Map one mascot pixel to its "degraded" look (#317): a gateway that is UP but
@@ -429,22 +425,15 @@ pub(super) fn degraded_pixel(c: Rgb) -> Rgb {
 /// [`degraded_pixel`]; transparency is preserved. Mirrors `recolor_frame`'s
 /// pixel-map shape.
 pub(super) fn degraded_frame(frame: &Frame) -> Frame {
-    Frame {
-        width: frame.width,
-        height: frame.height,
-        pixels: frame
-            .pixels
-            .iter()
-            .map(|&p| p.map(degraded_pixel))
-            .collect(),
-    }
+    let pixels = frame
+        .as_slice()
+        .iter()
+        .map(|&p| p.map(degraded_pixel))
+        .collect();
+    Frame::from_pixels(frame.width, frame.height, pixels)
 }
 
 // --- Color math primitives -----------------------------------------------
-
-pub(super) fn lerp_rgb(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    mix_lab(a, b, t)
-}
 
 /// Bell curve centered at `c` with half-width `w` (so the bell is 0 at
 /// `c ± w` and 1 at `c`). Used for dawn/dusk twilight tint.

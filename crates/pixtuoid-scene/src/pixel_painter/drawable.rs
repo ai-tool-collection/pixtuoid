@@ -180,6 +180,44 @@ pub(super) enum DrawableKind<'a> {
     },
 }
 
+/// Visit-spot anchors for the wandering creatures (pet + gateway mascot). Each
+/// owns ONE furniture's offset so `pet_position` and `mascot_spots` can't drift
+/// from each other. Pantry and the lounge couch share the SAME `+(4,6)` offset
+/// (both are corner appliances the creature stands beside), so `corner_visit_spot`
+/// serves both; the desk and the meeting sofa have their own offsets.
+///
+/// Only the FURNITURE-GEOMETRY offset is shared here — these are derived from the
+/// `DESK_W`/`DESK_H` consts, NOT from any creature's sprite, and both creatures
+/// then `walk_between` + `snap_point_to_walkable` to a "near this furniture"
+/// target (no pixel-precise stand pose), so a sprite's footprint never enters
+/// the math. The creature-specific spot SELECTION stays DELIBERATELY separate and
+/// must NOT be folded in: `pet_position` gathers every spot + an `is_idle` bool +
+/// the corridor, while `mascot_spots` gathers conditionally on `DaemonState`
+/// (Busy → desks, Idle → social) with no corridor. They share where-beside-the-
+/// furniture, not which-furniture-when — two different domains.
+fn desk_visit_spot(desk: Point) -> Point {
+    Point {
+        x: desk.x + DESK_W + 1,
+        y: desk.y + DESK_H + 2,
+    }
+}
+
+/// Pantry / lounge-couch visit anchor (identical `+(4,6)` offset for both).
+fn corner_visit_spot(p: Point) -> Point {
+    Point {
+        x: p.x + 4,
+        y: p.y + 6,
+    }
+}
+
+/// Meeting-sofa visit anchor.
+fn sofa_visit_spot(sofa: Point) -> Point {
+    Point {
+        x: sofa.x + 4,
+        y: sofa.y + 4,
+    }
+}
+
 /// Pet roaming the whole office. Each 40s cycle picks a destination
 /// from all available spots (desks, pantry, meeting sofas, lounge
 /// couch, corridor), walks there from the previous spot, then sits or
@@ -206,10 +244,7 @@ pub(super) fn pet_position(
     let mut spots: Vec<(Point, bool)> = Vec::new();
     for (i, desk) in layout.home_desks.iter().enumerate() {
         spots.push((
-            Point {
-                x: desk.x + DESK_W + 1,
-                y: desk.y + DESK_H + 2,
-            },
+            desk_visit_spot(*desk),
             idle_desk_indices.contains(&FloorLocalDeskIndex(i)),
         ));
     }
@@ -218,23 +253,11 @@ pub(super) fn pet_position(
         .iter()
         .find(|w| matches!(w.kind, crate::layout::WaypointKind::Pantry))
     {
-        spots.push((
-            Point {
-                x: wp.pos.x + 4,
-                y: wp.pos.y + 6,
-            },
-            false,
-        ));
+        spots.push((corner_visit_spot(wp.pos), false));
     }
     for room in &layout.meeting_furniture {
         for sofa in room.sofas {
-            spots.push((
-                Point {
-                    x: sofa.x + 4,
-                    y: sofa.y + 4,
-                },
-                false,
-            ));
+            spots.push((sofa_visit_spot(sofa), false));
         }
     }
     if let Some(wp) = layout
@@ -242,13 +265,7 @@ pub(super) fn pet_position(
         .iter()
         .find(|w| matches!(w.kind, crate::layout::WaypointKind::Couch))
     {
-        spots.push((
-            Point {
-                x: wp.pos.x + 4,
-                y: wp.pos.y + 6,
-            },
-            false,
-        ));
+        spots.push((corner_visit_spot(wp.pos), false));
     }
     if let Some(corridor) = layout.corridor {
         spots.push((
@@ -277,42 +294,8 @@ pub(super) fn pet_position(
         // Facing follows the raw destination intent, independent of where the
         // snapped anchors land.
         let flip = dest.x < prev.x;
-        // Pre-snap both endpoints to walkable cells so the leg starts AND ends
-        // on floor — the raw furniture-adjacent spots are often blocked.
-        let src_anchor = snap_point_to_walkable(&layout.walkable, prev).unwrap_or(prev);
-        let dst_anchor = snap_point_to_walkable(&layout.walkable, dest).unwrap_or(dest);
-
-        // A* on the STATIC mask with a throwaway EMPTY overlay: identical inputs
-        // every frame of the leg (static mask + empty overlay + deterministic
-        // prev/dest) ⇒ identical polyline ⇒ no flash, no per-frame state. The
-        // empty overlay is deliberate — the pet ignores live-agent occupancy
-        // (occasional sprite overlap is fine; a per-frame reroute flash is not).
-        let empty_overlay = OccupancyOverlay::new();
-        let pos = if let Some(mut pts) = find_path(
-            &layout.walkable,
-            &empty_overlay,
-            layout.corridor,
-            prev,
-            dest,
-        ) {
-            // `reconstruct` writes the RAW prev/dest as the polyline ends, which
-            // may be blocked — overwrite them with the snapped walkable anchors
-            // so every sample (incl. t=0 and t=1) is on floor.
-            if let Some(first) = pts.first_mut() {
-                *first = src_anchor;
-            }
-            if let Some(last) = pts.last_mut() {
-                *last = dst_anchor;
-            }
-            sample_polyline(&pts, t, dst_anchor)
-        } else {
-            // Degenerate layout (no route): straight lerp between snapped anchors
-            // — still strictly better than lerping between the raw blocked spots.
-            Point {
-                x: (src_anchor.x as f32 + (dst_anchor.x as f32 - src_anchor.x as f32) * t) as u16,
-                y: (src_anchor.y as f32 + (dst_anchor.y as f32 - src_anchor.y as f32) * t) as u16,
-            }
-        };
+        // Same no-flash A*+snap+sample as the gateway mascot (shared helper).
+        let pos = walk_between(layout, prev, dest, t);
         return Some((pos, flip, kind.walk_anim(), frame_idx));
     }
 
@@ -418,8 +401,9 @@ fn hash_pick(spots: &[Point], n: u64) -> Point {
 
 /// A* on the STATIC mask with a throwaway EMPTY overlay (identical inputs every
 /// frame of a leg ⇒ identical polyline ⇒ no flash), endpoints pre-snapped to
-/// walkable floor, sampled at arc-length `t`. The pet's no-flash discipline.
-fn mascot_walk_between(layout: &Layout, from: Point, to: Point, t: f32) -> Point {
+/// walkable floor, sampled at arc-length `t`. The no-flash walk discipline
+/// shared by the pet and the gateway mascot.
+fn walk_between(layout: &Layout, from: Point, to: Point, t: f32) -> Point {
     let src = snap_point_to_walkable(&layout.walkable, from).unwrap_or(from);
     let dst = snap_point_to_walkable(&layout.walkable, to).unwrap_or(to);
     let empty = OccupancyOverlay::new();
@@ -466,15 +450,12 @@ fn mascot_home(layout: &Layout) -> Option<Point> {
 
 /// Wander destinations, state-dependent. Idle roams the social spots (corridor,
 /// pantry, sofas, couch); Busy shuttles to the backend desks (the coders it
-/// routes to). Snapped lazily inside `mascot_walk_between`.
+/// routes to). Snapped lazily inside `walk_between`.
 fn mascot_spots(layout: &Layout, state: DaemonState, home: Point) -> Vec<Point> {
     let mut spots = vec![home];
     if state == DaemonState::Busy {
         for desk in &layout.home_desks {
-            spots.push(Point {
-                x: desk.x + DESK_W + 1,
-                y: desk.y + DESK_H + 2,
-            });
+            spots.push(desk_visit_spot(*desk));
         }
     } else {
         if let Some(wp) = layout
@@ -482,17 +463,11 @@ fn mascot_spots(layout: &Layout, state: DaemonState, home: Point) -> Vec<Point> 
             .iter()
             .find(|w| matches!(w.kind, crate::layout::WaypointKind::Pantry))
         {
-            spots.push(Point {
-                x: wp.pos.x + 4,
-                y: wp.pos.y + 6,
-            });
+            spots.push(corner_visit_spot(wp.pos));
         }
         for room in &layout.meeting_furniture {
             for sofa in room.sofas {
-                spots.push(Point {
-                    x: sofa.x + 4,
-                    y: sofa.y + 4,
-                });
+                spots.push(sofa_visit_spot(sofa));
             }
         }
         if let Some(wp) = layout
@@ -500,10 +475,7 @@ fn mascot_spots(layout: &Layout, state: DaemonState, home: Point) -> Vec<Point> 
             .iter()
             .find(|w| matches!(w.kind, crate::layout::WaypointKind::Couch))
         {
-            spots.push(Point {
-                x: wp.pos.x + 4,
-                y: wp.pos.y + 6,
-            });
+            spots.push(corner_visit_spot(wp.pos));
         }
     }
     spots
@@ -533,7 +505,7 @@ fn mascot_wander(
     };
     if frac < MASCOT_WALK_FRAC {
         let t = (frac / MASCOT_WALK_FRAC).clamp(0.0, 1.0);
-        (mascot_walk_between(layout, prev, dest, t), true)
+        (walk_between(layout, prev, dest, t), true)
     } else {
         (
             snap_point_to_walkable(&layout.walkable, dest).unwrap_or(dest),
@@ -581,22 +553,14 @@ pub(super) fn mascot_position(
             .saturating_sub(MASCOT_ENTER_MS);
         let (from, _) = mascot_wander(layout, down_we, seed, &spots, home, MASCOT_IDLE_CYCLE_MS);
         let t = down_age as f32 / MASCOT_LEAVE_MS as f32;
-        return Some((
-            mascot_walk_between(layout, from, elevator, t),
-            walk_anim,
-            frame,
-        ));
+        return Some((walk_between(layout, from, elevator, t), walk_anim, frame));
     }
 
     let age = now.duration_since(presence.entered_at).ok()?.as_millis() as u64;
     if age < MASCOT_ENTER_MS {
         // Walk-in from the elevator to the home beat.
         let t = age as f32 / MASCOT_ENTER_MS as f32;
-        return Some((
-            mascot_walk_between(layout, elevator, home, t),
-            walk_anim,
-            frame,
-        ));
+        return Some((walk_between(layout, elevator, home, t), walk_anim, frame));
     }
 
     // Steady wander, styled by state.

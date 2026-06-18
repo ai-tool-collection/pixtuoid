@@ -32,6 +32,21 @@ use pixtuoid_scene::pathfind::Router;
 use pixtuoid_scene::pet::PetFrame;
 use pixtuoid_scene::pixel_painter::{render_to_rgb_buffer, PixelCtx};
 
+/// `FloorInfo` for a 1-based floor index, or `None` when there is only one floor
+/// (no elevator indicator). The one source behind both the normal and the
+/// floor-transition draw paths (was a closure duplicated byte-for-byte in each).
+fn floor_info_for(
+    current_idx: usize,
+    nf: usize,
+    total_agents: usize,
+) -> Option<crate::tui::renderer::FloorInfo> {
+    (nf > 1).then(|| crate::tui::renderer::FloorInfo {
+        current: current_idx + 1,
+        total_floors: nf,
+        total_agents,
+    })
+}
+
 pub struct TuiRenderer<B: Backend<Error: Send + Sync + 'static>> {
     pub terminal: Terminal<B>,
     floor_bufs: Vec<RgbBuffer>,
@@ -242,6 +257,22 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
         self.coffee_fetched_at.insert(id, fetched_at);
     }
 
+    /// Persist newly detected coffee carriers. `coffee_holders.insert` returns
+    /// `true` only on the EDGE (first time this agent enters the set for this
+    /// pantry trip), and only then do we stamp `coffee_fetched_at` (the steam
+    /// window anchor). Shared by the normal and floor-transition draw paths.
+    fn record_coffee_carriers(
+        &mut self,
+        carriers: impl IntoIterator<Item = pixtuoid_core::AgentId>,
+        now: SystemTime,
+    ) {
+        for id in carriers {
+            if self.coffee_holders.insert(id) {
+                self.coffee_fetched_at.insert(id, now);
+            }
+        }
+    }
+
     pub fn cached_layout(&self) -> Option<&Layout> {
         self.cached_layout.as_ref()
     }
@@ -418,18 +449,6 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
         }) else {
             return Ok(());
         };
-        let make_floor_info = |current_idx: usize| {
-            if nf > 1 {
-                Some(crate::tui::renderer::FloorInfo {
-                    current: current_idx + 1,
-                    total_floors: nf,
-                    total_agents: scene.agents.len(),
-                })
-            } else {
-                None
-            }
-        };
-
         // Build floor-scoped scenes for both floors.
         let from_scene = project_floor_scene(scene, from_floor);
         let to_scene = project_floor_scene(scene, to_floor);
@@ -584,7 +603,7 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
         // slide so the per-floor agent count in the footer matches the
         // label (otherwise users see "F1/3 ... 5 agents" with floor 2's
         // count for ~400 ms).
-        let transition_floor_info = make_floor_info(to_floor);
+        let transition_floor_info = floor_info_for(to_floor, nf, scene.agents.len());
 
         self.terminal.draw(|f| {
             let actual_full = f.area();
@@ -600,51 +619,26 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
             flush_buffer_to_term_at_offset(f, from_buf, actual_scene, from_offset);
             flush_buffer_to_term_at_offset(f, to_buf, actual_scene, to_offset);
 
-            if let Some(idx) = theme_picker {
-                crate::tui::renderer::paint_theme_picker(f, idx, actual_full, theme);
-            }
-            if dashboard_open {
-                crate::tui::renderer::paint_dashboard(
-                    f,
-                    &dashboard_rows,
-                    dashboard_selected,
-                    dashboard_scroll,
-                    now,
-                    actual_full,
-                    theme,
-                );
-            }
-            if connection_open {
-                crate::tui::renderer::paint_connection_panel(
-                    f,
-                    &connection_rows,
-                    &connection_live,
-                    connection_selected,
-                    connection_confirm,
-                    connection_result.as_deref(),
-                    &connection_socket_line,
-                    now,
-                    actual_full,
-                    theme,
-                );
-            }
-            if popup_scale > 0.0 {
-                if let Some(notes) = crate::version::release_notes(env!("CARGO_PKG_VERSION")) {
-                    crate::tui::renderer::paint_version_popup(
-                        f,
-                        env!("CARGO_PKG_VERSION"),
-                        notes,
-                        actual_full,
-                        theme,
-                        popup_scale,
-                    );
-                }
-            }
-            if help_open {
-                // actual_full (not actual_scene) to match the theme
-                // picker / version popup centering on this path too.
-                crate::tui::renderer::paint_help_overlay(f, actual_full, theme);
-            }
+            crate::tui::renderer::paint_overlays(
+                f,
+                theme_picker,
+                dashboard_open,
+                &dashboard_rows,
+                dashboard_selected,
+                dashboard_scroll,
+                connection_open,
+                &connection_rows,
+                &connection_live,
+                connection_selected,
+                connection_confirm,
+                connection_result.as_deref(),
+                &connection_socket_line,
+                popup_scale,
+                help_open,
+                now,
+                actual_full,
+                theme,
+            );
         })?;
 
         self.last_popup_scale = popup_scale;
@@ -654,14 +648,9 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
         // last frame's location during the transition.
         self.last_pet_pos = None;
         // Persist coffee carriers detected on EITHER floor during the slide,
-        // same EDGE logic as the normal path (insert returns true once per
-        // pantry trip). Without this a coffee run that completes
-        // mid-transition loses its cup.
-        for id in from_carriers.into_iter().chain(to_carriers) {
-            if self.coffee_holders.insert(id) {
-                self.coffee_fetched_at.insert(id, now);
-            }
-        }
+        // same EDGE logic as the normal path. Without this a coffee run that
+        // completes mid-transition loses its cup.
+        self.record_coffee_carriers(from_carriers.into_iter().chain(to_carriers), now);
         Ok(())
     }
 }
@@ -708,18 +697,7 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
             self.current_floor = nf.saturating_sub(1);
         }
 
-        let make_floor_info = |current_idx: usize| {
-            if nf > 1 {
-                Some(crate::tui::renderer::FloorInfo {
-                    current: current_idx + 1,
-                    total_floors: nf,
-                    total_agents: scene.agents.len(),
-                })
-            } else {
-                None
-            }
-        };
-        let floor_info = make_floor_info(self.current_floor);
+        let floor_info = floor_info_for(self.current_floor, nf, scene.agents.len());
 
         // --- Transition path: composite two floors sliding in/out ----------
         if self.transition.is_some() {
@@ -796,14 +774,7 @@ impl<B: Backend<Error: Send + Sync + 'static>> Renderer for TuiRenderer<B> {
         drop(draw_ctx);
         // Recompute door_anim_max_ms from the motion map for the NEXT frame.
         self.floor_ctxs[self.current_floor].recompute_door_anim_max_ms(now);
-        // Persist newly detected coffee carriers. The `insert` returns
-        // `true` only on the EDGE (first time this agent enters the set
-        // for this pantry trip).
-        for id in new_coffee_carriers {
-            if self.coffee_holders.insert(id) {
-                self.coffee_fetched_at.insert(id, now);
-            }
-        }
+        self.record_coffee_carriers(new_coffee_carriers, now);
         if let Ok(ref layout_opt) = result {
             self.cached_layout = layout_opt.clone();
             // Ok(None) = draw_scene painted footer-only (compute failed at this

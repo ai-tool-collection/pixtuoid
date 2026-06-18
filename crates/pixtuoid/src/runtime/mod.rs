@@ -120,27 +120,18 @@ fn cap_boot_capacities(base: [usize; MAX_FLOORS], cap: Option<usize>) -> [usize;
 }
 
 pub(crate) fn capacity_for_terminal(cols: u16, rows: u16, floor_seed: u64) -> usize {
+    // The footer eats one terminal row, and a half-block ▀ cell is 2 pixels
+    // tall — so the pixel-buffer height is (rows-1)*2.
     let buf_h = rows.saturating_sub(1) * 2;
-    pixtuoid_core::layout::SceneLayout::compute_with_seed(
-        cols,
-        buf_h,
-        pixtuoid_core::layout::MAX_VISIBLE_DESKS,
-        floor_seed,
-    )
-    .map(|l| l.home_desks.len())
-    .unwrap_or(0)
+    pixtuoid_scene::floor::floor_capacity(cols, buf_h, floor_seed)
 }
 
-/// Strip control characters from an untrusted field before it reaches stdout in
-/// headless mode. The label (cwd basename), tool detail (hook `tool_input`), and
-/// Notification reason all derive from untrusted transcript/hook input, so a
-/// crafted ANSI/OSC escape (set-title, clipboard-prime, cursor relocation) would
-/// otherwise be emitted verbatim to the user's terminal. The interactive TUI is
-/// immune (ratatui writes into a cell buffer that neutralizes escapes); the
-/// headless `println!` path is not.
-fn sanitize_line(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
-}
+// The headless `println!` summary derives labels / tool detail / Notification
+// reason from untrusted transcript+hook input, so a crafted ANSI/OSC escape
+// would otherwise reach the user's terminal verbatim (the TUI is immune —
+// ratatui neutralizes escapes in its cell buffer). One chokepoint: the
+// canonical `crate::strip_control_chars`.
+use crate::strip_control_chars as sanitize_line;
 
 fn summarize(scene: &SceneState) -> String {
     let agents: Vec<String> = scene
