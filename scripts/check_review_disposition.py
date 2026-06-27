@@ -31,6 +31,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from _gov import _strip_control  # shared pure helper (see docs/governance-scripts.md)
+
 DEFAULT_REPO = "IvanWng97/pixtuoid"
 BOT_LOGINS = {"claude[bot]", "github-actions[bot]"}
 # MEDIUM and up — LOW findings don't require a tracked disposition.
@@ -61,14 +63,6 @@ class Finding:
     path: str
     line: object  # int or None — bot inline comments often carry a null line
     title: str
-
-
-def _strip_control(s: str) -> str:
-    """Drop C0/C1 control chars + DEL so untrusted bot-comment text / paths can't
-    emit a terminal escape (ANSI/OSC) when this report is printed — the Python
-    twin of the Rust side's `verify::display_safe` sanitize-at-the-boundary rule
-    (R0615-06). Applied where findings are constructed, not at each print site."""
-    return "".join(ch for ch in s if not (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F))
 
 
 def severity_of(body: str) -> str | None:
@@ -147,6 +141,28 @@ def assess(
     return adjudicated, undecided
 
 
+def judge_prompt(findings: list[Finding], marker_lines: list[str]) -> str:
+    """Advisory LLM-judge prompt: rate whether the bot-finding DISPOSITIONS are
+    SUBSTANTIVE adjudications (real reasoning) vs rubber-stamps — the substance
+    layer over `check_pr`'s existence floor (the same "existence is the floor, the
+    judge is the substance" split the DoD gate uses). Pure; CI pipes it to the model
+    through the shared `.github/actions/llm-judge` composite."""
+    fl = "\n".join(f"- [{f.severity}] {f.path}: {f.title}" for f in findings) or "(none)"
+    ml = "\n".join(f"- {ln}" for ln in marker_lines) or "(no disposition marker lines)"
+    return (
+        "You are an adversarial reviewer auditing whether a PR's bot-finding "
+        "DISPOSITIONS are substantive, not theater. Answer as JSON "
+        "{substantive: bool, rubber_stamped: [..], concerns: [..]}.\n"
+        "- substantive: does each MEDIUM+ finding's disposition give a REAL reason "
+        "(refuted because…, fixed via…, deferred to #N with an issue) rather than a "
+        "bare acknowledgement that merely names the file?\n"
+        "- rubber_stamped: list the findings whose disposition is present but "
+        "vacuous (no reasoning, no fix/issue/refutation).\n\n"
+        "=== MEDIUM+ BOT FINDINGS ===\n" + fl +
+        "\n\n=== DISPOSITION MARKER LINES (from the PR body / commits) ===\n" + ml
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Network glue (untested — the pure functions above carry the logic).         #
 # --------------------------------------------------------------------------- #
@@ -214,6 +230,8 @@ def main() -> int:
     ap.add_argument("prs", nargs="*", type=int, help="PR numbers to audit")
     ap.add_argument("--repo", default=DEFAULT_REPO)
     ap.add_argument("--selftest", action="store_true", help="run pure-fn tests")
+    ap.add_argument("--judge-prompt", action="store_true",
+                    help="emit the advisory disposition-substance judge prompt for a PR")
     args = ap.parse_args()
     if args.selftest:
         import check_review_disposition_selftest as st
@@ -221,6 +239,13 @@ def main() -> int:
         return st.run()
     if not args.prs:
         ap.error("pass at least one PR number (or --selftest)")
+    if args.judge_prompt:
+        pr = args.prs[0]
+        comments = _gh_json(["api", f"repos/{args.repo}/pulls/{pr}/comments", "--paginate"]) or []
+        findings = extract_findings(comments)
+        marker_lines = parse_marker_lines(_commit_texts(args.repo, pr))
+        print(judge_prompt(findings, marker_lines))
+        return 0
     ledger_text = LEDGER.read_text() if LEDGER.exists() else ""
     worst = 0
     for pr in args.prs:

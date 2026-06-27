@@ -75,7 +75,23 @@ scripts/             gen-media.py + media.json (the ONE manifest-driven driver f
                      docs/review-metrics/sharp-edge-inventory.md in lockstep with the
                      CLAUDE.md sharp-edge bullets + resolves ledger `[edge:<slug>]`
                      citations → `just sharp-edge-inventory`; each governance script
-                     above has a `*_selftest.py` pinning its parsers, also CI-gated)
+                     above has a `*_selftest.py` pinning its parsers, also CI-gated),
+                     check_dod.py (the Definition-of-Done gate — mechanizes the
+                     non-code-shaped lifecycle discipline the ~25 CI code-jobs can't see:
+                     two-lens-review-at-merge, prod-println!/settings-write/--no-verify
+                     guards, docs-currency + ledger/deferral traceability. ONE SoT called
+                     from the Claude Code hooks (`.claude/settings.json`, agent layer) AND
+                     `.githooks/pre-push` + the CI `definition-of-done` job (change layer,
+                     AUTHORITATIVE — ignores DOD_BYPASS); diff-scoped so existing code is
+                     grandfathered. `just dod` / `just dod-selftest`; `check_dod_selftest.py`
+                     pins the parsers, CI-gated in hygiene + as a job prerequisite).
+                     The cadence+authority of ALL these governance scripts (which run
+                     when, which can fail a PR, bypass) is tabled in
+                     [`docs/governance-scripts.md`](docs/governance-scripts.md); the
+                     advisory `--judge-prompt` substance check is shared via the
+                     `.github/actions/llm-judge` composite (DoD + review-disposition);
+                     `_gov.py` holds the one verbatim-shared pure helper
+                     (`_strip_control`), gh plumbing stays per-script until a 3rd gate
 site/                Astro landing page → GitHub Pages; self-contained Node project,
                      own CI; `just site-{setup,dev,check,fmt}` → see site/README.md
 integrations/raycast/  Raycast extension (TypeScript, self-contained Node project; NOT Rust):
@@ -175,6 +191,7 @@ and stays a human step. See
 - **Track every deferred finding as a GitHub issue** BEFORE moving on — problem, why deferred, fix sketch. A deferred finding with no issue is a silently-dropped finding. (Verify it's real first — see "Don't blindly accept reviewer findings".)
 - **Sprite changes require visual verification** — render, crop, read the PNG, self-critique until it reads at half-block scale; commit messages carry the iteration history. Full checklist: `.claude/skills/beautify-decoration/SKILL.md`.
 - **Periodic context-file audits also distill memory**: each `/revise-claude-md`-style audit sweeps recent session memories for promote-to-repo candidates (the memory layer of [`docs/KNOWLEDGE-ENGINEERING.md`](docs/KNOWLEDGE-ENGINEERING.md)).
+- **Definition of Done is MECHANIZED, not just prose.** The lifecycle conventions above that aren't code-shaped (two-lens review before merge, the ledger trace, deferred→issue, docs-currency, the prod-`println!`/`settings.json`-write/`--no-verify` bans) are enforced by `scripts/check_dod.py` (`just dod`) from BOTH the Claude Code hooks (`.claude/settings.json` — Stop + PreToolUse, the agent layer) and `.githooks/pre-push` + the CI `definition-of-done` job (the change layer, AUTHORITATIVE — it ignores `DOD_BYPASS`). Prose binds intention; this binds behavior. Fill `.dod/attestation.md` (template in `.dod/`) on a code branch; the merge gate needs a `Two-lens-review:` block in the PR body (format in [`CONTRIBUTING.md`](docs/CONTRIBUTING.md)). Don't add a finding-class the gate misses without adding a `check_dod` sub-check + selftest case in the same change.
 
 ## Architecture invariants
 
