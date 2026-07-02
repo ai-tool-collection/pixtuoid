@@ -20,11 +20,14 @@ use std::time::{Duration, SystemTime};
 
 use wasm_bindgen::prelude::*;
 
+use pixtuoid_core::source::daemon::apply_presence;
+use pixtuoid_core::source::openclaw;
 use pixtuoid_core::sprite::{format::Pack, Rgb, RgbBuffer};
 use pixtuoid_core::state::reducer::Reducer;
 use pixtuoid_core::state::SceneState;
+use pixtuoid_core::{AgentEvent, AgentId, Transport};
 
-use crate::script::{hero_script, Beat, LOOP_MS};
+use crate::script::{hero_script, hire_beats, lobster_beats, Beat, PresenceBeat, LOOP_MS};
 
 use pixtuoid_scene::chitchat::{ActiveChitchat, VenueKey};
 use pixtuoid_scene::embedded_pack::load_sprite_pack;
@@ -57,8 +60,24 @@ pub struct Office {
     beats: Vec<Beat>,
     /// Next un-fired beat in the current loop.
     cursor: usize,
+    /// The lobster's lane (#434): scripted OpenClaw presence deltas, applied
+    /// through the real `apply_presence` state machine — its own cursor, same
+    /// loop clock as `beats`.
+    presence_beats: Vec<PresenceBeat>,
+    presence_cursor: usize,
     /// t0 of the current loop; set on the first `step` call.
     epoch: Option<SystemTime>,
+    /// Visitor-hired agents (#434): absolute-time one-shot events queued by
+    /// `hire()` — outside the loop machinery, so a hire's lifecycle never
+    /// replays on wrap. Kept sorted by time; drained by `advance_script`.
+    pending: Vec<(SystemTime, AgentEvent)>,
+    /// Live hire ids (pruned against the scene) — caps concurrent hires.
+    hire_ids: Vec<AgentId>,
+    /// Monotonic hire counter → unique session keys.
+    hire_seq: u32,
+    /// The clock of the most recent `step` — `hire()` has no clock parameter
+    /// (it's a JS click handler), so it schedules relative to this.
+    last_now: Option<SystemTime>,
 }
 
 #[wasm_bindgen]
@@ -85,7 +104,13 @@ impl Office {
             reducer: Reducer::new(),
             beats: hero_script(),
             cursor: 0,
+            presence_beats: lobster_beats(),
+            presence_cursor: 0,
             epoch: None,
+            pending: Vec::new(),
+            hire_ids: Vec::new(),
+            hire_seq: 0,
+            last_now: None,
         })
     }
 
@@ -100,6 +125,7 @@ impl Office {
     /// defeating the browser-timezone support entirely).
     pub fn step(&mut self, now_ms: f64, w: u32, h: u32) {
         let now = SystemTime::UNIX_EPOCH + Duration::from_millis(now_ms.max(0.0) as u64);
+        self.last_now = Some(now);
         self.advance_script(now);
         // The per-frame sweep: Active→Idle debounce, exit GC, walkouts.
         self.reducer.tick(&mut self.scene, now);
@@ -128,6 +154,40 @@ impl Office {
     /// Byte length of the RGBA frame (`w*h*4`).
     pub fn frame_len(&self) -> usize {
         self.rgba.len()
+    }
+
+    /// Hire one more agent (#434): the site's install section calls this on a
+    /// Copy click, and a new coworker walks into the background office, works
+    /// a few spells, and heads out ~70s later. No-op before the first `step`
+    /// (no clock yet) and while `MAX_LIVE_HIRES` hires are already alive
+    /// (click-spam can't crowd out the cast). Never throws.
+    pub fn hire(&mut self) {
+        let Some(base) = self.last_now else {
+            return;
+        };
+        // `hire_ids` is THE registry the cap counts — each admitted hire is in
+        // it exactly once. Prune only ids that are neither LIVE (in the scene)
+        // nor still QUEUED (SessionStart pending): pruning queued ids would
+        // permanently lose them, and a click one frame after a burst would
+        // overshoot the cap (the review-caught under-count, PR #436).
+        self.hire_ids.retain(|id| {
+            self.scene.agents.contains_key(id)
+                || self.pending.iter().any(
+                    |(_, e)| matches!(e, AgentEvent::SessionStart { agent_id, .. } if agent_id == id),
+                )
+        });
+        if self.hire_ids.len() >= Self::MAX_LIVE_HIRES {
+            return;
+        }
+        self.hire_seq += 1;
+        let session = format!("hire-{}", self.hire_seq);
+        let id = AgentId::from_parts(pixtuoid_core::source::claude_code::SOURCE_NAME, &session);
+        self.hire_ids.push(id);
+        for (at_ms, event) in hire_beats(id, session) {
+            self.pending
+                .push((base + Duration::from_millis(at_ms), event));
+        }
+        self.pending.sort_by_key(|(at, _)| *at);
     }
 }
 
@@ -166,6 +226,23 @@ impl Office {
                     .apply(&mut self.scene, beat.event.clone(), at, beat.transport);
                 self.cursor += 1;
             }
+            // The lobster's lane (#434): same loop clock, its own cursor. Each
+            // delta lands through the REAL apply_presence state machine at its
+            // SCHEDULED time, so enter/busy/leave motion anchors correctly even
+            // on a catch-up step.
+            while let Some(pb) = self.presence_beats.get(self.presence_cursor) {
+                if pb.at_ms > elapsed {
+                    break;
+                }
+                let at = epoch + Duration::from_millis(pb.at_ms);
+                apply_presence(
+                    &mut self.scene,
+                    openclaw::SOURCE_NAME,
+                    pb.update.clone(),
+                    at,
+                );
+                self.presence_cursor += 1;
+            }
             if elapsed < LOOP_MS {
                 break;
             }
@@ -173,9 +250,23 @@ impl Office {
             epoch += Duration::from_millis(LOOP_MS);
             self.epoch = Some(epoch);
             self.cursor = 0;
+            self.presence_cursor = 0;
             elapsed -= LOOP_MS;
         }
+
+        // Visitor hires (#434): absolute-time one-shots, independent of the
+        // loop machinery (a hire's lifecycle must not replay on wrap). The
+        // queue is push-sorted, so drain from the front.
+        while self.pending.first().is_some_and(|(at, _)| *at <= now) {
+            let (at, event) = self.pending.remove(0);
+            self.reducer
+                .apply(&mut self.scene, event, at, Transport::Hook);
+        }
     }
+
+    /// Cap on concurrently-alive visitor hires: enough that repeat clicks
+    /// visibly stack, few enough that click-spam can't crowd out the cast.
+    const MAX_LIVE_HIRES: usize = 3;
 
     fn render(&mut self, now: SystemTime, buf_w: u16, buf_h: u16) {
         // The shared scene seam (#423) owns the whole frame: buffer sizing,
@@ -342,6 +433,103 @@ mod tests {
         assert!(
             !o.coffee.map().contains_key(&cast_id(5)),
             "agent 5's coffee state was evicted with its slot"
+        );
+    }
+
+    #[test]
+    fn lobster_presence_follows_the_scripted_loop_through_the_real_state_machine() {
+        use pixtuoid_core::state::DaemonState;
+        let mut o = office();
+        let src = pixtuoid_core::source::openclaw::SOURCE_NAME;
+        o.step(T0_MS, 160, 96); // anchor the loop epoch at T0
+                                // Before the GatewayUp beat: absent (the ~99% no-gateway office).
+        o.step(T0_MS + 10_000.0, 160, 96);
+        assert!(
+            !o.scene.daemons().contains_key(src),
+            "no lobster before 25s"
+        );
+        // 30s: up + idle amble.
+        o.step(T0_MS + 30_000.0, 160, 96);
+        assert_eq!(o.scene.daemons()[src].state, DaemonState::Idle);
+        // 45s: run 1 in flight → busy shuttle.
+        o.step(T0_MS + 45_000.0, 160, 96);
+        assert_eq!(o.scene.daemons()[src].state, DaemonState::Busy);
+        assert_eq!(o.scene.daemons()[src].in_flight_run_keys.len(), 1);
+        // 100s (the wide poster's instant): both runs done → idle.
+        o.step(T0_MS + 100_000.0, 160, 96);
+        assert_eq!(o.scene.daemons()[src].state, DaemonState::Idle);
+        // 115s: walked out (Down ≠ absent — the leave animation anchors on it).
+        o.step(T0_MS + 115_000.0, 160, 96);
+        assert_eq!(o.scene.daemons()[src].state, DaemonState::Down);
+        // Next loop, 30s in: the wrap reset the presence cursor; GatewayUp
+        // resurrects Down → Idle and re-anchors the enter walk.
+        let wrap30 = T0_MS + LOOP_MS as f64 + 30_000.0;
+        o.step(wrap30, 160, 96);
+        assert_eq!(o.scene.daemons()[src].state, DaemonState::Idle);
+    }
+
+    #[test]
+    fn hire_walks_in_works_and_leaves_without_replaying_on_wrap() {
+        let mut o = office();
+        // No clock yet → no-op, never panics.
+        o.hire();
+        assert!(
+            o.pending.is_empty(),
+            "hire before the first step is ignored"
+        );
+
+        o.step(T0_MS, 160, 96);
+        o.step(T0_MS + 30_000.0, 160, 96);
+        let baseline = o.scene.agents.len();
+        o.hire();
+        o.step(T0_MS + 31_000.0, 160, 96);
+        assert_eq!(o.scene.agents.len(), baseline + 1, "the hire walked in");
+        // Mid-stay: still present (working its spells).
+        o.step(T0_MS + 80_000.0, 160, 96);
+        assert_eq!(o.scene.agents.len(), baseline + 1);
+        // Past SessionEnd (+70s) + exit grace + GC: gone — and crossing the
+        // loop wrap must NOT resurrect it (hires live outside the loop lanes).
+        let after = T0_MS + 31_000.0 + 70_000.0 + 20_000.0 + LOOP_MS as f64;
+        o.step(after, 160, 96);
+        let hired_alive = o
+            .scene
+            .agents
+            .keys()
+            .filter(|id| !(0..8).map(cast_id).any(|c| c == **id))
+            .count();
+        assert_eq!(hired_alive, 0, "the hire left and never replays");
+    }
+
+    #[test]
+    fn hire_cap_holds_under_click_spam() {
+        let mut o = office();
+        o.step(T0_MS, 160, 96);
+        o.step(T0_MS + 30_000.0, 160, 96);
+        for _ in 0..10 {
+            o.hire();
+        }
+        o.step(T0_MS + 32_000.0, 160, 96);
+        let count_hires = |o: &Office| {
+            o.scene
+                .agents
+                .keys()
+                .filter(|id| !(0..8).map(cast_id).any(|c| c == **id))
+                .count()
+        };
+        assert_eq!(
+            count_hires(&o),
+            Office::MAX_LIVE_HIRES,
+            "click spam caps at the limit"
+        );
+        // The review-caught under-count: one MORE click after the burst's
+        // SessionStarts have drained must still be refused — the registry
+        // counts live hires, not just queued ones.
+        o.hire();
+        o.step(T0_MS + 33_000.0, 160, 96);
+        assert_eq!(
+            count_hires(&o),
+            Office::MAX_LIVE_HIRES,
+            "a post-burst click must not overshoot the cap"
         );
     }
 }
