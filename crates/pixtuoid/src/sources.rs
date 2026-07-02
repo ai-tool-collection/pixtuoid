@@ -24,6 +24,40 @@ use crate::install::{
     InstallReport, UninstallReport,
 };
 
+/// The wire-facing outcome token — a CLOSED set, published in the JSON schema
+/// as an `enum` so the generated Raycast type is a string-literal UNION (a
+/// consumer typo like `"conected"` is a `tsc` error, not a runtime miss).
+/// Chosen over a bare `string` in the pre-store-publication free window: the
+/// stronger contract costs nothing now; loosening later is additive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum WireOutcome {
+    Connected,
+    Disconnected,
+    NoOp,
+    Failed,
+}
+
+impl WireOutcome {
+    /// The serialized token — the ONE string authority (serde's snake_case
+    /// rename and this table are pinned equal by `wire_outcome_serializes_as_its_token`).
+    pub fn token(self) -> &'static str {
+        match self {
+            WireOutcome::Connected => "connected",
+            WireOutcome::Disconnected => "disconnected",
+            WireOutcome::NoOp => "no_op",
+            WireOutcome::Failed => "failed",
+        }
+    }
+}
+
+impl std::fmt::Display for WireOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.token())
+    }
+}
+
 /// Outcome of a single connect/disconnect, so a batch (`reconcile_to`) can
 /// report per-source without aborting the rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,14 +71,74 @@ pub enum ChangeOutcome {
 }
 
 impl ChangeOutcome {
-    /// Stable wire token for `--json` / scripting. Kept separate from the
-    /// enum's `Debug` so the JSON contract can't drift if a variant is renamed.
-    pub fn as_wire(&self) -> String {
+    /// Stable BARE wire token for `--json` / scripting — a machine-matchable
+    /// value, never carrying human text (the detail rides in [`Self::message`]).
+    /// Kept separate from the enum's `Debug` so the JSON contract can't drift
+    /// if a variant is renamed.
+    pub fn wire_outcome(&self) -> WireOutcome {
         match self {
-            ChangeOutcome::Connected => "connected".into(),
-            ChangeOutcome::Disconnected => "disconnected".into(),
-            ChangeOutcome::NoOp => "no_op".into(),
-            ChangeOutcome::Failed(msg) => format!("failed: {msg}"),
+            ChangeOutcome::Connected => WireOutcome::Connected,
+            ChangeOutcome::Disconnected => WireOutcome::Disconnected,
+            ChangeOutcome::NoOp => WireOutcome::NoOp,
+            ChangeOutcome::Failed(_) => WireOutcome::Failed,
+        }
+    }
+
+    /// The serialized token for this outcome (via [`WireOutcome::token`]).
+    pub fn wire_token(&self) -> &'static str {
+        self.wire_outcome().token()
+    }
+
+    /// The human-readable detail alongside the token — `Some` exactly for
+    /// `Failed` (the only variant that carries any).
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            ChangeOutcome::Failed(msg) => Some(msg),
+            _ => None,
+        }
+    }
+}
+
+/// One row of the `--json` batch envelope `pixtuoid connect|disconnect|sources set`
+/// print — the SECOND stable wire contract the Raycast extension parses (alongside
+/// `SourceStatus`), with the same treatment: a committed JSON Schema
+/// (`integrations/raycast/contract/outcome-row.schema.json`, golden-tested below)
+/// the extension's TS type is generated from (`gen:contract`). The wire shape is
+/// `{id, outcome, message?}` — a bare machine token plus an optional human-detail
+/// field, split from the older folded `failed: <msg>` string BEFORE the
+/// extension's store publication (the in-repo extension ships atomically with
+/// the binary, so no installed consumer parsed the old form). Once the extension
+/// is store-published, changing this shape needs a version handshake — see the
+/// sharp edge in `crates/pixtuoid/CLAUDE.md`. Pinned by
+/// `outcome_row_json_shape_is_the_raycast_contract` + the envelope test in
+/// `sources_cli.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+// Same rationale as `SourceStatus` below: `additionalProperties: false` so the
+// generated TS type has no index signature and a consumer typo is a `tsc` error.
+#[cfg_attr(test, derive(schemars::JsonSchema), schemars(deny_unknown_fields))]
+pub struct OutcomeRow {
+    /// The registry source id the outcome applies to (e.g. `codex`).
+    pub id: String,
+    /// The BARE outcome token: `connected` | `disconnected` | `no_op` |
+    /// `failed` — a schema ENUM, so the generated TS side is a string-literal
+    /// union (machine-matchable with `===`); human text rides in `message`.
+    pub outcome: WireOutcome,
+    /// Human-readable detail for the row — present exactly when the outcome
+    /// carries any (`failed`), and OMITTED (not `null`) otherwise, so a
+    /// success row stays the minimal `{id, outcome}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl OutcomeRow {
+    /// Map one applied outcome to its wire row: the bare token plus the
+    /// optional human message — the ONE outcome→row authority, so the two
+    /// emitting surfaces (`run_change` / `run_sources_set`) can't drift.
+    pub fn new(id: String, outcome: &ChangeOutcome) -> Self {
+        OutcomeRow {
+            id,
+            outcome: outcome.wire_outcome(),
+            message: outcome.message().map(str::to_string),
         }
     }
 }
@@ -155,8 +249,8 @@ fn connect_target(
             Err(e) => {
                 // Roll the flag back to the prior state so the next launch
                 // doesn't honor a "connected" with no hooks behind it — and an
-                // absent flag rolls back to ABSENT (the migrate default), not
-                // an explicit `false`.
+                // absent flag rolls back to ABSENT (preserving the
+                // `is_first_run` empty-table signal), not an explicit `false`.
                 let restore = match prior {
                     Some(v) => config::save_source_connected(cfg, sid, v),
                     None => config::remove_source_connected(cfg, sid),
@@ -242,19 +336,12 @@ pub fn plan_reconcile(
 /// Declarative apply: make the connected set EXACTLY `desired` (the Raycast
 /// checkbox-form / `sources set` semantics). For each registered source: connect
 /// the newly-desired, disconnect the no-longer-desired, NoOp the rest — reporting
-/// each (a failed item doesn't abort the batch). `has_hooks` is injected so the
-/// CURRENT set is computed the same way the boot seed is (`config::resolve_connected`).
+/// each (a failed item doesn't abort the batch). The CURRENT set is computed the
+/// same way the boot seed is (`config::resolve_connected` — explicit `true`
+/// flags only, pure config read since the 0.12.0 migrate-inference removal).
 pub fn reconcile_to(cfg: &Path, desired: &HashSet<String>) -> Vec<(String, ChangeOutcome)> {
-    reconcile_to_with(cfg, desired, |src| by_source(src).map(install::has_hooks))
-}
-
-pub fn reconcile_to_with(
-    cfg: &Path,
-    desired: &HashSet<String>,
-    has_hooks: impl Fn(&'static str) -> Option<bool>,
-) -> Vec<(String, ChangeOutcome)> {
     let app = config::load(cfg, &mut Vec::new());
-    let current = config::resolve_connected(&app, has_hooks);
+    let current = config::resolve_connected(&app);
     plan_reconcile(&current, desired)
         .into_iter()
         .map(|(sid, action)| (sid.to_string(), apply_one(cfg, sid, action)))
@@ -287,11 +374,12 @@ fn apply_one(cfg: &Path, sid: &'static str, action: Action) -> ChangeOutcome {
 /// Apply an EXPLICIT per-source decision list (the first-run onboarding apply):
 /// connect each `true` id, disconnect each `false` id. Unlike `reconcile_to` (which
 /// is declarative over EVERY registered source and would disconnect the complement),
-/// this touches ONLY the ids passed — so a migrate-defaulted source absent from the
-/// list (e.g. `antigravity`, which is connected-by-default and never appears in
-/// `detect()`) is left exactly as it was, never surprise-disconnected. Each write
-/// makes `[sources]` non-empty, so the first-run gate (`setup::is_first_run`) closes.
-/// Idempotent: connect/disconnect no-op at the install layer when already in state.
+/// this touches ONLY the ids passed — a source absent from the list (e.g.
+/// `antigravity`, which never appears in `detect()`) keeps its existing flag —
+/// or, absent one, the plain disconnected default — never a surprise write.
+/// Each write makes `[sources]` non-empty, so the first-run gate
+/// (`setup::is_first_run`) closes. Idempotent: connect/disconnect no-op at the
+/// install layer when already in state.
 pub fn apply_choices(cfg: &Path, choices: &[(&'static str, bool)]) -> Vec<(String, ChangeOutcome)> {
     choices
         .iter()
@@ -450,7 +538,7 @@ fn status_from_row(r: &ConnectionRow) -> SourceStatus {
 /// onboarding read. Resolves the connected-set the same way the boot seed does.
 pub fn status(cfg: &Path, log: &str) -> Vec<SourceStatus> {
     let app = config::load(cfg, &mut Vec::new());
-    let connected = config::resolve_connected(&app, |src| by_source(src).map(install::has_hooks));
+    let connected = config::resolve_connected(&app);
     build_rows(&connected, log)
         .iter()
         .map(status_from_row)
@@ -547,7 +635,7 @@ mod tests {
     fn connect_target_rolls_the_flag_back_when_install_fails() {
         // Persist succeeds (writable cfg), THEN install_target fails → the flag
         // must roll back to its PRIOR state. From a fresh config that state is
-        // ABSENT (the migrate default decides), not a forced `false`.
+        // ABSENT (keeping the is_first_run signal), not a forced `false`.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("config.toml");
         let err = connect_target(&cfg, "rollbacktest", Some(&FAIL_TARGET), None).unwrap_err();
@@ -556,7 +644,7 @@ mod tests {
         assert_eq!(
             app.sources.get("rollbacktest"),
             None,
-            "a previously-absent flag rolls back to ABSENT (migrate default), not false"
+            "a previously-absent flag rolls back to ABSENT, not false"
         );
     }
 
@@ -583,8 +671,9 @@ mod tests {
 
     #[test]
     fn connect_target_rollback_restores_a_previously_disconnected_flag() {
-        // Explicit prior `false` is restored as `false` (not removed — an
-        // explicit user choice outranks the migrate default).
+        // Explicit prior `false` is restored as `false` (not removed — the
+        // rollback restores the exact pre-attempt state, and removal would
+        // re-open the is_first_run signal for an onboarded user).
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("config.toml");
         config::save_source_connected(&cfg, "rollbacktest", false).unwrap();
@@ -644,14 +733,32 @@ mod tests {
     }
 
     #[test]
+    fn wire_outcome_serializes_as_its_token() {
+        // serde's snake_case rename and the token() table are two spellings of
+        // one contract — pin them equal for every variant.
+        for w in [
+            WireOutcome::Connected,
+            WireOutcome::Disconnected,
+            WireOutcome::NoOp,
+            WireOutcome::Failed,
+        ] {
+            assert_eq!(
+                serde_json::to_value(w).unwrap(),
+                serde_json::Value::String(w.token().to_string())
+            );
+        }
+    }
+
+    #[test]
     fn change_outcome_wire_tokens_are_stable() {
-        assert_eq!(ChangeOutcome::Connected.as_wire(), "connected");
-        assert_eq!(ChangeOutcome::Disconnected.as_wire(), "disconnected");
-        assert_eq!(ChangeOutcome::NoOp.as_wire(), "no_op");
-        assert_eq!(
-            ChangeOutcome::Failed("boom".into()).as_wire(),
-            "failed: boom"
-        );
+        assert_eq!(ChangeOutcome::Connected.wire_token(), "connected");
+        assert_eq!(ChangeOutcome::Disconnected.wire_token(), "disconnected");
+        assert_eq!(ChangeOutcome::NoOp.wire_token(), "no_op");
+        assert_eq!(ChangeOutcome::Failed("boom".into()).wire_token(), "failed");
+        // The human detail rides SEPARATELY (the `message` field) — never
+        // folded into the token.
+        assert_eq!(ChangeOutcome::Failed("boom".into()).message(), Some("boom"));
+        assert_eq!(ChangeOutcome::Connected.message(), None);
     }
 
     #[test]
@@ -668,6 +775,50 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&s).unwrap(),
             r#"{"id":"codex","display_name":"Codex","connected":true,"cli_present":true,"health":null}"#
+        );
+    }
+
+    #[test]
+    fn outcome_row_json_shape_is_the_raycast_contract() {
+        // Pins the exact `{id, outcome, message?}` JSON row `connect`/
+        // `disconnect`/`sources set --json` emit per source: a bare machine
+        // token in `outcome`, the human detail in `message` — present exactly
+        // on failure, OMITTED (not null) on success.
+        let ok = OutcomeRow::new("codex".into(), &ChangeOutcome::Connected);
+        let failed = OutcomeRow::new("cursor".into(), &ChangeOutcome::Failed("boom".into()));
+        assert_eq!(
+            serde_json::to_string(&ok).unwrap(),
+            r#"{"id":"codex","outcome":"connected"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&failed).unwrap(),
+            r#"{"id":"cursor","outcome":"failed","message":"boom"}"#
+        );
+    }
+
+    #[test]
+    fn outcome_row_schema_matches_the_committed_contract() {
+        // The `OutcomeRow` twin of `source_status_schema_matches_the_committed_contract`
+        // below (same regenerate flow: `UPDATE_CONTRACT_SCHEMA=1`, then the raycast
+        // `gen:contract`). Shares the `schema_matches_the_committed_contract`
+        // name suffix so one test filter regenerates both goldens.
+        let schema = schemars::schema_for!(OutcomeRow);
+        let generated = serde_json::to_string_pretty(&schema).unwrap() + "\n";
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../integrations/raycast/contract/outcome-row.schema.json"
+        );
+        if std::env::var_os("UPDATE_CONTRACT_SCHEMA").is_some() {
+            let p = std::path::Path::new(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, &generated).unwrap();
+        }
+        let committed = std::fs::read_to_string(path).unwrap_or_default();
+        assert_eq!(
+            generated, committed,
+            "OutcomeRow schema drifted from the committed contract \
+             (integrations/raycast/contract/outcome-row.schema.json). \
+             Run `just gen-contract`, then regen + commit the raycast .d.ts."
         );
     }
 
@@ -701,18 +852,18 @@ mod tests {
 
     #[test]
     fn reconcile_to_disconnects_the_complement_and_noops_the_rest() {
-        // Drive only the no-target source (antigravity) to avoid agent-config I/O,
-        // and inject has_hooks=Some(false) so every target resolves "not connected"
-        // (NoOp under an empty desired). Pre-set antigravity connected; desired={}
-        // ⇒ antigravity disconnects, all targets NoOp. Deterministic, no real hooks.
+        // Drive only the no-target source (antigravity) to avoid agent-config I/O;
+        // every other source has no flag ⇒ resolves "not connected" (NoOp under an
+        // empty desired — resolve_connected reads only explicit flags since the
+        // 0.12.0 migrate-inference removal, so no install-state injection needed).
+        // Pre-set antigravity connected; desired={} ⇒ antigravity disconnects,
+        // all targets NoOp. Deterministic, no real hooks.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("config.toml");
         connect(&cfg, "antigravity").unwrap(); // flag → true
 
         let outcomes: std::collections::HashMap<_, _> =
-            reconcile_to_with(&cfg, &HashSet::new(), |_| Some(false))
-                .into_iter()
-                .collect();
+            reconcile_to(&cfg, &HashSet::new()).into_iter().collect();
 
         assert_eq!(outcomes["antigravity"], ChangeOutcome::Disconnected);
         assert_eq!(
@@ -728,9 +879,9 @@ mod tests {
     #[test]
     fn apply_choices_writes_only_the_listed_sources() {
         // The onboarding apply is SCOPED to the ids passed — a source absent from
-        // the list is never touched (the "antigravity stays at its migrate default"
-        // property that a declarative reconcile_to would break). Drive only the
-        // no-target source so there's no agent-config I/O.
+        // the list is never touched (the "an unlisted source's flag is never
+        // written" property that a declarative reconcile_to would break). Drive
+        // only the no-target source so there's no agent-config I/O.
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("config.toml");
 
