@@ -7,16 +7,16 @@
 //! them in the order it wants.
 
 mod lighting;
-mod time_of_day;
+mod sky;
 
 // Re-export everything the parent pixel_painter/mod.rs imports.
 pub(super) use lighting::{
     paint_ceiling_pool, paint_clock, paint_corridor_runner, paint_floor_lamp_halo,
     paint_neon_panel, paint_shadow, Ellipse,
 };
-pub(super) use time_of_day::{
-    daylight_floor_overlay, dim_floor_overlay, set_weather_override, sun_on_wall, sunset_strength,
-    time_of_day_look, weather_light, weather_state, TimeOfDayLook, WallSide, Weather,
+pub(super) use sky::{
+    beam_strength, daylight_floor_overlay, dim_floor_overlay, set_weather_override, sun_on_wall,
+    time_of_day_look, weather_state, TimeOfDayLook, WallSide, Weather,
 };
 
 use std::time::SystemTime;
@@ -80,7 +80,7 @@ fn lightning_envelope(since_strike_ms: u64) -> f32 {
 /// splitmix64 (same mixer as `weather_state`) for a well-distributed offset.
 //
 // The two-multiply-xor finalizer is `pixtuoid_core::id::splitmix64`, open-coded
-// here (and in `time_of_day::weather_state` + `ambient::dust_mote_positions`) by
+// here (and in `sky::weather_state` + `ambient::dust_mote_positions`) by
 // DELIBERATE choice: each is an independent noise source over a disjoint input
 // domain (no two sites need equal output — see the scene CLAUDE.md sharp edge).
 // The canonical fn is `#[doc(hidden)] pub` (off the semver surface but shared
@@ -268,6 +268,120 @@ pub(in crate::pixel_painter) fn window_spill_columns(layout: &Layout) -> Vec<Sun
     out
 }
 
+/// One frame's celestial disc (sun by day, moon by night), arcing across the
+/// window wall. Computed ONCE per frame in `paint_floor_and_walls` — it needs
+/// only the emitter + atmosphere + buffer geometry, no per-window state — and
+/// passed BY VALUE (it's `Copy`) into every window. `cx` is an ABSOLUTE
+/// buffer x (not a per-window offset), so the same body paints only in
+/// whichever window it currently sits over — one disc across the whole wall,
+/// not one per window.
+#[derive(Clone, Copy)]
+struct Disc {
+    cx: f32,
+    cy: f32,
+    r: f32,
+    core: Rgb,
+    glow: Rgb,
+    vis: f32,
+    /// Illuminated fraction (0 new..1 full). `1.0` for the sun (always a full
+    /// disc); `sky::moon_phase(now)` for the moon, driving the elliptical
+    /// terminator in the disc-core render (see `paint_floor_to_ceiling_window`).
+    lit_frac: f32,
+}
+
+const DISC_RADIUS_PX: f32 = 5.0;
+const GLOW_PX: f32 = 3.0;
+const GLOW_ALPHA: f32 = 0.55;
+/// The moon's dark (un-illuminated) limb, blended in over the terminator —
+/// near the night sky's own base color so the shadowed side recedes into the
+/// backdrop instead of reading as a hard-edged bite out of the disc.
+const MOON_SHADOW: Rgb = Rgb {
+    r: 30,
+    g: 34,
+    b: 52,
+};
+/// Left edge of the first window (mirrors the `x = 3` start of the window loop
+/// in `paint_floor_and_walls`). The disc's `azimuth` maps onto the span
+/// between the first PAINTED pane's left edge and the last PAINTED pane's
+/// right edge (derived in `compute_disc` from this SAME `x=3,
+/// stride=WINDOW_W+WINDOW_GAP` tiling), inset by `DISC_RADIUS_PX` at both
+/// ends — NOT a linear `buf_w - WINDOW_W` bound (only coincidentally lands
+/// inside a window at some widths) and NOT the pane CENTERS (which are
+/// bit-identical to the mullion columns, `dx == w/2`, so the old center-to-
+/// center span perfectly bisected the disc at its most visible low-altitude
+/// moments, and froze `cx` on that mullion whenever only one window is
+/// painted). The inset keeps the disc fully inside the glass at the arc
+/// extremes, its low-altitude ends landing near the outer frame edges rather
+/// than dead-centre on a mullion, and still lets a single-window buffer sweep.
+const FIRST_WINDOW_X: f32 = 3.0;
+// "Real low window": the horizon sits low in the band, and the apex climbs
+// high enough to leave the glass entirely (clipped) rather than the disc
+// tracking the full window height.
+const HORIZON_FRAC: f32 = 0.55; // horizon_y = top_wall_h * HORIZON_FRAC
+const ARC_RISE_FRAC: f32 = 0.80; // apex lifts top_wall_h * ARC_RISE_FRAC above horizon
+/// Below this atmo `disc` visibility, thick cloud swallows the disc entirely
+/// (no point painting a body no one can see through the murk).
+const MIN_DISC_VIS: f32 = 0.08;
+
+/// This frame's disc placement, or `None` under thick cloud (`atmo(weather).disc`
+/// below [`MIN_DISC_VIS`]). `cx`/`cy` are absolute buffer coordinates derived
+/// from the SAME `sky::emitter` arc that drives `time_of_day_look`'s spill lean
+/// and `sun_on_wall`'s wall spot — so the disc's side, the floor-spill lean, and
+/// the wall sun-spot can never disagree (all three read one `azimuth`).
+fn compute_disc(
+    now: SystemTime,
+    weather: Weather,
+    buf_w: u16,
+    top_wall_h: u16,
+    theme: &Theme,
+) -> Option<Disc> {
+    let sky = sky::emitter(now);
+    let vis = sky::atmo(weather).disc;
+    if vis < MIN_DISC_VIS {
+        return None; // thick cloud swallows the disc
+    }
+    // Sweep the disc across the windowed region [first pane, last pane], inset by
+    // the radius so it stays fully inside the glass at the extremes and its
+    // low-altitude arc ends land near the outer frame edges rather than pinned
+    // dead-centre on a mullion (which perfectly bisected the disc at its most
+    // visible moment; a single-window buffer also froze cx on that mullion).
+    // `k_max` (the last PAINTED window's index) is derived from the same
+    // `x=3, stride=WINDOW_W+WINDOW_GAP, while x+WINDOW_W+2<=buf_w` tiling the
+    // window loop uses, for ANY buffer width (a linear `buf_w - WINDOW_W`
+    // bound only coincidentally works at buf_w=96).
+    let stride = (WINDOW_W + WINDOW_GAP) as f32;
+    let k_max = (((buf_w as f32) - WINDOW_W as f32 - 5.0) / stride)
+        .floor()
+        .max(0.0);
+    let last_window_right = FIRST_WINDOW_X + k_max * stride + WINDOW_W as f32;
+    let span_left = FIRST_WINDOW_X + DISC_RADIUS_PX;
+    let span_right = (last_window_right - DISC_RADIUS_PX).max(span_left);
+    let cx = span_left + sky.azimuth * (span_right - span_left);
+    let horizon_y = top_wall_h as f32 * HORIZON_FRAC;
+    let cy = horizon_y - sky.altitude * (top_wall_h as f32 * ARC_RISE_FRAC);
+    // glow reuses the SAME hue as core — the soft halo is a lower-alpha ring
+    // of the same color, so each theme's disc reads as one coherent body.
+    let (core, glow) = match sky.body {
+        sky::Body::Sun => (theme.lighting.sun_core, theme.lighting.sun_core),
+        sky::Body::Moon => (theme.lighting.moon_core, theme.lighting.moon_core),
+    };
+    // The sun is always a full disc; the moon's illuminated fraction drives
+    // the crescent/gibbous terminator in the disc-core render.
+    let lit_frac = match sky.body {
+        sky::Body::Sun => 1.0,
+        sky::Body::Moon => sky::moon_phase(now),
+    };
+    Some(Disc {
+        cx,
+        cy,
+        r: DISC_RADIUS_PX,
+        core,
+        glow,
+        vis,
+        lit_frac,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_floor_and_walls(
     buf: &mut RgbBuffer,
@@ -325,6 +439,10 @@ pub(super) fn paint_floor_and_walls(
     // a Vec alloc) inside every window. (The per-window skyline-height math —
     // alt_shrink/min_bh/max_bh — stays in the fn: it uses `altitude`.)
     let (lit_colors, building, sky_row) = window_glass_invariants(window_h, look, theme);
+    // Computed once per frame (not per window) and passed by value — see
+    // `compute_disc`'s doc comment for why `cx` is absolute across the wall.
+    let disc = compute_disc(now, weather, buf_w, top_wall_h, theme);
+    let star_strength = night_star_strength(now, look.darkness, weather);
     let mut x = 3u16;
     let mut idx: u32 = 0;
     while x + WINDOW_W + 2 <= buf_w {
@@ -334,6 +452,15 @@ pub(super) fn paint_floor_and_walls(
         let overlaps_door =
             skip_window_x_range.is_some_and(|(dx0, dx1)| x < dx1 && x + WINDOW_W > dx0);
         if !overlaps_door {
+            // The disc paints ONLY in the window its centre currently sits over.
+            // Without this gate, a disc whose `cx` lands near an inter-window gap
+            // is wide enough (radius+glow) to reach the glass of BOTH neighbours,
+            // so the same sun/moon rendered in two panes at once — bleeding
+            // through the solid wall pillar (frame + WINDOW_GAP + frame) between
+            // them. Restricting to the containing window makes that pillar occlude
+            // the body correctly: it hides behind the pillar between panes and
+            // re-emerges in the next window, "one disc across the wall".
+            let win_disc = disc.filter(|d| d.cx >= x as f32 && d.cx < (x + WINDOW_W) as f32);
             paint_floor_to_ceiling_window(
                 buf,
                 x,
@@ -341,7 +468,6 @@ pub(super) fn paint_floor_and_walls(
                 WINDOW_W,
                 window_h,
                 window_frame,
-                look,
                 idx as u16,
                 now,
                 weather,
@@ -349,6 +475,8 @@ pub(super) fn paint_floor_and_walls(
                 &lit_colors,
                 building,
                 &sky_row,
+                win_disc,
+                star_strength,
             );
             // look.spill_strength already includes atmospheric attenuation
             // (time_of_day_look multiplies by atmo.intensity), so heavy
@@ -406,6 +534,67 @@ fn city_dot_twinkle(window_idx: u16, dx: u16, dy: u16, now: SystemTime) -> bool 
     let hash = dot_seed
         .wrapping_add(phase)
         .wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    (hash % 10) < 7
+}
+
+/// Roughly 1-in-`STAR_SPARSITY` sky pixels host a star — prime so the
+/// hash-modulo grid can't line up into a visible lattice.
+const STAR_SPARSITY: u64 = 47;
+/// Below this `star_strength` (darkness × clear-sky product), no star paints
+/// — keeps the field invisible by day and under thick cloud/fog.
+const STAR_MIN: f32 = 0.15;
+/// Stars stay in the top fraction of the glass, clear of any building
+/// silhouette: `paint_floor_to_ceiling_window`'s `max_bh` tops out at 50% of
+/// `glass_h`, so 0.45 leaves comfortable margin above the tallest roofline.
+const STAR_SKY_BAND_FRAC: f32 = 0.45;
+const STAR_COLOR: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
+/// Cap on the star blend alpha at maximal `star_strength` — a faint glimmer,
+/// not a bright dot (contrast the city windows' full-opacity `dot_color`).
+const STAR_ALPHA_MAX: f32 = 0.55;
+/// Per-star twinkle cycle length range (ms) — mirrors `city_dot_twinkle`'s
+/// per-dot cadence idiom (each star's own cycle length comes from a hash of
+/// its position), staggered per star so the field doesn't blink in unison.
+const STAR_TWINKLE_CYCLE_BASE_MS: u64 = 2000;
+const STAR_TWINKLE_CYCLE_SPAN_MS: u64 = 3000;
+
+/// How brightly the star field shows this frame. Stars only appear once the sun
+/// is BELOW the horizon (night = the emitter is the moon): dawn/dusk twilight
+/// has a high `darkness` (the sun is up but low, so `interior` is small) yet the
+/// brightening/dimming sky washes stars out — gating on `darkness` alone wrongly
+/// paints a full starfield at ~7am. At night it's `darkness × clear-sky` (the
+/// same "can you see through the sky" signal the disc rides), so overcast/fog/
+/// storm (low `atmo.disc`) hide the stars a clear night shows.
+fn night_star_strength(now: SystemTime, darkness: f32, weather: Weather) -> f32 {
+    match sky::emitter(now).body {
+        sky::Body::Moon => (darkness * sky::atmo(weather).disc).clamp(0.0, 1.0),
+        sky::Body::Sun => 0.0,
+    }
+}
+
+/// Deterministic sparse star field: ~1-in-`STAR_SPARSITY` sky pixels host a
+/// star. Hashed on the ABSOLUTE buffer `(px, py)` (not window-relative) so
+/// the field is stable across frames and reads as one continuous sky rather
+/// than a per-window reseed.
+fn star_exists(px: u16, py: u16) -> bool {
+    let mut h = (px as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    h ^= (py as u64).wrapping_mul(0xc6a4_a793_5bd1_e995);
+    h = (h ^ (h >> 17)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h.is_multiple_of(STAR_SPARSITY)
+}
+
+/// Per-star twinkle: the same idiom as `city_dot_twinkle` (a hashed per-cell
+/// cycle length, rerolled on/off each cycle) but keyed on the absolute sky
+/// position instead of the window-relative building-dot grid.
+fn star_twinkle(px: u16, py: u16, now: SystemTime) -> bool {
+    let now_ms = epoch_ms(now);
+    let seed = (px as u64).wrapping_mul(131) ^ (py as u64).wrapping_mul(521);
+    let cycle_ms = STAR_TWINKLE_CYCLE_BASE_MS + (seed % STAR_TWINKLE_CYCLE_SPAN_MS);
+    let phase = now_ms / cycle_ms;
+    let hash = seed.wrapping_add(phase).wrapping_mul(0x9e37_79b9_7f4a_7c15);
     (hash % 10) < 7
 }
 
@@ -611,6 +800,20 @@ fn window_glass_invariants(
     (lit_colors, building, sky_row)
 }
 
+/// Golden-hour blaze strength on the city silhouette — SUN-only: a low moon
+/// must never paint an orange cast, however warm/lit it computes (a real
+/// moon's own altitude/luminance are already too low to matter, but the gate
+/// is absolute, not incidental). Warmth peaks near the horizon, scaled by the
+/// emitter's own luminance (a dim sunrise/sunset blazes less than a bright
+/// one) and the atmosphere's disc visibility (clouds hide the source, so no
+/// blaze without a visible disc).
+fn golden_hour_blaze(sky: &sky::SkyState, a: &sky::Atmo) -> f32 {
+    match sky.body {
+        sky::Body::Sun => (sky.warmth * sky.emitter_lum * a.disc).clamp(0.0, 1.0),
+        sky::Body::Moon => 0.0,
+    }
+}
+
 /// Floor-to-ceiling window with frame, mullion, and a procedural city view
 /// inside the glass. Sky gradient at top blends with time-of-day glass
 /// colors; the lower portion shows building silhouettes whose "windows"
@@ -626,7 +829,6 @@ fn paint_floor_to_ceiling_window(
     w: u16,
     h: u16,
     frame: Rgb,
-    look: &TimeOfDayLook,
     window_idx: u16,
     now: SystemTime,
     weather: Weather,
@@ -634,6 +836,8 @@ fn paint_floor_to_ceiling_window(
     lit_colors: &[Rgb; 3],
     building: Rgb,
     sky_row: &[Rgb],
+    disc: Option<Disc>,
+    star_strength: f32,
 ) {
     // Skyline silhouette as a 0..15 PATTERN; the actual pixel height is
     // computed per-window so the skyline auto-scales with the glass
@@ -690,7 +894,46 @@ fn paint_floor_to_ceiling_window(
                     buf.put(px, py, building);
                 }
             } else {
-                buf.put(px, py, sky_row[glass_dy as usize]);
+                let mut col = sky_row[glass_dy as usize];
+                // Stars paint into the sky BEFORE the disc, so an overlapping
+                // disc pixel always wins (painted next, below).
+                if star_strength > STAR_MIN
+                    && (glass_dy as f32) < glass_h as f32 * STAR_SKY_BAND_FRAC
+                    && star_exists(px, py)
+                    && star_twinkle(px, py, now)
+                {
+                    col = blend_rgb(col, STAR_COLOR, star_strength * STAR_ALPHA_MAX);
+                }
+                if let Some(d) = disc {
+                    let dx = px as f32 - d.cx;
+                    let dy = py as f32 - d.cy;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist <= d.r {
+                        // Sun (lit_frac == 1.0) skips the terminator entirely
+                        // (always lit); the moon darkens the un-illuminated
+                        // side via the classic elliptical terminator.
+                        let target = if d.lit_frac >= 1.0 {
+                            d.core
+                        } else {
+                            let terminator_x =
+                                (1.0 - 2.0 * d.lit_frac) * (d.r * d.r - dy * dy).max(0.0).sqrt();
+                            if dx >= terminator_x {
+                                d.core
+                            } else {
+                                MOON_SHADOW
+                            }
+                        };
+                        col = blend_rgb(col, target, d.vis);
+                    } else if dist <= d.r + GLOW_PX {
+                        let falloff = 1.0 - (dist - d.r) / GLOW_PX;
+                        // Scale by `lit_frac` so the glow tracks the illuminated
+                        // fraction: the sun (lit_frac=1.0) is unaffected, but a
+                        // new moon's near-dark core no longer casts a full-bright
+                        // halo — the ring dims in step with the phase.
+                        col = blend_rgb(col, d.glow, d.vis * falloff * GLOW_ALPHA * d.lit_frac);
+                    }
+                }
+                buf.put(px, py, col);
             }
         }
     }
@@ -911,20 +1154,9 @@ fn paint_floor_to_ceiling_window(
         Weather::Clear => {}
     }
 
-    let raw_sunset = sunset_strength(now);
-    let twilight_now = look.twilight;
-    // Golden-hour blaze on the city silhouette is attenuated by atmo —
-    // clouds scatter the direct warm light away (Storm at sunset reaches
-    // only ~25% of Clear's strength), Smog amplifies the warm cast by 1.4×
-    // for the sodium-lit "Blade Runner" sunset.
-    let atmo = weather_light(weather);
-    let smog_boost = if matches!(weather, Weather::Smog) {
-        1.4
-    } else {
-        1.0
-    };
-    let sunset =
-        (raw_sunset * (1.0 - twilight_now * 0.8) * atmo.intensity * smog_boost).clamp(0.0, 1.0);
+    let sky_now = sky::emitter(now);
+    let a = sky::atmo(weather);
+    let sunset = golden_hour_blaze(&sky_now, &a);
     if sunset > 0.05 {
         let min_building_h = (glass_h / 5).max(3);
         for dy in 1..h.saturating_sub(1) {
@@ -956,6 +1188,39 @@ fn paint_floor_to_ceiling_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Task 4's headline invariant for the golden-hour blaze: it must be
+    // SUN-only. Uses hand-built SkyState/Atmo values (not real clock times) so
+    // even a maximally warm/lit MOON — which a real moon's low altitude/luminance
+    // could never actually produce — still proves the gate is absolute.
+    #[test]
+    fn golden_hour_blaze_is_sun_only() {
+        let full_atmo = sky::Atmo {
+            direct: 1.0,
+            diffuse: 1.0,
+            disc: 1.0,
+        };
+        let moon = sky::SkyState {
+            body: sky::Body::Moon,
+            altitude: 1.0,
+            azimuth: 0.5,
+            warmth: 1.0,
+            emitter_lum: 1.0,
+        };
+        assert_eq!(
+            golden_hour_blaze(&moon, &full_atmo),
+            0.0,
+            "a moon must never blaze, even at maximal warmth/luminance"
+        );
+        let sun = sky::SkyState {
+            body: sky::Body::Sun,
+            ..moon
+        };
+        assert!(
+            golden_hour_blaze(&sun, &full_atmo) > 0.9,
+            "a maximal sun should blaze near-full"
+        );
+    }
 
     #[test]
     fn weather_floor_tint_differs_by_variant() {
@@ -1132,7 +1397,6 @@ mod tests {
                 WINDOW_W,
                 30,
                 theme.surface.window_frame,
-                &look,
                 0,
                 now,
                 Weather::Storm,
@@ -1140,6 +1404,8 @@ mod tests {
                 &lit_colors,
                 building,
                 &sky_row,
+                None,
+                0.0,
             );
             // Sum luminance over the glass interior (inside the 1px frame).
             let mut sum = 0u64;
@@ -1181,7 +1447,6 @@ mod tests {
             spill_strength: 0.8,
             spill_slant: 0.0,
             darkness: 0.2,
-            twilight: 0.0,
         };
         let mut buf = RgbBuffer::filled(buf_w, buf_h, Rgb { r: 5, g: 5, b: 5 });
         paint_floor_and_walls(
@@ -1193,6 +1458,505 @@ mod tests {
             buf.get(0, 0),
             Rgb { r: 5, g: 5, b: 5 },
             "the wall band should still paint in the in-bounds rows"
+        );
+    }
+
+    /// Build a `SystemTime` for local `h:mi` on a fixed date — mirrors
+    /// `sky.rs`'s private `at_hour`, TZ-independent since every derivation
+    /// (`sky::emitter`/`weather_state`) decodes back into `chrono::Local`.
+    fn at_local(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> SystemTime {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, mo, d, h, mi, 0)
+            .single()
+            .expect("local time should be unambiguous")
+            .into()
+    }
+
+    /// Render a full office wall (via the real `paint_floor_and_walls` path —
+    /// exercises `compute_disc` + the sky-branch blend exactly as production
+    /// does) at a forced January `day` + local `hour` + weather. Resets the
+    /// weather override on drop so a mid-test panic can't leak into a
+    /// sibling test's thread.
+    fn render_office_on(
+        day: u32,
+        hour: u32,
+        weather: Weather,
+        buf_w: u16,
+        top_wall_h: u16,
+    ) -> RgbBuffer {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_weather_override(None);
+            }
+        }
+        let _reset = Reset;
+        set_weather_override(Some(weather));
+        let theme = crate::theme::theme_by_name("normal").expect("theme");
+        let now = at_local(2026, 1, day, hour, 0);
+        let look = time_of_day_look(now, theme);
+        let buf_h = top_wall_h + 4;
+        let mut buf = RgbBuffer::filled(buf_w, buf_h, Rgb { r: 4, g: 4, b: 6 });
+        paint_floor_and_walls(
+            &mut buf, buf_w, buf_h, now, &look, top_wall_h, None, theme, 0.0,
+        );
+        buf
+    }
+
+    /// `render_office_on` pinned to January 1st — the fixed date every
+    /// existing hour/weather-only test uses (the moon-phase tests below are
+    /// the ones that vary the day).
+    fn render_office_at(hour: u32, weather: Weather, buf_w: u16, top_wall_h: u16) -> RgbBuffer {
+        render_office_on(1, hour, weather, buf_w, top_wall_h)
+    }
+
+    /// Count "warm bright" pixels (the sun disc's signature — its core color
+    /// fully replaces the sky pixel at full atmo visibility) in the sky-only
+    /// top third of the window band. Restricted to the top third (not the
+    /// full `1..top_wall_h`) so it can never pick up the SKYLINE's own lit
+    /// city-window dots (`theme.office.city_lit_windows`), which live in the
+    /// glass's bottom half regardless of time of day and would otherwise
+    /// false-positive as a "disc".
+    fn count_warm_bright(buf: &RgbBuffer, top_wall_h: u16) -> usize {
+        (1..(top_wall_h / 3).max(2))
+            .flat_map(|y| (0..buf.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let p = buf.get(x, y);
+                p.r > 200 && p.r > p.b.saturating_add(40)
+            })
+            .count()
+    }
+
+    /// Count "cool bright" pixels (the moon disc's signature) in the same
+    /// sky-only region. Per-theme `moon_core` values sit closer to neutral
+    /// white than each theme's warm `sun_core`, so the blue-over-red margin
+    /// is smaller than `count_warm_bright`'s (10 vs 40) — still well clear of
+    /// the base night-sky gradient (`theme.lighting.night_sky_a/b`), whose
+    /// blue channel never approaches 200.
+    fn count_cool_bright(buf: &RgbBuffer, top_wall_h: u16) -> usize {
+        (1..(top_wall_h / 3).max(2))
+            .flat_map(|y| (0..buf.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let p = buf.get(x, y);
+                p.b > 200 && p.b > p.r.saturating_add(10)
+            })
+            .count()
+    }
+
+    /// Count faint-white STAR pixels in the same sky-only top-third band as
+    /// `count_warm_bright`/`count_cool_bright` (so it can't pick up the
+    /// skyline's lit city-window dots). The base night sky (`night_sky_a/b`,
+    /// (18,26,52)/(28,36,70)) never gets close to this threshold on its own —
+    /// only a `STAR_COLOR` blend lifts a pixel this bright.
+    fn count_faint_white(buf: &RgbBuffer, top_wall_h: u16) -> usize {
+        (1..(top_wall_h / 3).max(2))
+            .flat_map(|y| (0..buf.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let p = buf.get(x, y);
+                p.r > 90 && p.g > 90 && p.b > 90
+            })
+            .count()
+    }
+
+    #[test]
+    fn disc_appears_low_in_the_sky_at_a_low_sun_hour() {
+        // 07:00: the sun sits low (altitude ≈0.41, well under the
+        // HORIZON_FRAC/ARC_RISE_FRAC ≈0.69 clip threshold), so its disc
+        // lands inside the glass rather than climbing off the top.
+        let buf_w = 96u16;
+        let top_wall_h = 40u16;
+        let clear = render_office_at(7, Weather::Clear, buf_w, top_wall_h);
+        let overcast = render_office_at(7, Weather::Overcast, buf_w, top_wall_h);
+        let clear_n = count_warm_bright(&clear, top_wall_h);
+        let overcast_n = count_warm_bright(&overcast, top_wall_h);
+        assert!(
+            clear_n >= 3,
+            "a warm disc should show at a low clear sun hour, got {clear_n} bright px"
+        );
+        assert!(
+            clear_n > overcast_n,
+            "overcast (atmo disc visibility below MIN_DISC_VIS) should hide the \
+             disc clear shows: clear={clear_n} overcast={overcast_n}"
+        );
+    }
+
+    #[test]
+    fn rain_hides_the_disc_like_overcast() {
+        // Thick cloud hides the disc UNIFORMLY: Rain's disc channel (0.05,
+        // same as Overcast/Storm) must hide it entirely too, not just dim it
+        // — regression guard for the old 0.20 value that let Rain out-show
+        // Overcast.
+        let buf_w = 96u16;
+        let top_wall_h = 40u16;
+        let clear = render_office_at(7, Weather::Clear, buf_w, top_wall_h);
+        let rain = render_office_at(7, Weather::Rain, buf_w, top_wall_h);
+        let overcast = render_office_at(7, Weather::Overcast, buf_w, top_wall_h);
+        let clear_n = count_warm_bright(&clear, top_wall_h);
+        let rain_n = count_warm_bright(&rain, top_wall_h);
+        let overcast_n = count_warm_bright(&overcast, top_wall_h);
+        assert!(
+            clear_n >= 3,
+            "clear should show a disc at a low sun hour, got {clear_n}"
+        );
+        assert_eq!(
+            rain_n, 0,
+            "rain should hide the disc entirely, like overcast, got {rain_n}"
+        );
+        assert_eq!(
+            overcast_n, 0,
+            "overcast should hide the disc entirely, got {overcast_n}"
+        );
+    }
+
+    #[test]
+    fn disc_clips_above_the_glass_at_the_arc_apex() {
+        // Hold `top_wall_h` CONSTANT and vary only the hour, so the only
+        // difference between the two renders is the sun's altitude:
+        // `compute_disc`'s `cy` is `top_wall_h * (HORIZON_FRAC -
+        // altitude*ARC_RISE_FRAC)`, and at the apex (12:00, altitude ≈0.99)
+        // the bracket is solidly negative — the disc has climbed entirely
+        // above the glass, regardless of `top_wall_h`'s size ("real low
+        // window": the apex ALWAYS clips, by construction).
+        let buf_w = 96u16;
+        let top_wall_h = 40u16; // same height for both renders — only the HOUR varies
+        let low = render_office_at(7, Weather::Clear, buf_w, top_wall_h); // altitude ~0.41, in-glass
+        let apex = render_office_at(12, Weather::Clear, buf_w, top_wall_h); // altitude ~0.99, clipped
+        let low_n = count_warm_bright(&low, top_wall_h);
+        let apex_n = count_warm_bright(&apex, top_wall_h);
+        assert!(low_n >= 3, "low sun should show a disc: {low_n}");
+        assert_eq!(
+            apex_n, 0,
+            "the apex disc must clip entirely above the glass: {apex_n}"
+        );
+    }
+
+    #[test]
+    fn short_window_apex_does_not_panic() {
+        // A SHORT window at the apex shrinks `window_h`/`glass_h` to their
+        // floor while the disc's `cy` is solidly negative — must not panic.
+        let _ = render_office_at(12, Weather::Clear, 96, 10);
+    }
+
+    #[test]
+    fn disc_lands_in_a_window_never_on_the_wall_margin() {
+        // Regression guard for the original wall-margin-vanish bug (the OLD
+        // linear `cx` overshot the last painted pane onto blank wall). Now that
+        // `compute_disc` maps azimuth across the real tiled span AND the disc is
+        // gated to the window its centre is over, the disc can legitimately hide
+        // behind an inter-window pillar at some hours — so it is NOT visible at
+        // every hour. Across a sweep of low-sun hours it must, for every buffer
+        // width: (a) appear inside a real window at least once (not perpetually
+        // lost), and (b) NEVER paint a pixel past the last painted window (the
+        // wall margin — the bug this guards).
+        let top_wall_h = 40u16;
+        let stride = (WINDOW_W + WINDOW_GAP) as f32;
+        for buf_w in [76u16, 96, 120, 150, 192, 220, 300] {
+            // Last painted window's right edge (mirrors compute_disc's tiling).
+            let k_max = (((buf_w as f32) - WINDOW_W as f32 - 5.0) / stride).floor();
+            let last_right = (3.0 + k_max.max(0.0) * stride + WINDOW_W as f32) as u16;
+            let mut seen_in_a_window = false;
+            for h in [5u32, 6, 7, 17, 18, 19] {
+                let buf = render_office_at(h, Weather::Clear, buf_w, top_wall_h);
+                for y in 1..(top_wall_h / 3).max(2) {
+                    for x in 0..buf.width() {
+                        let p = buf.get(x, y);
+                        if p.r > 240 && p.r as i16 - p.b as i16 > 40 {
+                            assert!(
+                                x < last_right,
+                                "buf_w={buf_w} h={h}: disc pixel at x={x} is past the \
+                                 last window (wall margin; last right edge {last_right})"
+                            );
+                            seen_in_a_window = true;
+                        }
+                    }
+                }
+            }
+            assert!(
+                seen_in_a_window,
+                "buf_w={buf_w}: the disc never appeared in a window across the low-sun sweep"
+            );
+        }
+    }
+
+    #[test]
+    fn disc_sweeps_across_a_single_window_buffer() {
+        // Regression guard for the old center-to-center mapping: with only
+        // ONE window painted, `first_center == last_center` (both the same
+        // window's centre), so `cx` was CONSTANT regardless of azimuth — the
+        // disc froze on the shared mullion column instead of sweeping. The
+        // new inset-span mapping must still sweep even on a single-window
+        // buffer. buf_w=40 paints exactly one window (WINDOW_W=22 + a margin
+        // too narrow for a second 22+3px pane).
+        let buf_w = 40u16;
+        let top_wall_h = 40u16;
+        let morning = render_office_at(7, Weather::Clear, buf_w, top_wall_h);
+        let evening = render_office_at(18, Weather::Clear, buf_w, top_wall_h);
+        let warm_center_x = |buf: &RgbBuffer| -> f32 {
+            let mut sum = 0u32;
+            let mut count = 0u32;
+            for y in 1..(top_wall_h / 3).max(2) {
+                for x in 0..buf.width() {
+                    let p = buf.get(x, y);
+                    if p.r > 200 && p.r > p.b.saturating_add(40) {
+                        sum += x as u32;
+                        count += 1;
+                    }
+                }
+            }
+            assert!(count > 0, "expected a warm disc to render in this buffer");
+            sum as f32 / count as f32
+        };
+        let morning_x = warm_center_x(&morning);
+        let evening_x = warm_center_x(&evening);
+        assert!(
+            (morning_x - evening_x).abs() > 1.0,
+            "the disc must sweep across a single-window buffer, not freeze on \
+             the mullion: morning_x={morning_x} evening_x={evening_x}"
+        );
+    }
+
+    #[test]
+    fn moon_disc_shows_at_night() {
+        // 21:00: one hour past dusk, the moon's night-arc altitude is still
+        // low (≈0.59, under the clip threshold) — unlike the small hours
+        // (00:00-02:00), which sit near the night arc's OWN apex (the
+        // dusk-to-dawn span's midpoint) and clip exactly like a midday sun.
+        let buf_w = 96u16;
+        let top_wall_h = 40u16;
+        let clear = render_office_at(21, Weather::Clear, buf_w, top_wall_h);
+        let overcast = render_office_at(21, Weather::Overcast, buf_w, top_wall_h);
+        let clear_n = count_cool_bright(&clear, top_wall_h);
+        let overcast_n = count_cool_bright(&overcast, top_wall_h);
+        assert!(
+            clear_n >= 3,
+            "a cool moon disc should show at a clear night hour, got {clear_n} bright px"
+        );
+        assert!(
+            clear_n > overcast_n,
+            "overcast should hide the moon disc clear shows: \
+             clear={clear_n} overcast={overcast_n}"
+        );
+    }
+
+    #[test]
+    fn stars_appear_on_a_clear_night_and_vanish_under_overcast() {
+        // 02:00: deep night, near the moon's own night-arc apex, so its disc
+        // clips (near-)entirely above the glass (see `moon_disc_shows_at_night`'s
+        // doc comment on why THAT test uses 21:00 instead) — the only bright
+        // thing left to find in the upper sky band is a star.
+        let buf_w = 96u16;
+        let top_wall_h = 40u16;
+        let clear = render_office_at(2, Weather::Clear, buf_w, top_wall_h);
+        let overcast = render_office_at(2, Weather::Overcast, buf_w, top_wall_h);
+        let clear_n = count_faint_white(&clear, top_wall_h);
+        let overcast_n = count_faint_white(&overcast, top_wall_h);
+        assert!(
+            clear_n >= 3,
+            "a clear night should show some stars in the upper sky, got {clear_n}"
+        );
+        assert!(
+            clear_n > overcast_n,
+            "overcast (atmo.disc below STAR_MIN once multiplied by darkness) \
+             should hide the stars a clear sky shows: clear={clear_n} overcast={overcast_n}"
+        );
+    }
+
+    #[test]
+    fn stars_gate_on_night_not_darkness_alone() {
+        // The star gate must key on the sun being BELOW the horizon (night), not
+        // on `darkness`. At 07:00 the sun is up but low, so a HIGH darkness (0.6)
+        // is passed — yet stars must be OFF (else a full field wrongly shows at
+        // dawn). Counting rendered pixels can't test this (the pale dawn sky is
+        // itself "faint-white"), so assert the pure gate directly.
+        let at = |h: u32| at_local(2026, 1, 1, h, 0);
+        // Dawn: sun up (emitter is the Sun) → no stars regardless of darkness.
+        assert_eq!(
+            night_star_strength(at(7), 0.6, Weather::Clear),
+            0.0,
+            "no stars at 7am while the sun is up"
+        );
+        // Deep night, clear: sun down (emitter is the Moon) → stars visible.
+        assert!(
+            night_star_strength(at(2), 0.9, Weather::Clear) > STAR_MIN,
+            "a clear night should light the stars"
+        );
+        // Night but overcast: the clear-sky factor (atmo.disc≈0.05) drops it
+        // below STAR_MIN → the thick cloud hides the stars.
+        assert!(
+            night_star_strength(at(2), 0.9, Weather::Overcast) < STAR_MIN,
+            "overcast should hide the stars even at night"
+        );
+    }
+
+    #[test]
+    fn disc_never_bleeds_across_a_window_pillar() {
+        // Physics-audit repro: a disc whose `cx` lands near an inter-window gap
+        // is wide enough (radius + glow) to reach the glass on BOTH sides of the
+        // solid wall pillar (frame + WINDOW_GAP + frame). Before the per-window
+        // gate it painted in both panes at once — the sun/moon showing THROUGH a
+        // wall. The disc must light at most ONE window at any instant. A wide
+        // buffer has many internal gaps; sweep the low-sun hours so `cx` passes
+        // over one.
+        let buf_w = 280u16;
+        let top_wall_h = 40u16;
+        let stride = (WINDOW_W + WINDOW_GAP) as i32;
+        for h in [5u32, 6, 7, 17, 18, 19] {
+            let buf = render_office_at(h, Weather::Clear, buf_w, top_wall_h);
+            let mut wins = std::collections::HashSet::new();
+            // Upper sky band only (top third) so the skyline's own lit city dots
+            // can't masquerade as disc-core pixels.
+            for y in 1..(top_wall_h / 3).max(2) {
+                for x in 0..buf.width() {
+                    let p = buf.get(x, y);
+                    if !(p.r > 240 && p.r as i16 - p.b as i16 > 40) {
+                        continue;
+                    }
+                    let rel = x as i32 - 3;
+                    if rel < 0 {
+                        continue;
+                    }
+                    if rel % stride < WINDOW_W as i32 {
+                        wins.insert(rel / stride);
+                    }
+                }
+            }
+            assert!(
+                wins.len() <= 1,
+                "at {h}:00 the disc lit {} windows {:?} — it bled across a wall pillar",
+                wins.len(),
+                wins
+            );
+        }
+    }
+
+    #[test]
+    fn crescent_moon_leaves_the_dark_limb_unlit() {
+        // At 21:00 the moon disc sits low & in-glass at FULL atmo visibility
+        // under Clear (`vis == atmo(Clear).disc == 1.0`), so every
+        // disc-interior pixel becomes EXACTLY `theme.lighting.moon_core` (lit)
+        // or EXACTLY `MOON_SHADOW` (the dark limb) — no partial blend to
+        // muddy the count. The disc's (cx, cy, r) depend only on the hour
+        // (not the date), so one `compute_disc` call gives the shared
+        // bounding box for every day.
+        let buf_w = 96u16;
+        let top_wall_h = 40u16;
+        let theme = crate::theme::theme_by_name("normal").expect("theme");
+        let geom = compute_disc(
+            at_local(2026, 1, 1, 21, 0),
+            Weather::Clear,
+            buf_w,
+            top_wall_h,
+            theme,
+        )
+        .expect("moon disc visible at 21:00 under Clear");
+
+        let crescent_day = (1..=31u32)
+            .find(|&d| sky::moon_phase(at_local(2026, 1, d, 21, 0)) < 0.35)
+            .expect("a crescent night exists in January 2026");
+        let full_day = (1..=31u32)
+            .find(|&d| sky::moon_phase(at_local(2026, 1, d, 21, 0)) > 0.9)
+            .expect("a near-full night exists in January 2026");
+
+        // (dark-limb count, lit-bright count) within the disc proper.
+        let count_dark_and_bright = |day: u32| -> (usize, usize) {
+            let buf = render_office_on(day, 21, Weather::Clear, buf_w, top_wall_h);
+            let r = geom.r.ceil() as i32;
+            let (cx, cy) = (geom.cx.round() as i32, geom.cy.round() as i32);
+            let mut dark = 0usize;
+            let mut bright = 0usize;
+            for py in (cy - r)..=(cy + r) {
+                for px in (cx - r)..=(cx + r) {
+                    if px < 0 || py < 0 || px as u16 >= buf.width() || py as u16 >= buf.height() {
+                        continue;
+                    }
+                    let dx = px as f32 - geom.cx;
+                    let dy = py as f32 - geom.cy;
+                    if dx * dx + dy * dy > geom.r * geom.r {
+                        continue; // outside the disc proper
+                    }
+                    let p = buf.get(px as u16, py as u16);
+                    if p == MOON_SHADOW {
+                        dark += 1;
+                    } else if p.b > 200 && p.b > p.r.saturating_add(10) {
+                        bright += 1;
+                    }
+                }
+            }
+            (dark, bright)
+        };
+
+        let (crescent_dark, crescent_bright) = count_dark_and_bright(crescent_day);
+        let (full_dark, full_bright) = count_dark_and_bright(full_day);
+
+        assert!(
+            crescent_bright >= 2,
+            "the crescent should still show a lit sliver, got {crescent_bright}"
+        );
+        assert!(
+            crescent_dark >= 2,
+            "the crescent should leave a dark limb unlit, got {crescent_dark}"
+        );
+        assert!(
+            full_bright >= 2,
+            "a near-full moon should be lit, got {full_bright}"
+        );
+        assert!(
+            crescent_dark > full_dark,
+            "a crescent should have strictly MORE dark-within-disc pixels than \
+             a near-full moon: crescent={crescent_dark} full={full_dark}"
+        );
+        assert!(
+            crescent_dark >= full_dark + 10,
+            "assert a real margin, not a hair's-breadth win: \
+             crescent={crescent_dark} full={full_dark}"
+        );
+    }
+
+    #[test]
+    fn moon_glow_dims_at_new_moon() {
+        // The glow halo must track the phase: a new moon's near-dark core
+        // should cast (almost) no ring, unlike a full moon's bright one.
+        // Search January 2026 at 21:00 for the min/max illuminated fraction
+        // (mirrors `moon_luminance_tracks_phase` in sky.rs).
+        let buf_w = 96u16;
+        let top_wall_h = 40u16;
+        let (mut new_moon_day, mut new_moon_frac) = (1u32, f32::MAX);
+        let (mut full_moon_day, mut full_moon_frac) = (1u32, f32::MIN);
+        for day in 1..=31u32 {
+            let frac = sky::moon_phase(at_local(2026, 1, day, 21, 0));
+            if frac < new_moon_frac {
+                new_moon_frac = frac;
+                new_moon_day = day;
+            }
+            if frac > full_moon_frac {
+                full_moon_frac = frac;
+                full_moon_day = day;
+            }
+        }
+
+        // Count faint cool "glow ring" pixels — a softer bar than
+        // `count_cool_bright`'s core threshold, catching the halo blend
+        // around the disc rather than requiring a fully-opaque core hit.
+        let count_glow_ring = |buf: &RgbBuffer| -> usize {
+            (1..(top_wall_h / 3).max(2))
+                .flat_map(|y| (0..buf.width()).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let p = buf.get(x, y);
+                    p.b > 90 && p.b > p.r.saturating_add(5)
+                })
+                .count()
+        };
+
+        let new_moon_buf = render_office_on(new_moon_day, 21, Weather::Clear, buf_w, top_wall_h);
+        let full_moon_buf = render_office_on(full_moon_day, 21, Weather::Clear, buf_w, top_wall_h);
+        let new_moon_glow = count_glow_ring(&new_moon_buf);
+        let full_moon_glow = count_glow_ring(&full_moon_buf);
+        assert!(
+            new_moon_glow < full_moon_glow,
+            "a new moon's glow ring (phase={new_moon_frac}) should show fewer/dimmer \
+             cool pixels than a full moon's (phase={full_moon_frac}): \
+             new={new_moon_glow} full={full_moon_glow}"
         );
     }
 }

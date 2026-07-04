@@ -118,7 +118,7 @@
   "axis": "weather",
   "cols": 200,
   "rows": 90,
-  "hour": 15
+  "hour": 17
  },
  {
   "id": "day",
@@ -138,7 +138,11 @@
   ],
   "cols": 200,
   "rows": 90,
-  "hour": 22
+  "hour": 22,
+  "extra": [
+   "--weather",
+   "clear"
+  ]
  },
  {
   "id": "agent-tree",
