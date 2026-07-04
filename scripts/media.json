@@ -97,30 +97,6 @@
   "colors": 128
  },
  {
-  "id": "theme",
-  "kind": "matrix",
-  "targets": [
-   "site"
-  ],
-  "over": "@themes.json",
-  "axis": "theme",
-  "cols": 200,
-  "rows": 90,
-  "hour": 20
- },
- {
-  "id": "weather",
-  "kind": "matrix",
-  "targets": [
-   "site"
-  ],
-  "over": "@weather.json",
-  "axis": "weather",
-  "cols": 200,
-  "rows": 90,
-  "hour": 17
- },
- {
   "id": "day",
   "kind": "render",
   "targets": [
@@ -219,6 +195,19 @@
   "w": 320,
   "h": 180,
   "t0_ms": 1768498200000,
+  "advance_ms": 100000
+ },
+ {
+  "id": "vibing-poster",
+  "kind": "wasm-still",
+  "targets": [
+   "site"
+  ],
+  "w": 320,
+  "h": 180,
+  "hour": 18,
+  "weather": "clear",
+  "seed": 11,
   "advance_ms": 100000
  },
  {

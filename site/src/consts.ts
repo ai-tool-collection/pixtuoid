@@ -89,22 +89,28 @@ export interface ThemeShot {
   featured?: boolean; // shown first in the switcher
 }
 
-// Single source of truth for the theme switcher → site/src/themes.json.
-// Add a theme there + render its screenshot (just gen-media) and the gallery,
-// the live count, the retint, and the render script all pick it up. No component edits.
+// Single source of truth for the theme switcher → site/src/themes.json. Themes
+// now drive the live VIBING channel's theme chips IN-CANVAS (`Office::set_theme`)
+// — the static theme gallery, the per-id `theme_<id>.png` stills, and
+// astro.config's theme→still existence guard were all retired in #468. The
+// surviving guard is the Rust-side `theme_gallery_manifest_matches_all_themes`
+// set-equality test (pixtuoid-scene), so a live chip's `data-theme` always
+// resolves.
 export const THEMES: ThemeShot[] = themesData as ThemeShot[];
 
 interface WeatherShot {
-  id: string; // matches `--weather <id>` + public/demos/weather_<id>.png
+  id: string; // matches `--weather <id>` (the live VIBING chip's data-weather)
   name: string;
   blurb: string;
 }
 
-// Single source of truth for the weather gallery → site/src/weather.json. The
-// manifest↔art↔gallery triangle is guarded here (just gen-media derives its render
-// loop from this file; astro.config fails the build if any id lacks its
-// weather_<id>.png); the manifest↔Rust-enum edge is guarded by the
-// `weather_gallery_manifest_matches_the_weather_enum` unit test in pixtuoid.
+// Single source of truth for the weather chips → site/src/weather.json. Weather
+// now drives the live VIBING channel's weather chips IN-CANVAS
+// (`Office::set_weather`) — the static weather gallery, the per-id
+// `weather_<id>.png` stills, and astro.config's weather→still existence guard
+// were all retired in #468. The surviving guard is the Rust-side
+// `weather_gallery_manifest_matches_the_weather_enum` set-equality test
+// (pixtuoid-scene), so a live chip's `data-weather` always resolves.
 const WEATHERS: WeatherShot[] = weatherData as WeatherShot[];
 
 export interface ShowcaseVariant {
@@ -117,16 +123,29 @@ export interface ShowcaseVariant {
   featured?: boolean; // default chip for its channel
 }
 
+// A `live` channel's chip groups: each group is independently labeled and
+// resolves its own manifest (weather chips preview only; theme chips also
+// retint the page — hence per-group `retint`, not the channel-level one).
+export interface VariantGroup {
+  key: 'weather' | 'theme';
+  label: string;
+  variantsRef: 'themes' | 'weather';
+  retint?: boolean;
+}
+
 export interface ShowcaseChannel {
   id: string; // slug; hash target #showcase-<id>
   label: string; // monitor label (channel number is derived from manifest order)
-  kind: 'clip' | 'variant-set';
+  kind: 'clip' | 'variant-set' | 'live';
   asset?: string; // clip: demos/<asset>.mp4 [+ .webm] + <asset>-poster.png
   w?: number; // clip intrinsic dims (CLS)
   h?: number;
   variantsRef?: 'themes' | 'weather'; // variant-set backed by an existing manifest
   variants?: ShowcaseVariant[]; // …or inline variants
   retint?: boolean; // chips retint the page (themes only)
+  variantGroups?: VariantGroup[]; // live channel: multiple independently-labeled chip groups
+  timeSlider?: boolean; // live channel: exposes a time-of-day scrub control
+  poster?: string; // live channel: public/demos/-relative static fallback image
   caption: string; // diegetic one-liner under the stage
   duration?: string; // clip badge, m:ss
   status: 'live' | 'soon'; // soon = dimmed placeholder monitor, no assets needed
@@ -143,9 +162,45 @@ export const SHOWCASE: ShowcaseChannel[] = showcaseData as unknown as ShowcaseCh
 // The shape Showcase.astro passes down to ChannelStage/MonitorWall: each
 // channel enriched with `ch` (zero-padded channel number, from manifest order)
 // and `variants` resolved via showcaseVariants() (always an array, may be empty).
+export interface EnrichedVariantGroup {
+  key: string;
+  label: string;
+  retint: boolean;
+  variants: ShowcaseVariant[];
+}
+
 export interface EnrichedShowcaseChannel extends ShowcaseChannel {
   ch: string;
   variants: ShowcaseVariant[];
+  groups: EnrichedVariantGroup[];
+}
+
+// The manifest resolution a `variantsRef` maps to — the SINGLE place both
+// showcaseVariants (channel-level) and showcaseGroups (live-channel, one per
+// group) read THEMES/WEATHERS, so the two callers can never disagree on shape.
+// `src` below is dead weight for a live-channel consumer (showcaseGroups) —
+// ChannelStage's live-chip branch renders only id/name/accent and never reads
+// it (those theme_<id>.png/weather_<id>.png stills are gone, #468); it's kept
+// because variant-set channels' chip branch still `data-src`-swaps with it.
+function variantsForRef(ref: 'themes' | 'weather'): ShowcaseVariant[] {
+  if (ref === 'themes')
+    return THEMES.map((t) => ({
+      id: t.id,
+      name: t.name,
+      blurb: t.blurb,
+      src: `theme_${t.id}.png`,
+      accent: t.accent,
+      accent2: t.accent2,
+      featured: t.featured,
+    }));
+  return WEATHERS.map((w) => ({
+    id: w.id,
+    name: w.name,
+    blurb: w.blurb,
+    src: `weather_${w.id}.png`,
+    // storm is the most striking opener for the weather channel
+    featured: w.id === 'storm',
+  }));
 }
 
 export function showcaseVariants(c: ShowcaseChannel): ShowcaseVariant[] {
@@ -153,30 +208,16 @@ export function showcaseVariants(c: ShowcaseChannel): ShowcaseVariant[] {
   // `variants`, appended after it — e.g. WEATHER folds the day/night lighting
   // stills in after the weather list (the former standalone NIGHT channel).
   const inline = c.variants ?? [];
-  if (c.variantsRef === 'themes')
-    return [
-      ...THEMES.map((t) => ({
-        id: t.id,
-        name: t.name,
-        blurb: t.blurb,
-        src: `theme_${t.id}.png`,
-        accent: t.accent,
-        accent2: t.accent2,
-        featured: t.featured,
-      })),
-      ...inline,
-    ];
-  if (c.variantsRef === 'weather')
-    return [
-      ...WEATHERS.map((w) => ({
-        id: w.id,
-        name: w.name,
-        blurb: w.blurb,
-        src: `weather_${w.id}.png`,
-        // storm is the most striking opener for the weather channel
-        featured: w.id === 'storm',
-      })),
-      ...inline,
-    ];
+  if (c.variantsRef === 'themes' || c.variantsRef === 'weather')
+    return [...variantsForRef(c.variantsRef), ...inline];
   return inline;
+}
+
+export function showcaseGroups(c: ShowcaseChannel): EnrichedVariantGroup[] {
+  return (c.variantGroups ?? []).map((g: VariantGroup) => ({
+    key: g.key,
+    label: g.label,
+    retint: g.retint ?? false,
+    variants: variantsForRef(g.variantsRef),
+  }));
 }

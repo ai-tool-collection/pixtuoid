@@ -469,6 +469,14 @@ impl FloorSession {
         &self.floor.buf
     }
 
+    /// Flush the per-floor recolored-sprite cache. Call after a theme change so
+    /// cached AGENT sprites don't render with the old palette — mirrors the TUI's
+    /// `pf.ctx.cache = FrameCache::new()` (tui_renderer::set_theme). Env (walls/
+    /// floor/sky) recolors on its own since it's painted fresh each frame.
+    pub fn reset_frame_cache(&mut self) {
+        self.floor.ctx.cache = crate::frame_cache::FrameCache::new();
+    }
+
     /// Advance the world one tick WITHOUT painting — the headless observation
     /// seam a native/windowless consumer drives: the same eviction, layout
     /// prologue, sim tick (`pixel_painter::sim_step`), and bookkeeping
@@ -1448,5 +1456,37 @@ mod tests {
         let s = FloorSession::default();
         assert!(s.floor.ctx.motion.is_empty());
         assert!(s.office.coffee.map().is_empty());
+    }
+
+    #[test]
+    fn reset_frame_cache_clears_cached_sprites() {
+        use crate::frame_cache::FrameKey;
+        use pixtuoid_core::{sprite::Frame, AgentId};
+
+        let mut s = FloorSession::new();
+        // Prime the cache with one entry, so the assertion below distinguishes a
+        // real reset from a no-op (a fresh session's cache is already empty).
+        s.floor.ctx.cache.get_or_make(
+            FrameKey {
+                agent_id: AgentId::from_parts("test", "agent"),
+                anim_name: "idle",
+                frame_idx: 0,
+                flip_x: false,
+                glow_tint: None,
+            },
+            Frame::default,
+        );
+        assert_eq!(
+            s.floor.ctx.cache.len(),
+            1,
+            "priming must populate the cache"
+        );
+
+        s.reset_frame_cache();
+        assert_eq!(
+            s.floor.ctx.cache.len(),
+            0,
+            "reset must clear a populated cache"
+        );
     }
 }

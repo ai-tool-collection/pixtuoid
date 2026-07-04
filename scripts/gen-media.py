@@ -246,12 +246,33 @@ def run_wasm_still(job, out_dirs, work, intermediates):
         check=True,
         cwd=ROOT,
     )
+    # `t0_ms` (an exact epoch, e.g. hero-wide's committed poster) and `hour`
+    # (a 0-23 convenience — e.g. the VIBING poster's dusk shot) are mutually
+    # exclusive time pins, both forwarded to hero_still's own like-named
+    # flags; hero_still prefers `--t0-ms` if both are somehow given. `weather`
+    # forces a specific condition (e.g. "clear") instead of the natural
+    # weather clock. hero-wide's job only sets `t0_ms`, so its invocation is
+    # unchanged (byte-identical).
+    extra = []
+    if "t0_ms" in job:
+        extra += ["--t0-ms", str(job["t0_ms"])]
+    if "hour" in job:
+        extra += ["--hour", str(job["hour"])]
+    if "weather" in job:
+        extra += ["--weather", str(job["weather"])]
+    # Layout seed: match the LIVE canvas this poster falls back for (the VIBING
+    # channel is seed 11), else the poster's office layout pops when the live
+    # canvas paints over it. hero-wide sets no seed, so hero_still defaults to
+    # the backdrop's seed 3 (byte-identical).
+    if "seed" in job:
+        extra += ["--seed", str(job["seed"])]
     for d in out_dirs:
         subprocess.run(
             [str(ROOT / "target/release/examples/hero_still"),
              str(d / f"{job['id']}.png"),
              "--width", str(job["w"]), "--height", str(job["h"]),
-             "--t0-ms", str(job["t0_ms"]), "--advance-ms", str(job["advance_ms"])],
+             "--advance-ms", str(job["advance_ms"]),
+             *extra],
             check=True,
         )
 

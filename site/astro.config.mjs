@@ -20,34 +20,9 @@ if (!version) {
   throw new Error('astro.config: could not parse [workspace.package] version from ../Cargo.toml');
 }
 
-// Guard: every theme in the switcher manifest must have a rendered demo PNG.
-// site CI never runs the binary, so without this a theme added to themes.json
-// before its screenshot exists would deploy a chip with a 404 image (#121).
-// Fix by running `just gen-media` (the binary must ship the theme first).
-const themeIds = /** @type {{ id: string }[]} */ (
-  JSON.parse(readFileSync(fileURLToPath(new URL('./src/themes.json', import.meta.url)), 'utf8'))
-).map((t) => t.id);
-const missingDemos = themeIds.filter(
-  (id) => !existsSync(fileURLToPath(new URL(`./public/demos/theme_${id}.png`, import.meta.url)))
-);
-if (missingDemos.length) {
-  throw new Error(
-    `astro.config: themes.json lists theme(s) with no public/demos/theme_<id>.png — run just gen-media: ${missingDemos.join(', ')}`
-  );
-}
-
-// Same guard for the weather gallery: every weather.json id needs a weather_<id>.png.
-const weatherIds = /** @type {{ id: string }[]} */ (
-  JSON.parse(readFileSync(fileURLToPath(new URL('./src/weather.json', import.meta.url)), 'utf8'))
-).map((w) => w.id);
-const missingWeather = weatherIds.filter(
-  (id) => !existsSync(fileURLToPath(new URL(`./public/demos/weather_${id}.png`, import.meta.url)))
-);
-if (missingWeather.length) {
-  throw new Error(
-    `astro.config: weather.json lists weather(s) with no public/demos/weather_<id>.png — run just gen-media: ${missingWeather.join(', ')}`
-  );
-}
+// (The old themes.json→theme_<id>.png and weather.json→weather_<id>.png
+// demo-still guards were removed with the static THEMES/WEATHER channels (#468):
+// the live VIBING channel renders those in-canvas, so no per-id still exists.)
 
 // Studio Wall guard: showcase.json must have exactly one default channel, unique
 // ids, and every `live` channel's assets on disk (clips: webm + mp4 + poster —
@@ -100,6 +75,19 @@ for (const c of showcase) {
       if (!demo(v.src))
         throw new Error(
           `astro.config: showcase.json "${c.id}" variant "${v.id}" missing public/demos/${v.src}`
+        );
+  } else if (c.kind === 'live') {
+    // A `live` channel is rendered by the wasm office canvas, not static demo
+    // assets — no asset/w/h required. Only the fallback poster (used when wasm
+    // never loads) and each chip group's manifest ref need validating.
+    if (c.poster && !demo(c.poster))
+      throw new Error(
+        `astro.config: showcase.json live channel "${c.id}" missing public/demos/${c.poster}`
+      );
+    for (const g of c.variantGroups ?? [])
+      if (g.variantsRef !== 'themes' && g.variantsRef !== 'weather')
+        throw new Error(
+          `astro.config: showcase.json "${c.id}" variantGroups["${g.key}"] has unknown variantsRef "${g.variantsRef}" (expected "themes" or "weather")`
         );
   } else {
     throw new Error(`astro.config: showcase.json "${c.id}" has unknown kind "${c.kind}"`);
