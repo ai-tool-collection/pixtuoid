@@ -83,8 +83,7 @@ Press `s` to open the **Sources** panel and connect your agent CLI (Claude Code,
 | 💡 | **Per-tool monitor glow** | Edit = blue, Bash = orange, Read = cyan — scannable at a glance |
 | 🎨 | **Team palette** | Shirt + pants colored by working directory (same repo → same color, a glanceable org-chart); hair/skin per agent. 16 curated outfits |
 | 🦞 | **OpenClaw gateway mascot** | A live OpenClaw gateway shows up as a wandering lobster whose motion tracks gateway health |
-| 🌧️ | **Weather effects** | Rain, storm, snow, fog, overcast, windy, smog — cycling every 10 minutes |
-| 🌅 | **Living sky** | A sun and moon arc over the city skyline through the day; weather is real atmosphere — clouds dim the beam, fog swallows the sun, storms darken the room, and a crescent moon rises at night |
+| 🎛️ | **Vibing** | A sun and moon arc the skyline as the day turns, weather rolls past the windows (rain, storm, snow, fog, overcast, windy, smog), and six themes reskin the office |
 | 🔎 | **Hover tooltips** | Hover an agent for session duration, tool-call count and active-time %; hover any furniture — desks, sofas, plants, vending machine, printer — for its name |
 | 🐾 | **Office pets** | A cat or dog (one per floor) roams desks, pantry, sofas; sleeps near idle agents. Click to pet — pixel-art hearts float up |
 | 🛡️ | **Hook-safe** | The shim always exits 0 — a stuck visualizer can never block your agent |
@@ -111,20 +110,23 @@ _\* experimental — limited testing, unsigned binaries._
 
 > Adding a new tool? Implement the [`Source` trait](#contributing) — or, for a hook-only CLI, just a hook decoder + an install `Target` — then add a row to [`site/src/sources.json`](site/src/sources.json) (its `supported` set is pinned to the code by a test). One file, one channel, done.
 
-## Themes & Configuration
+## Configuration
 
-Press `t` to cycle the built-in themes with live preview. Your choice persists across sessions:
+Everything lives in `~/.config/pixtuoid/config.toml` (created on first launch;
+every key optional) — theme, desk cap, custom pet names, and sprite packs. CLI
+flags override the file (`pixtuoid run --theme dracula`).
+
+The setting you'll reach for most is the **theme** — press `t` in the TUI for a
+live-preview picker across six built-in palettes; your pick persists across sessions.
 
 <p align="center">
-  <img src="docs/images/themes-composite.png" alt="built-in themes side by side" width="800" />
+  <img src="docs/images/themes-composite.png" alt="the six built-in themes side by side" width="800" />
 </p>
 
-Settings live in `~/.config/pixtuoid/config.toml` — theme, desk cap, custom pet
-names, and sprite packs. CLI flags override the file (`pixtuoid run --theme dracula`).
 See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full key reference
 (defaults, system-managed keys), the custom sprite-pack workflow, and **logging /
-troubleshooting** (the TUI writes warnings to `~/.cache/pixtuoid/log`) — or browse it
-live at **[/config](https://ivanwng97.github.io/pixtuoid/config)**.
+troubleshooting** (diagnostics go to `~/.cache/pixtuoid/log`) — or browse it live
+at **[/config](https://ivanwng97.github.io/pixtuoid/config)**.
 
 ## How It Works
 
