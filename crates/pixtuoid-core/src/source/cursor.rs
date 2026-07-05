@@ -76,6 +76,9 @@ pub const SOURCE_NAME: &str = "cursor";
 /// - `sessionStart`          → `SessionStart`
 /// - `preToolUse`            → `Identity` + `ActivityStart`
 /// - `postToolUse`           → `Identity` + `ActivityEnd`
+/// - `postToolUseFailure`    → `Identity` + `ActivityEnd` (a FAILED tool fires
+///   this INSTEAD OF `postToolUse`; closed the same way — identity-backed, since
+///   it carries cwd/tool_name — so the sprite doesn't linger Active under `-p`)
 /// - `stop`                  → `ActivityEnd` (turn end → idle debounce; NO
 ///   Identity — an end for an unknown agent proves nothing worth registering)
 /// - `sessionEnd`            → `SessionEnd`
@@ -154,7 +157,13 @@ pub fn decode_cursor_hook_payload(v: &Value) -> Result<Vec<AgentEvent>> {
                 },
             ])
         }
-        "postToolUse" => Ok(vec![
+        // A FAILED tool fires `postToolUseFailure` (carrying
+        // error_message/failure_type) INSTEAD OF `postToolUse`. Close the
+        // activity identically — identity-backed, since it carries cwd/tool_name
+        // and is proof-of-life. Without this arm a failed tool's ActivityStart
+        // never ends under `-p` (where `stop` doesn't fire) and the sprite
+        // lingers Active until sessionEnd / the stale sweep.
+        "postToolUse" | "postToolUseFailure" => Ok(vec![
             identity(),
             AgentEvent::ActivityEnd {
                 agent_id,
@@ -425,7 +434,8 @@ mod tests {
 
     #[test]
     fn post_tool_use_and_stop_are_activity_end() {
-        for event in ["postToolUse", "stop"] {
+        // postToolUseFailure (a failed tool) closes activity like postToolUse.
+        for event in ["postToolUse", "postToolUseFailure", "stop"] {
             let ev = decode(json!({"hook_event_name": event, "cwd": "/r"}));
             assert!(
                 matches!(
@@ -480,6 +490,10 @@ mod tests {
             json!({"hook_event_name": "preToolUse", "session_id": "s", "cwd": "", "workspace_roots": ["/repo"],
                    "tool_name": "Shell", "tool_input": {"command": "ls"}}),
             json!({"hook_event_name": "postToolUse", "session_id": "s", "workspace_roots": ["/repo"], "tool_name": "Shell"}),
+            // A failed tool must ALSO back-fill identity (not be identity-less
+            // like `stop`) — it carries cwd/tool_name and is proof-of-life.
+            json!({"hook_event_name": "postToolUseFailure", "session_id": "s", "workspace_roots": ["/repo"],
+                   "tool_name": "Shell", "error_message": "command failed", "failure_type": "error", "is_interrupt": false}),
         ] {
             let name = payload["hook_event_name"].clone();
             let events = decode_all(payload);

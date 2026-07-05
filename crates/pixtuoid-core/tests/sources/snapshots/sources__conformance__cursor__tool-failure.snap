@@ -1,0 +1,32 @@
+---
+source: crates/pixtuoid-core/tests/sources/conformance.rs
+expression: events
+---
+- SessionStart:
+    agent_id: 13702571871648078827
+    source: cursor
+    session_id: f1a2b3c4-sess
+    cwd: /Users/dev/proj
+    parent_id: ~
+- Identity:
+    agent_id: 13702571871648078827
+    source: cursor
+    session_id: f1a2b3c4-sess
+    cwd: /Users/dev/proj
+- ActivityStart:
+    agent_id: 13702571871648078827
+    tool_use_id: ~
+    detail:
+      Generic:
+        display: "Shell: cargo build"
+- Identity:
+    agent_id: 13702571871648078827
+    source: cursor
+    session_id: f1a2b3c4-sess
+    cwd: /Users/dev/proj
+- ActivityEnd:
+    agent_id: 13702571871648078827
+    tool_use_id: ~
+- SessionEnd:
+    agent_id: 13702571871648078827
+    as_child: false

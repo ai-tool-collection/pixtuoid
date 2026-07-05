@@ -60,6 +60,19 @@ fn default_id_from_path(p: &Path) -> String {
     crate::id::normalize_path_key(&p.to_string_lossy())
 }
 
+/// Decides which `.jsonl` FILES a watcher walks — checked after the extension
+/// gate in `walk_jsonl`, so it filters files, never directories. The default
+/// (`accept_all_paths`) admits every transcript. **Antigravity** overrides it to
+/// skip the sibling `transcript_full.jsonl`: the CLI writes BOTH a truncated
+/// `transcript.jsonl` and an untruncated `transcript_full.jsonl` per conversation
+/// in one logs dir, carrying the SAME step stream, so without the filter one
+/// conversation mints two path-keyed `AgentId`s and double-renders.
+pub type PathFilter = fn(&Path) -> bool;
+
+fn accept_all_paths(_p: &Path) -> bool {
+    true
+}
+
 /// The per-source decode/label/end/id fn-pointers (the invariant-#3 seam)
 /// bundled so the seed/scan/walk helpers thread ONE Copy value, not four.
 #[derive(Clone, Copy)]
@@ -68,6 +81,7 @@ struct SourceDecoders {
     derive_label: LabelDeriver,
     check_ended: SessionEndChecker,
     id_derive: IdDeriver,
+    path_filter: PathFilter,
 }
 
 /// Shared per-run watch state, borrowed by the scan/walk helpers.
@@ -105,6 +119,7 @@ pub struct JsonlWatcher {
     derive_label: LabelDeriver,
     check_session_ended: SessionEndChecker,
     id_derive: IdDeriver,
+    path_filter: PathFilter,
     liveness_probe: Option<LivenessProbe>,
     poll_interval: Duration,
     negative_vouch_min_span: Duration,
@@ -145,6 +160,7 @@ impl JsonlWatcher {
             derive_label,
             check_session_ended,
             id_derive: default_id_from_path,
+            path_filter: accept_all_paths,
             liveness_probe: None,
             poll_interval: DEFAULT_POLL_INTERVAL,
             negative_vouch_min_span: NEGATIVE_VOUCH_MIN_SPAN,
@@ -180,6 +196,14 @@ impl JsonlWatcher {
 
     pub fn with_id_deriver(mut self, id_derive: IdDeriver) -> Self {
         self.id_derive = id_derive;
+        self
+    }
+
+    /// Restrict which `.jsonl` FILES this watcher walks (default: every
+    /// transcript). See [`PathFilter`] — Antigravity uses it to skip the
+    /// duplicate `transcript_full.jsonl` sibling and avoid double-rendering.
+    pub fn with_path_filter(mut self, path_filter: PathFilter) -> Self {
+        self.path_filter = path_filter;
         self
     }
 
@@ -332,6 +356,7 @@ impl JsonlWatcher {
             derive_label: self.derive_label,
             check_ended: self.check_session_ended,
             id_derive: self.id_derive,
+            path_filter: self.path_filter,
         };
 
         // Initial seed: the same `scan_root` → `walk_jsonl` path every later scan

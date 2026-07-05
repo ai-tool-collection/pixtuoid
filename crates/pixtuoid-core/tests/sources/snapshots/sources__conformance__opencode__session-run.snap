@@ -32,6 +32,15 @@ expression: events
     source: opencode
     session_id: ses_demo
     cwd: ~
+- ActivityStart:
+    agent_id: 15020910450894780276
+    tool_use_id: call_task
+    detail: Task
+- Identity:
+    agent_id: 15020910450894780276
+    source: opencode
+    session_id: ses_demo
+    cwd: ~
 - Waiting:
     agent_id: 15020910450894780276
     reason: bash

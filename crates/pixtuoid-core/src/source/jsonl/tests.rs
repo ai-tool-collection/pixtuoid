@@ -331,6 +331,7 @@ async fn walk_once_with(
         derive_label: t_label,
         check_ended,
         id_derive: default_id_from_path,
+        path_filter: accept_all_paths,
     };
     let live = Arc::new(Mutex::new(HashSet::new()));
     let ctx = WatchCtx {
@@ -369,6 +370,7 @@ async fn walk_once_live(
         derive_label: t_label,
         check_ended: t_ended,
         id_derive: crate::source::claude_code::cc_id_from_path,
+        path_filter: accept_all_paths,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -450,6 +452,57 @@ async fn gated_fixture(
         "a gated file must not claim `seen`"
     );
     (cursors, seen)
+}
+
+#[tokio::test]
+async fn walk_jsonl_honors_the_path_filter() {
+    // The per-source PathFilter (Antigravity's `transcript_full.jsonl` skip)
+    // drops a file BEFORE any cursor/registration work, so a conversation's
+    // duplicate sibling never mints a second path-keyed slot. Observable: the
+    // filtered file gets no `cursors` entry, the admitted one does.
+    fn skip_full(p: &Path) -> bool {
+        p.file_name().and_then(|s| s.to_str()) != Some("transcript_full.jsonl")
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let kept = dir.path().join("transcript.jsonl");
+    let dropped = dir.path().join("transcript_full.jsonl");
+    tokio::fs::write(&kept, "{\"type\":\"x\"}\n").await.unwrap();
+    tokio::fs::write(&dropped, "{\"type\":\"x\"}\n")
+        .await
+        .unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel::<(Transport, AgentEvent)>(32);
+    let source: Arc<str> = Arc::from("test");
+    let cursors = Arc::new(Mutex::new(HashMap::new()));
+    let seen = Arc::new(Mutex::new(HashMap::new()));
+    let live = Arc::new(Mutex::new(HashSet::new()));
+    let decoders = SourceDecoders {
+        decode_line: t_decode,
+        derive_label: t_label,
+        check_ended: t_ended,
+        id_derive: default_id_from_path,
+        path_filter: skip_full,
+    };
+    let ctx = WatchCtx {
+        source: &source,
+        cursors: &cursors,
+        seen: &seen,
+        tx: &tx,
+        window: Duration::from_secs(60),
+        live: &live,
+    };
+    // Walk the DIRECTORY so both siblings are visited.
+    walk_jsonl(dir.path(), decoders, &ctx).await;
+
+    let cursors = cursors.lock().await;
+    assert!(
+        cursors.contains_key(&kept),
+        "the admitted transcript.jsonl must be processed"
+    );
+    assert!(
+        !cursors.contains_key(&dropped),
+        "transcript_full.jsonl must be filtered before any cursor work"
+    );
 }
 
 #[tokio::test]
@@ -631,6 +684,7 @@ async fn session_exit_drains_pending_bytes_so_a_straggler_walk_cannot_resurrect(
         derive_label: t_label,
         check_ended: t_ended,
         id_derive: default_id_from_path,
+        path_filter: accept_all_paths,
     };
     let live = Arc::new(Mutex::new(HashSet::new()));
     let ctx = WatchCtx {
@@ -715,6 +769,7 @@ async fn session_exit_purges_live_so_a_probe_failure_pass_cannot_revouch() {
         derive_label: t_label,
         check_ended: t_ended,
         id_derive: default_id_from_path,
+        path_filter: accept_all_paths,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -774,6 +829,7 @@ fn t_decoders() -> SourceDecoders {
         derive_label: t_label,
         check_ended: t_ended,
         id_derive: default_id_from_path,
+        path_filter: accept_all_paths,
     }
 }
 
@@ -1198,6 +1254,7 @@ async fn known_oversized_tail_emits_session_end_if_the_skipped_span_ended() {
         derive_label: t_label,
         check_ended: t_ended,
         id_derive: default_id_from_path,
+        path_filter: accept_all_paths,
     };
     let live = Arc::new(Mutex::new(HashSet::new()));
     let ctx = WatchCtx {
@@ -1494,6 +1551,7 @@ async fn scan_pass_re_vouches_a_transiently_gated_live_file() {
         derive_label: t_label,
         check_ended: t_ended,
         id_derive: crate::source::claude_code::cc_id_from_path,
+        path_filter: accept_all_paths,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -2720,6 +2778,7 @@ async fn revouch_pass_prunes_deleted_files_from_cursors() {
         derive_label: t_label,
         check_ended: t_ended,
         id_derive: default_id_from_path,
+        path_filter: accept_all_paths,
     };
     let ctx = WatchCtx {
         source: &source,

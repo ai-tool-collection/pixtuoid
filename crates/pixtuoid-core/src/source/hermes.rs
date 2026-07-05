@@ -35,8 +35,21 @@
 //! (`.map(Some)`, never `Ok(None)`).
 //!
 //! Deliberate scope: `tool_use_id` is always `None` (single-transport, no
-//! hook-wins dedup needed); no subagent nesting — the capture shows no
-//! subagent-start/stop hooks and no parent-link field, so sessions render flat.
+//! hook-wins dedup needed); sessions render FLAT. The SHELL-hook set pixtuoid
+//! consumes (`_DEFAULT_PAYLOADS` in `hermes_cli/hooks.py` — the `hermes hooks
+//! test`/doctor fixtures, and our drift-watch's source-of-truth) has a stop-only
+//! `subagent_stop` carrying `parent_session_id` + `child_summary`/`child_status`
+//! but NO child session/agent id, and no `subagent_start`. (Hermes's Python
+//! PLUGIN API in `hooks.md` DOES define a `subagent_start` with a
+//! `child_subagent_id`, but plugin hooks are in-process callbacks that never
+//! reach a shell command's stdin — pixtuoid, a passive SHELL-hook observer,
+//! can't see them; don't "fix" this by trying to model them.) With no observable
+//! child key, a decoded `subagent_stop` would be a `SessionEnd` for a child that
+//! was never `SessionStart`ed (a reducer no-op), so it is left out of
+//! `HERMES_EVENTS` (the shim never delivers it) and, should one ever arrive,
+//! bails via the `unknown_event` drift arm (pinned by `unknown_event_bails_loudly`)
+//! — the same deliberate-omit treatment as Reasonix's stop-only `SubagentStop`
+//! (`REASONIX_KNOWN_OMITTED`).
 //! `on_session_end` FIRES on clean completion → `has_exit_signal: true`; abrupt
 //! exits fall to the stale-sweep (no PID exposed in the payload).
 
@@ -365,7 +378,11 @@ mod tests {
 
     #[test]
     fn unknown_event_bails_loudly() {
-        for ev in ["pre_message", "on_error", "Bogus"] {
+        // `subagent_stop` is a REAL upstream event (hermes_cli/hooks.py
+        // _DEFAULT_PAYLOADS) deliberately left out of HERMES_EVENTS — it is
+        // stop-only with no child key to model (see the module doc). It must bail
+        // like any unregistered event, not decode silently.
+        for ev in ["subagent_stop", "pre_message", "on_error", "Bogus"] {
             assert!(
                 decode_hermes_hook_payload(&json!({"hook_event_name": ev, "cwd": "/r"})).is_err(),
                 "{ev} must bail (not registered, must not decode silently)"

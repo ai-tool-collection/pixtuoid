@@ -98,6 +98,10 @@ fn decode_ag_tool_call(
     step_index: i64,
     i: usize,
 ) -> AgentEvent {
+    // `ask_permission`/`ask_question` are UNVERIFIED reverse-engineered tool
+    // names — no capture confirms them (the real wire only ever showed
+    // `search_web`). Kept as the best-effort Waiting trigger; a real
+    // permission-prompt capture would pin the actual name.
     if name == "ask_permission" || name == "ask_question" {
         return AgentEvent::Waiting {
             agent_id,
@@ -124,7 +128,10 @@ fn decode_ag_tool_call(
 fn ag_tool_target(args: Option<&Value>) -> Option<String> {
     // AG's per-tool arg vocabulary (priority order); the shared scan skips a
     // present-but-non-string key rather than giving up on it (the old
-    // `.or_else` chain `as_str`d only the first present key).
+    // `.or_else` chain `as_str`d only the first present key). Currency note:
+    // only `query` (the `search_web` arg) is capture-confirmed against real
+    // wire; the PascalCase keys are reverse-engineered from Windsurf/Cascade and
+    // UNVERIFIED — a real capture of a file/dir tool would confirm or correct them.
     const KEYS: &[&str] = &[
         "DirectoryPath",
         "AbsolutePath",
