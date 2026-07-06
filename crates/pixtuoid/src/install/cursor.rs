@@ -41,12 +41,16 @@ use crate::install::SENTINEL_KEY;
 /// `every_registered_cursor_event_decodes` below. The camelCase names are
 /// Cursor's. `subagentStart`/`subagentStop` are deliberately absent (not firing
 /// in the CLI; session-only) and the shell/file-specific `before*`/`after*`
-/// hooks are omitted in favor of the generic `preToolUse`/`postToolUse` pair —
-/// the live capture refines this firing set, tracked by the upstream-drift watch.
+/// hooks are omitted in favor of the generic `preToolUse`/`postToolUse` pair.
+/// `postToolUseFailure` FIRES instead of `postToolUse` on a failed tool, so it
+/// is registered too — else a failed tool's ActivityStart never closes under
+/// `-p` (where `stop` doesn't fire). The live capture refines this firing set,
+/// tracked by the upstream-drift watch.
 const CURSOR_EVENTS: &[&str] = &[
     "sessionStart",
     "preToolUse",
     "postToolUse",
+    "postToolUseFailure",
     "stop",
     "sessionEnd",
 ];

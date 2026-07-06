@@ -1,0 +1,4 @@
+{"hook_event_name": "sessionStart", "session_id": "f1a2b3c4-sess", "conversation_id": "f1a2b3c4-sess", "workspace_roots": ["/Users/dev/proj"], "transcript_path": null, "_pixtuoid_source": "cursor"}
+{"hook_event_name": "preToolUse", "session_id": "f1a2b3c4-sess", "workspace_roots": ["/Users/dev/proj"], "tool_name": "Shell", "tool_input": {"command": "cargo build"}, "_pixtuoid_source": "cursor"}
+{"hook_event_name": "postToolUseFailure", "session_id": "f1a2b3c4-sess", "workspace_roots": ["/Users/dev/proj"], "tool_name": "Shell", "tool_use_id": "tc-1", "cwd": "/Users/dev/proj", "error_message": "command failed with exit code 101", "failure_type": "error", "is_interrupt": false, "duration": 1234, "_pixtuoid_source": "cursor"}
+{"hook_event_name": "sessionEnd", "session_id": "f1a2b3c4-sess", "reason": "aborted", "workspace_roots": ["/Users/dev/proj"], "_pixtuoid_source": "cursor"}

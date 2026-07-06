@@ -98,6 +98,17 @@ def test_source_parsers_find_nonempty_well_shaped_sets() -> None:
         bad = [m for m in got if not re.match(shape, m)]
         check(not bad, f"{name}: members match {shape}; offenders={bad}")
 
+    # read_codex_rollout_types returns a (event_msg, response_item) TUPLE, not a
+    # set, so it rides its own check: both halves non-empty + snake_case, and the
+    # known task_started / function_call present (a decoder refactor that drops
+    # the ("event_msg"|"response_item", …) arms would empty these → RuntimeError).
+    ev, ri = d.read_codex_rollout_types()
+    check(len(ev) >= 2 and len(ri) >= 2, f"read_codex_rollout_types non-empty: ev={ev!r} ri={ri!r}")
+    check("task_started" in ev, f"codex event_msg has task_started: {ev!r}")
+    check("function_call" in ri, f"codex response_item has function_call: {ri!r}")
+    offenders = [m for m in (ev | ri) if not re.match(r"^[a-z][a-z_]*$", m)]
+    check(not offenders, f"codex rollout members are snake_case; offenders={offenders}")
+
 
 def test_upstream_parsers_extract_from_a_snippet() -> None:
     # Codex HookEventName enum snippet.
@@ -115,6 +126,13 @@ def test_upstream_parsers_extract_from_a_snippet() -> None:
 
     # A malformed schema → None (signals "restructured", handled as breaking upstream).
     check(d.upstream_copilot_events("not json") is None, "copilot bad json -> None")
+
+    # Copilot FIELD-NAME union — every `properties` key at ANY depth (envelope
+    # `agentId` AND the nested `data.properties` `toolCallId`).
+    copilot_fields = '{"definitions":{"A":{"properties":{"agentId":{},"data":{"properties":{"toolCallId":{}}}}}}}'
+    up = d.upstream_copilot_field_names(copilot_fields)
+    check(up is not None and {"agentId", "toolCallId"} <= up, f"copilot field union (recursive): {up}")
+    check(d.upstream_copilot_field_names("not json") is None, "copilot fields bad json -> None")
 
     # CC hook-event summary table — the MOST complex parser (anchors to the
     # "| Event |" header + separator, extracts the backtick-quoted first cell).
@@ -141,6 +159,37 @@ def test_upstream_parsers_extract_from_a_snippet() -> None:
     up = d.upstream_codewhale_hooks(codewhale_rs)
     check(up is not None and {"session_start", "pre_tool_use"} <= up, f"codewhale enum parse: {up}")
     check(d.upstream_codewhale_hooks("no enum here") is None, "codewhale none -> None")
+
+    # Codex EventMsg / ResponseItem: #[serde(tag="type", rename_all="snake_case")]
+    # enums. snake_case(variant) + explicit rename/alias, with nested tuple/struct
+    # bodies stripped so a CamelCase field TYPE isn't mistaken for a variant.
+    codex_enum = (
+        "pub enum EventMsg {\n"
+        '    #[serde(rename = "task_started", alias = "turn_started")]\n'
+        "    TurnStarted(TurnStartedEvent),\n"
+        "    ExecCommandEnd(ExecCommandEndEvent),\n"
+        "    SessionConfigured { model: ModelInfo, cwd: PathBuf },\n"
+        "    Other,\n"
+        "}"
+    )
+    up = d.upstream_codex_enum_types(codex_enum, "EventMsg")
+    check(
+        up is not None and {"task_started", "turn_started", "exec_command_end"} <= up,
+        f"codex EventMsg parse (rename+alias+snake): {up}",
+    )
+    # A struct-field TYPE (ModelInfo/PathBuf) must NOT leak in as a variant.
+    check(up is not None and "model_info" not in up and "path_buf" not in up, f"codex struct-field type leaked: {up}")
+    check(d.upstream_codex_enum_types("no enum here", "EventMsg") is None, "codex enum none -> None")
+
+    # Codex ResponseItem::FunctionCall inline-struct FIELD extraction.
+    fc_struct = "FunctionCall {\n    name: String,\n    arguments: String,\n    call_id: String,\n}"
+    up = d.codex_function_call_fields(fc_struct)
+    check(up is not None and {"name", "arguments"} <= up, f"codex FunctionCall fields: {up}")
+    # A tuple variant (external struct) → None = GRACEFUL SKIP, not a false alarm.
+    check(
+        d.codex_function_call_fields("FunctionCall(FunctionCallItem),") is None,
+        "codex FunctionCall tuple variant -> None (graceful skip, not an alarm)",
+    )
 
 
 def main() -> int:

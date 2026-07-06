@@ -1,0 +1,8 @@
+{"event": "SessionStart", "cwd": "/Users/dev/zirs", "_pixtuoid_source": "reasonix"}
+{"event": "UserPromptSubmit", "cwd": "/Users/dev/zirs", "prompt": "delete the build directory", "_pixtuoid_source": "reasonix"}
+{"event": "PreToolUse", "cwd": "/Users/dev/zirs", "toolName": "bash", "toolArgs": {"command": "rm -rf ./build"}, "_pixtuoid_source": "reasonix"}
+{"event": "PermissionRequest", "cwd": "/Users/dev/zirs", "toolName": "bash", "subject": "rm -rf ./build", "toolArgs": {"command": "rm -rf ./build"}, "_pixtuoid_source": "reasonix"}
+{"event": "Notification", "cwd": "/Users/dev/zirs", "message": "approval needed: bash rm -rf ./build", "_pixtuoid_source": "reasonix"}
+{"event": "PostToolUse", "cwd": "/Users/dev/zirs", "toolName": "bash", "toolArgs": {"command": "rm -rf ./build"}, "_pixtuoid_source": "reasonix"}
+{"event": "Stop", "cwd": "/Users/dev/zirs", "_pixtuoid_source": "reasonix"}
+{"event": "SessionEnd", "cwd": "/Users/dev/zirs", "_pixtuoid_source": "reasonix"}

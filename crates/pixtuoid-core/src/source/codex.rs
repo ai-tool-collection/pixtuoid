@@ -153,7 +153,12 @@ pub fn decode_codex_line(transcript_path: &str, source: &str, v: Value) -> Resul
     };
 
     let out = match (outer, inner) {
-        ("event_msg", "task_started") => vec![start()],
+        // `task_started`/`task_complete` are what codex serializes TODAY; the v2
+        // `turn_started`/`turn_complete` are upstream's OWN serde aliases
+        // (`#[serde(rename="task_started", alias="turn_started")]` in codex-rs
+        // protocol.rs) — accepted here too so a future serializer flip to the
+        // alias form still drives Active/Idle. Mirrors upstream by construction.
+        ("event_msg", "task_started") | ("event_msg", "turn_started") => vec![start()],
         ("response_item", "function_call") => {
             if function_call_needs_approval(payload) {
                 vec![AgentEvent::Waiting {
@@ -187,7 +192,9 @@ pub fn decode_codex_line(transcript_path: &str, source: &str, v: Value) -> Resul
         | ("event_msg", "web_search_end")
         | ("response_item", "tool_search_call")
         | ("response_item", "tool_search_output") => vec![start()],
-        ("event_msg", "task_complete") | ("event_msg", "turn_aborted") => vec![end()],
+        ("event_msg", "task_complete")
+        | ("event_msg", "turn_complete")
+        | ("event_msg", "turn_aborted") => vec![end()],
         _ => vec![],
     };
     Ok(out)
@@ -315,8 +322,14 @@ mod tests {
 
     #[test]
     fn task_started_is_activity_start() {
-        let out = ev(json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"t"}}));
-        assert!(matches!(out.as_slice(), [AgentEvent::ActivityStart { .. }]));
+        // task_started (serialized today) + turn_started (upstream's v2 serde alias).
+        for t in ["task_started", "turn_started"] {
+            let out = ev(json!({"type":"event_msg","payload":{"type":t,"turn_id":"t"}}));
+            assert!(
+                matches!(out.as_slice(), [AgentEvent::ActivityStart { .. }]),
+                "{t}"
+            );
+        }
     }
 
     #[test]
@@ -401,7 +414,8 @@ mod tests {
 
     #[test]
     fn task_complete_and_abort_end_activity() {
-        for t in ["task_complete", "turn_aborted"] {
+        // task_complete (serialized today) + turn_complete (v2 serde alias) + turn_aborted.
+        for t in ["task_complete", "turn_complete", "turn_aborted"] {
             let out = ev(json!({"type":"event_msg","payload":{"type":t,"turn_id":"t"}}));
             assert!(
                 matches!(out.as_slice(), [AgentEvent::ActivityEnd { .. }]),

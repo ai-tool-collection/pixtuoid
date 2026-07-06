@@ -139,6 +139,12 @@ pub(super) async fn walk_jsonl(path: &Path, decoders: SourceDecoders, ctx: &Watc
     if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
         return;
     }
+    // Per-source file filter (default admits all). Antigravity skips the
+    // duplicate `transcript_full.jsonl` sibling here so one conversation doesn't
+    // double-render — see `PathFilter`.
+    if !(decoders.path_filter)(path) {
+        return;
+    }
 
     let file_len = meta.len();
 

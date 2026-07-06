@@ -12,6 +12,12 @@ and compares against the live upstream:
 
   * Codex hook events  -> `CODEX_EVENTS` in crates/pixtuoid/src/install/codex.rs
                           vs the `HookEventName` enum in openai/codex protocol.rs
+  * Codex rollout types-> the `("event_msg"|"response_item", …)` decode arms in
+                          crates/pixtuoid-core/src/source/codex.rs vs the `EventMsg`
+                          enum (protocol.rs) + the `ResponseItem` enum (models.rs).
+                          The transcript decoder drops an unknown type SILENTLY
+                          (`_ => vec![]`, no breadcrumb), so this positive check —
+                          each depended type still exists upstream — is its ONLY backstop
   * CC hook events     -> `EVENTS` in crates/pixtuoid/src/install/claude.rs
                           vs the hook-event summary table in code.claude.com
                           hooks.md (CC is a closed binary; the docs markdown is
@@ -47,6 +53,16 @@ and compares against the live upstream:
                           NousResearch/hermes-agent hermes_cli/hooks.py
                           (one-directional: Hermes fires ~15 shell-hook events and
                           we register 4 by design, so only a VANISHED depended event alarms)
+
+Beyond the event/TYPE lists above, FIELD-NAME drift is watched wherever the
+upstream field owner is fetchable (a rename → the decoder reads None and the
+sprite silently breaks — the same class as a vanished type): Reasonix payload
+json tags; Codex EventMsg/ResponseItem rollout types + FunctionCall name/arguments;
+CodeWhale DEEPSEEK_* env vars (HookContext::to_env_vars); opencode Struct fields;
+Copilot schema `properties`; OpenClaw hook-types fields; Hermes _serialize_payload
+keys (agent/shell_hooks.py). Cursor + CC (closed binaries, docs-prose only) and
+Antigravity (no fetchable schema) CANNOT be field-watched — the in-code drift
+breadcrumbs (defense #2: drift::missing_field/unknown_event) are the limit there.
 
 Exit codes:
   0  no drift
@@ -92,6 +108,13 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 CODEX_PROTOCOL_URL = (
     "https://raw.githubusercontent.com/openai/codex/main/"
     "codex-rs/protocol/src/protocol.rs"
+)
+# The ROLLOUT `response_item` types (function_call, …) live in the sibling
+# models.rs (`crate::models::ResponseItem`), NOT protocol.rs; the `event_msg`
+# types are the `EventMsg` enum in protocol.rs (reused above).
+CODEX_MODELS_URL = (
+    "https://raw.githubusercontent.com/openai/codex/main/"
+    "codex-rs/protocol/src/models.rs"
 )
 CC_TOOLS_URL = "https://code.claude.com/docs/en/tools-reference.md"
 CC_HOOKS_URL = "https://code.claude.com/docs/en/hooks.md"
@@ -198,6 +221,19 @@ CODEWHALE_KNOWN_OMITTED = {
     "shell_env",
 }
 
+# CodeWhale ENV-MODE identity: the shim (pixtuoid-hook) folds these DEEPSEEK_*
+# env vars into the cwd-keyed `{cwd, tool, tool_args}` envelope the decoder reads
+# (source/codewhale.rs). The envelope FIELD names are our own shim contract (they
+# can't drift), but the DEEPSEEK_* names are CodeWhale's — set by
+# `HookContext::to_env_vars` in the SAME hooks.rs the event check fetches. WORKSPACE
+# is load-bearing: it becomes the envelope `cwd` = the AgentId KEY, so a rename →
+# the shim reads None → empty cwd → the decoder drops EVERY session (no sprite).
+# (DEEPSEEK_SESSION_ID is deliberately NOT read — proven inconsistent — so it's
+# not a dependency.) The RAW subagent-JSON fields (agent_id/workspace) are NOT
+# watched here: their owner is a fuzzy ui.rs `json!` macro, and the decoder's own
+# `ok_or_else`/parentless-degrade (defense #2) covers them.
+CODEWHALE_ENV_FIELDS = {"DEEPSEEK_WORKSPACE", "DEEPSEEK_TOOL_NAME", "DEEPSEEK_TOOL_ARGS"}
+
 # opencode is open TS: the EventV2 `type` strings the plugin forwards + the
 # decoder maps live in these files. The check is ONE-DIRECTIONAL — opencode emits
 # ~50 event types and we intentionally map only a handful, so "new upstream event"
@@ -222,6 +258,17 @@ OPENCODE_EVENT_URLS = (
 # don't alarm if the bare form isn't found as a `type:` literal.
 OPENCODE_TOLERATED = {"permission.asked"}
 
+# opencode payload FIELD names decode_oc_hook_payload reads (beyond the `type`
+# discriminator): `info.{id,parentID,directory}` (id = the ses_* identity KEY;
+# parentID = subagent link) and `part.{type,callID,tool,state.{status,input}}`.
+# A rename → the decoder reads None → wrong-register / no-link / no-activity. They
+# appear as `field: …` property lines in the Schema.Struct defs (session.ts).
+# Checked ONE-DIRECTIONAL against the SAME concatenated schema `text`.
+OPENCODE_PAYLOAD_FIELDS = {
+    "info", "id", "parentID", "directory",
+    "part", "sessionID", "callID", "tool", "state", "status", "input",
+}
+
 # Copilot CLI publishes a session-events JSON schema; unpkg serves the file
 # directly (the bare path 302-redirects to the latest published version, which
 # urllib follows — intentionally UNPINNED: a drift watch wants the latest shape,
@@ -237,6 +284,22 @@ OPENCODE_TOLERATED = {"permission.asked"}
 # the linux-x64 one (matches the CI host — every platform package carries the
 # identical schema, and unpkg serves the single file without the 100MB tarball).
 COPILOT_SCHEMA_URL = "https://unpkg.com/@github/copilot-linux-x64/schemas/session-events.schema.json"
+
+# Copilot payload FIELD names decode_copilot_line / extract_copilot_cwd read
+# (beyond the `type` discriminator): identity/link (`agentId` — the child key,
+# == data.toolCallId; `sessionId`, `context`, `cwd`), tool (`toolCallId`,
+# `toolName`, `arguments`), display (`agentDisplayName`) and permission
+# (`permissionRequest`, `result`, `kind`). The wire `parentId` is deliberately
+# NOT here — sub-agents link via the envelope `agentId`, not a parent field, so
+# watching `parentId` would false-alarm on a field we don't depend on. Curated
+# (NOT scraped — a scrape drags in opaque tool-arg keys + fixture JSON). Checked
+# against the union of every `properties` key at ANY depth (envelope + nested
+# `data.properties`) in the SAME schema `text` (a depended field GONE = breaking).
+COPILOT_PAYLOAD_FIELDS = {
+    "agentId", "sessionId", "context", "cwd",
+    "toolCallId", "toolName", "arguments", "agentDisplayName",
+    "permissionRequest", "result", "kind",
+}
 
 # Cursor CLI (`cursor-agent`) is HOOK-ONLY; the events we register/decode are
 # camelCase `hook_event_name`s (`source/cursor.rs`). Cursor is a closed binary,
@@ -261,6 +324,16 @@ OPENCLAW_HOOK_TYPES_URL = (
     "https://raw.githubusercontent.com/openclaw/openclaw/main/src/plugins/hook-types.ts"
 )
 
+# OpenClaw payload FIELD names decode_openclaw_presence reads (beyond `type`):
+# `runId` (the in-flight run key), `sessionId` (fallback key + label) and
+# `success` (agent_end → Degraded gate). `_pid` is plugin-stamped process.pid (no
+# upstream coupling); sessionKey/reason/messageCount are forwarded-but-unread.
+# Checked ONE-DIRECTIONAL (bare `\b` word-boundary) against the SAME hook-types.ts
+# `text`. NB `success` is a common word — like the cursor `stop` caveat, a rename
+# of THE depended field could be masked by an unrelated occurrence (low-confidence
+# false-negative); the distinctive `runId`/`sessionId` carry the check.
+OPENCLAW_PAYLOAD_FIELDS = {"runId", "sessionId", "success"}
+
 # Hermes Agent is a hook-only source: we install SHELL hooks into config.yaml and
 # register 4 of its lifecycle events (`HERMES_EVENTS` in install/hermes.rs). Hermes
 # is open Python: the canonical shell-hook event set is the KEYS of `_DEFAULT_PAYLOADS`
@@ -271,6 +344,19 @@ OPENCLAW_HOOK_TYPES_URL = (
 HERMES_HOOK_URL = (
     "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/hermes_cli/hooks.py"
 )
+# The Hermes shell-hook PAYLOAD (field names, not the event list) is assembled by
+# `_serialize_payload()` in agent/shell_hooks.py — a DIFFERENT file from the
+# event-list source (hooks.py). The decoder reads `session_id`/`cwd`/`tool_name`/
+# `tool_input`; a rename → the shell-hook JSON omits it → the decoder reads None
+# (no key → no coalesce, no tool label). Two orthogonal checks, two files.
+HERMES_SHELL_HOOK_URL = (
+    "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/agent/shell_hooks.py"
+)
+# Hermes payload FIELD names decode_hermes_hook_payload reads (the `session_id`
+# coalesce key + `cwd` label + `tool_name`/`tool_input` for the tool detail).
+# `hook_event_name` is the discriminator (event check covers it). Checked as
+# dict-key literals in _serialize_payload; ONE-DIRECTIONAL (a depended field gone).
+HERMES_PAYLOAD_FIELDS = {"session_id", "cwd", "tool_name", "tool_input"}
 
 
 def fetch(url: str) -> str:
@@ -316,6 +402,25 @@ def read_codex_events() -> set[str]:
     return set(re.findall(r'"(\w+)"', m.group(1)))
 
 
+def read_codex_rollout_types() -> tuple[set[str], set[str]]:
+    """The (event_msg, response_item) inner `type` strings the codex TRANSCRIPT
+    decoder matches on (`source/codex.rs` `match (outer, inner)`). Unlike the hook
+    events these are registered NOWHERE, and the decoder's `_ => vec![]` drops an
+    unrecognized one SILENTLY (no `unknown_event` breadcrumb, unlike the hook
+    decoders) — so a positive "each depended type still exists upstream" check is
+    the only backstop against an upstream rename going dark."""
+    src = (REPO / "crates/pixtuoid-core/src/source/codex.rs").read_text()
+    event_msg = set(re.findall(r'\(\s*"event_msg"\s*,\s*"(\w+)"\s*\)', src))
+    response_item = set(re.findall(r'\(\s*"response_item"\s*,\s*"(\w+)"\s*\)', src))
+    if not event_msg or not response_item:
+        raise RuntimeError(
+            "could not locate codex ('event_msg'|'response_item', …) decode arms "
+            "in source/codex.rs — the transcript decoder was refactored; update "
+            "the parser."
+        )
+    return event_msg, response_item
+
+
 def read_cc_events() -> set[str]:
     src = (REPO / "crates/pixtuoid/src/install/claude.rs").read_text()
     m = re.search(r"const EVENTS[^=]*=\s*&\[(.*?)\];", src, re.S)
@@ -338,6 +443,72 @@ def upstream_codex_hooks(text: str) -> set[str] | None:
         return None
     # variant identifiers (drop comments/attrs by keeping CamelCase words)
     return set(re.findall(r"\b([A-Z][A-Za-z]+)\b", m.group(1)))
+
+
+def _snake_case(camel: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", camel).lower()
+
+
+def _enum_body(text: str, enum_name: str) -> str | None:
+    """The brace-balanced body of `enum <enum_name> { … }` (the `?` non-greedy
+    regexes elsewhere stop at the FIRST `}`, which a struct-variant body would
+    truncate — so balance explicitly)."""
+    m = re.search(rf"enum\s+{enum_name}\s*\{{", text)
+    if not m:
+        return None
+    start = m.end() - 1  # index of the opening `{`
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : i]
+    return None
+
+
+def _strip_nested(s: str) -> str:
+    """Remove line/doc comments then iteratively strip innermost `(…)`/`{…}`
+    (tuple params, struct-variant bodies, AND attr parens) so only top-level
+    variant idents survive — else a CamelCase field/param TYPE reads as a variant."""
+    s = re.sub(r"//[^\n]*", "", s)
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r"\([^()]*\)", "", s)
+        s = re.sub(r"\{[^{}]*\}", "", s)
+    return s
+
+
+def upstream_codex_enum_types(text: str, enum_name: str) -> set[str] | None:
+    """Serialized `type` tags of a codex `#[serde(tag="type", rename_all="snake_case")]`
+    enum (`EventMsg` in protocol.rs, `ResponseItem` in models.rs). Each variant
+    contributes snake_case(name), plus every explicit `#[serde(rename="…")]` /
+    `alias="…"` literal. This over-includes (a renamed variant keeps its
+    snake_case form too), which is HARMLESS: the check is one-directional — it
+    only confirms a DEPENDED type is still present, never that a name is absent.
+    Returns None if the enum can't be located (→ a loud "upstream moved it")."""
+    body = _enum_body(text, enum_name)
+    if body is None:
+        return None
+    # rename/alias literals must be read BEFORE `_strip_nested` eats the attr parens.
+    names = set(re.findall(r'(?:rename|alias)\s*=\s*"([^"]+)"', re.sub(r"//[^\n]*", "", body)))
+    names.update(_snake_case(v) for v in re.findall(r"\b([A-Z][A-Za-z0-9]*)\b", _strip_nested(body)))
+    return names or None
+
+
+def codex_function_call_fields(text: str) -> set[str] | None:
+    """The field idents of the INLINE `ResponseItem::FunctionCall { … }` variant
+    (models.rs). Returns None if it isn't an inline struct — a GRACEFUL SKIP, not
+    an alarm: a tuple-variant refactor (`FunctionCall(FunctionCallItem)`)
+    serializes the SAME JSON, so the decoder's `.get("name"/"arguments")` still
+    works; only this bonus field check goes quiet (the type-existence check above
+    still covers `function_call`). Selftested so OUR regex breaking is caught."""
+    m = re.search(r"FunctionCall\s*\{([^}]*)\}", text)
+    if not m:
+        return None
+    return set(re.findall(r"\b([a-z_][a-z0-9_]*)\s*:", m.group(1)))
 
 
 def upstream_cc_hook_events(text: str) -> set[str] | None:
@@ -459,6 +630,33 @@ def upstream_copilot_events(text: str) -> set[str] | None:
     return consts or None
 
 
+def upstream_copilot_field_names(text: str) -> set[str] | None:
+    """The union of every `properties` key at ANY depth in the @github/copilot
+    session-events schema — the envelope fields (agentId/sessionId) AND the
+    nested `data.properties` fields (toolCallId/toolName/arguments/…). Used
+    one-directional: a field the decoder READS that is absent from the whole
+    schema is a rename. Returns None if the JSON won't parse (→ loud breaking)."""
+    try:
+        root = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            props = node.get("properties")
+            if isinstance(props, dict):
+                names.update(k for k in props if isinstance(k, str))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(root)
+    return names or None
+
+
 def upstream_codewhale_hooks(text: str) -> set[str] | None:
     # The TUI shell-command hook enum `pub enum HookEvent { SessionStart, ... }`
     # in crates/tui/src/hooks.rs (NOT the app-server `codewhale-hooks` sink enum
@@ -475,6 +673,7 @@ def upstream_codewhale_hooks(text: str) -> set[str] | None:
 
 def run_checks(
     codex_ours: set[str] | None,
+    codex_rollout: tuple[set[str], set[str]] | None,
     cc_ours: set[str] | None,
     dispatch_names: set[str] | None,
     reasonix_ours: set[str] | None,
@@ -494,10 +693,13 @@ def run_checks(
     the interpreter exits 1 and the workflow files a junk "confirmed drift"
     issue from an empty report. The deliberate read-our-own-source LOUD path
     stays inside main(), before this is called, and still exits 1."""
-    # --- Codex hook events (only the FETCH is transient) -------------------
-    if codex_ours is not None:
+    # --- Codex hook events + rollout decode vocabulary (only the FETCH is
+    #     transient). protocol.rs holds BOTH the HookEventName enum (hooks) and
+    #     the EventMsg enum (rollout `event_msg` types); the `response_item` types
+    #     live in the sibling models.rs (ResponseItem). ------------------------
+    if codex_ours is not None or codex_rollout is not None:
         text = try_fetch(CODEX_PROTOCOL_URL, "Codex source", breaking, errors)
-        if text is not None:
+        if text is not None and codex_ours is not None:
             upstream = upstream_codex_hooks(text)
             if upstream is None:
                 breaking.append(
@@ -519,6 +721,62 @@ def run_checks(
                         f"intentionally omit it (add a decoder arm + CODEX_EVENTS, "
                         f"or add it to CODEX_KNOWN_OMITTED)."
                     )
+        # Rollout `event_msg` types → the EventMsg enum in the SAME protocol.rs.
+        # ONE-DIRECTIONAL: codex emits many EventMsg/ResponseItem types we ignore,
+        # so only a VANISHED depended type alarms (a new one is not a ping). This
+        # is the ONLY backstop — the transcript decoder's `_ => vec![]` drops an
+        # unknown type silently, with no `unknown_event` breadcrumb.
+        if text is not None and codex_rollout is not None:
+            event_msg_ours, _ = codex_rollout
+            up_ev = upstream_codex_enum_types(text, "EventMsg")
+            if up_ev is None:
+                breaking.append(
+                    "Codex `EventMsg` enum not found in protocol.rs — upstream "
+                    "moved it; update the parser."
+                )
+            else:
+                for t in sorted(event_msg_ours):
+                    if t not in up_ev:
+                        breaking.append(
+                            f"Codex rollout event_msg `{t}` (decoded in "
+                            f"source/codex.rs) is GONE from upstream `EventMsg` — "
+                            f"renamed; the transcript decoder drops it SILENTLY "
+                            f"(`_ => vec![]`, no drift breadcrumb)."
+                        )
+        # Rollout `response_item` types → the ResponseItem enum in models.rs.
+        if codex_rollout is not None:
+            _, response_item_ours = codex_rollout
+            models = try_fetch(CODEX_MODELS_URL, "Codex models", breaking, errors)
+            if models is not None:
+                up_ri = upstream_codex_enum_types(models, "ResponseItem")
+                if up_ri is None:
+                    breaking.append(
+                        "Codex `ResponseItem` enum not found in models.rs — "
+                        "upstream moved it; update CODEX_MODELS_URL / the parser."
+                    )
+                else:
+                    for t in sorted(response_item_ours):
+                        if t not in up_ri:
+                            breaking.append(
+                                f"Codex rollout response_item `{t}` (decoded in "
+                                f"source/codex.rs) is GONE from upstream "
+                                f"`ResponseItem` — renamed; the transcript decoder "
+                                f"drops it SILENTLY."
+                            )
+                    # FunctionCall FIELD survival: codex_tool_start reads `name`
+                    # + `arguments` off a function_call item; a rename → silent
+                    # mislabel / the approval gate never fires. Rides `models`.
+                    # None = not an inline struct → graceful skip (see the helper).
+                    fc_fields = codex_function_call_fields(models)
+                    if fc_fields is not None:
+                        for f in ("name", "arguments"):
+                            if f not in fc_fields:
+                                breaking.append(
+                                    f"Codex function_call field `{f}` is GONE from "
+                                    f"ResponseItem::FunctionCall in models.rs — renamed; "
+                                    f"the decoder reads None (mislabels the tool / never "
+                                    f"gates on approval)."
+                                )
 
     # --- Reasonix hook events + payload fields (only the FETCH is transient)
     if reasonix_ours is not None:
@@ -578,6 +836,17 @@ def run_checks(
                         f"intentionally omit it (add a decoder arm + CODEWHALE_EVENTS, "
                         f"or add it to CODEWHALE_KNOWN_OMITTED)."
                     )
+            # Env-mode identity fields: the DEEPSEEK_* names CodeWhale sets in
+            # `HookContext::to_env_vars` (same hooks.rs). ONE-DIRECTIONAL.
+            for field in sorted(CODEWHALE_ENV_FIELDS):
+                if f'"{field}"' not in text:
+                    breaking.append(
+                        f"CodeWhale env var `{field}` (folded by the shim's env-mode "
+                        f"into the {{cwd,tool,tool_args}} envelope) is GONE from "
+                        f"hooks.rs `to_env_vars` — renamed; the shim reads None, the "
+                        f"envelope omits its field, and the cwd-keyed decoder drops "
+                        f"the event (empty cwd = no sprite / no activity)."
+                    )
 
     # --- opencode EventV2 types (only the FETCH is transient) --------------
     if opencode_ours is not None:
@@ -599,6 +868,16 @@ def run_checks(
                         f"from upstream — likely renamed; the plugin still forwards it but "
                         f"the decoder maps it to nothing (no sprite / no activity)."
                     )
+            # Payload FIELD names — each a `field:` property line in the schema
+            # Struct defs. ONE-DIRECTIONAL (a depended field vanishing alarms).
+            for field in sorted(OPENCODE_PAYLOAD_FIELDS):
+                if not re.search(rf"(?m)^\s*{re.escape(field)}:", text):
+                    breaking.append(
+                        f"opencode field `{field}` (read by source/opencode.rs) is GONE "
+                        f"from the schema Struct defs — likely renamed; the plugin still "
+                        f"forwards the event but the decoder reads None (wrong-register / "
+                        f"no-link / no-activity)."
+                    )
 
     # --- Copilot event types (only the FETCH is transient) -----------------
     if copilot_ours is not None:
@@ -619,6 +898,23 @@ def run_checks(
                             f"from the @github/copilot schema — likely renamed; the "
                             f"transcript still carries it but the decoder maps it to "
                             f"nothing (no sprite / no activity)."
+                        )
+            # Payload FIELD names — the union of every `properties` key (envelope
+            # + nested data.*). ONE-DIRECTIONAL (a depended field vanishing alarms).
+            fields_up = upstream_copilot_field_names(text)
+            if fields_up is None:
+                breaking.append(
+                    "Copilot schema won't parse for field names — upstream "
+                    "restructured it; update upstream_copilot_field_names."
+                )
+            else:
+                for field in sorted(COPILOT_PAYLOAD_FIELDS):
+                    if field not in fields_up:
+                        breaking.append(
+                            f"Copilot field `{field}` (read by decode_copilot_line / "
+                            f"extract_copilot_cwd) is GONE from the schema properties — "
+                            f"renamed; the decoder reads None (wrong-register / no-link / "
+                            f"no tool label / permission never gates)."
                         )
 
     # --- Cursor hook events (only the FETCH is transient) ------------------
@@ -653,8 +949,16 @@ def run_checks(
                         f"the plugin registers a hook OpenClaw never fires, so the lobster "
                         f"mascot silently stops reacting (no presence)."
                     )
+            # Payload FIELD names read by decode_openclaw_presence. ONE-DIRECTIONAL.
+            for field in sorted(OPENCLAW_PAYLOAD_FIELDS):
+                if not re.search(rf"\b{re.escape(field)}\b", text):
+                    breaking.append(
+                        f"OpenClaw field `{field}` (read by decode_openclaw_presence) is "
+                        f"GONE from src/plugins/hook-types.ts — renamed; the decoder reads "
+                        f"None (wrong run-key / no Degraded gate / no presence)."
+                    )
 
-    # --- Hermes shell-hook events (only the FETCH is transient) ------------
+    # --- Hermes shell-hook events + payload fields (only the FETCH is transient)
     if hermes_ours is not None:
         text = try_fetch(HERMES_HOOK_URL, "Hermes hooks", breaking, errors)
         if text is not None:
@@ -669,6 +973,18 @@ def run_checks(
                         f"hermes_cli/hooks.py _DEFAULT_PAYLOADS — likely renamed; Hermes still "
                         f"runs but the shell hook we install into config.yaml fires nothing "
                         f"(no sprite / no activity)."
+                    )
+        # Payload FIELD names — assembled by _serialize_payload in the SEPARATE
+        # agent/shell_hooks.py (a second fetch). ONE-DIRECTIONAL.
+        shell = try_fetch(HERMES_SHELL_HOOK_URL, "Hermes shell_hooks", breaking, errors)
+        if shell is not None:
+            for field in sorted(HERMES_PAYLOAD_FIELDS):
+                if f'"{field}"' not in shell:
+                    breaking.append(
+                        f"Hermes payload field `{field}` (read by "
+                        f"decode_hermes_hook_payload) is GONE from agent/shell_hooks.py "
+                        f"_serialize_payload — renamed; the shell-hook JSON omits it and the "
+                        f"decoder reads None (no coalesce key / no tool label)."
                     )
 
     # --- CC subagent-dispatch tool (only the FETCH is transient) -----------
@@ -739,6 +1055,7 @@ def main() -> int:
     # what the parsers expect) — that is a LOUD breaking signal, never a transient
     # one, or drift monitoring would silently stop with zero alarm.
     codex_ours = None
+    codex_rollout = None
     cc_ours = None
     dispatch_names = None
     reasonix_ours = None
@@ -750,6 +1067,7 @@ def main() -> int:
     hermes_ours = None
     try:
         codex_ours = read_codex_events()
+        codex_rollout = read_codex_rollout_types()
         cc_ours = read_cc_events()
         dispatch_names = read_dispatch_names()
         reasonix_ours = read_reasonix_events()
@@ -769,6 +1087,7 @@ def main() -> int:
     try:
         run_checks(
             codex_ours,
+            codex_rollout,
             cc_ours,
             dispatch_names,
             reasonix_ours,

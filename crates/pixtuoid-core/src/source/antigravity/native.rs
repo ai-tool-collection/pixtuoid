@@ -50,13 +50,34 @@ impl Source for AntigravitySource {
             decode_ag_line,
             derive_ag_label,
             ag_session_ended,
-        );
+        )
+        .with_path_filter(skip_transcript_full);
         watcher.run(tx).await
     }
 }
 
 fn ag_session_ended(_tail: &[u8]) -> bool {
     false
+}
+
+/// Antigravity-cli writes BOTH `transcript.jsonl` (truncated) and
+/// `transcript_full.jsonl` (untruncated) per conversation in one
+/// `.../logs/` dir, carrying the SAME `step_index` stream — so walking both
+/// mints two path-keyed `AgentId`s and double-renders the conversation. Watch
+/// only the canonical `transcript.jsonl` (also the shorter one, so less likely
+/// to trip the >1 MiB oversized-skip); the decoder ignores content length, so
+/// dropping the untruncated copy loses nothing. Narrow by construction — it
+/// skips ONLY the known duplicate, never an unrelated `.jsonl`.
+///
+/// Accepted residual: a dir with ONLY `transcript_full.jsonl` (a brief
+/// write-order race before `transcript.jsonl` lands, or a future AG that drops
+/// the truncated file) renders nothing and — unlike a step-type rename, which
+/// trips `drift::unknown_event` — emits NO drift breadcrumb, because the
+/// `fn(&Path) -> bool` filter can't see the sibling to fall back on. It
+/// self-heals once `transcript.jsonl` appears, and is strictly better than the
+/// every-conversation double-render it replaces.
+fn skip_transcript_full(path: &Path) -> bool {
+    path.file_name().and_then(|s| s.to_str()) != Some("transcript_full.jsonl")
 }
 
 fn derive_ag_label(_path: &Path, source: &str, cwd: &Path) -> String {
@@ -93,6 +114,17 @@ mod tests {
         // Antigravity writes no end marker — defer to mtime + stale-sweep.
         assert!(!ag_session_ended(b"x"));
         assert!(!ag_session_ended(b""));
+    }
+
+    #[test]
+    fn skip_transcript_full_drops_only_the_duplicate() {
+        // The conversation's canonical transcript is walked; its untruncated
+        // twin is skipped so one conversation renders one sprite. Any OTHER
+        // `.jsonl` is admitted (the filter is narrow by construction).
+        let dir = Path::new("/h/.gemini/antigravity-cli/brain/c1/.system_generated/logs");
+        assert!(skip_transcript_full(&dir.join("transcript.jsonl")));
+        assert!(!skip_transcript_full(&dir.join("transcript_full.jsonl")));
+        assert!(skip_transcript_full(&dir.join("other.jsonl")));
     }
 
     // The brain dir is the CLI's (`antigravity-cli`), home-rooted, on every OS —

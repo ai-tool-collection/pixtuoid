@@ -4,10 +4,10 @@ expression: events
 ---
 - ActivityStart:
     agent_id: 5893914776247809446
-    tool_use_id: ag-1-0
+    tool_use_id: ag-2-0
     detail:
       Generic:
-        display: "list_dir: /home/user/demo-project/src"
+        display: "search_web: What is Google Cloud Run?"
 - ActivityEnd:
     agent_id: 5893914776247809446
-    tool_use_id: ag-1-0
+    tool_use_id: ag-2-0
