@@ -12,6 +12,43 @@ import { expect, test, type Page } from '@playwright/test';
 // Runs against the PRODUCTION build (see playwright.config.ts).
 
 /**
+ * WCAG 2.1 relative luminance + contrast ratio (per the spec's definitions),
+ * plus the minimal alpha-compositing needed to pin `.text-scrim`'s worst case:
+ * the scrim is painted over the dimmer, which is itself translucent over the
+ * live office. Kept fn-local (used by one test) rather than a shared util.
+ */
+function relLuminance([r, g, b]: [number, number, number]): number {
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+function contrastRatio(a: [number, number, number], b: [number, number, number]): number {
+  const [la, lb] = [relLuminance(a), relLuminance(b)];
+  const [hi, lo] = la > lb ? [la, lb] : [lb, la];
+  return (hi + 0.05) / (lo + 0.05);
+}
+function compositeOver(
+  [r, g, b, a]: [number, number, number, number],
+  under: [number, number, number]
+): [number, number, number] {
+  const [ur, ug, ub] = under;
+  return [r * a + ur * (1 - a), g * a + ug * (1 - a), b * a + ub * (1 - a)];
+}
+function parseRgb(css: string): [number, number, number, number] {
+  const m = css.match(/rgba?\(([^)]+)\)/);
+  if (!m) throw new Error(`unparseable color: ${css}`);
+  const [r, g, b, a] = m[1].split(',').map((s) => parseFloat(s));
+  return [r, g, b, a ?? 1];
+}
+function parseHex(hex: string): [number, number, number] {
+  const m = hex.trim().match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) throw new Error(`unparseable hex color: ${hex}`);
+  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+}
+
+/**
  * Fail the calling test if the page logs an uncaught error or console.error.
  * Attached once per DISTINCT code path (index live boot, copy/hire, docs
  * shell, reduced-motion) rather than every test — keeps failures pointed.
@@ -190,9 +227,109 @@ test('the install Copy click hires without breaking the page', async ({ page, co
   const copy = page.locator('.install__panel.is-active .install__copy');
   await copy.click();
   // The copy flash proves the click handler ran to completion — i.e. the
-  // pre-copy __pixHire() call (the #436 wiring) didn't throw.
+  // post-copy pix:install-copy dispatch (OfficeBackdrop's hire listener) didn't throw.
   await expect(copy).toHaveText(/Copied|Select & copy/);
   expect(errors()).toEqual([]);
+});
+
+test('an install copy hires a coworker: pix:install-copy → pix:hired', async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(['clipboard-write']);
+  const errors = watchErrors(page);
+  await gotoLive(page); // hire needs the LIVE office (__pixHire exists)
+  await page.evaluate(() => {
+    (window as unknown as { __hired: string[] }).__hired = [];
+    document.addEventListener('pix:hired', (e) =>
+      (window as unknown as { __hired: string[] }).__hired.push(
+        (e as CustomEvent<{ name: string }>).detail.name
+      )
+    );
+  });
+  expect(await page.evaluate(() => window.__pixInstall!.copy('closer'))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __hired: string[] }).__hired))
+    .toEqual(['cc·yours']);
+  expect(errors()).toEqual([]);
+});
+
+test('the hire cap stops the receipt at 3 but keeps hiring every time', async ({
+  page,
+  context,
+}) => {
+  // Cross-boundary pin (review finding on Task 6): HIRE_RECEIPT_CAP in
+  // OfficeBackdrop.astro mirrors VisitorHires::MAX_LIVE in
+  // crates/pixtuoid-web/src/lib.rs across the wasm boundary — a comment
+  // pairing alone can drift silently. This test pins BOTH halves: the cap
+  // VALUE (3) and the keep-attempting BEHAVIOR (the clipboard/copy path must
+  // never look broken even once the engine has quietly refused a hire past
+  // its cap). A change to either constant without the other now fails here.
+  await context.grantPermissions(['clipboard-write']);
+  const errors = watchErrors(page);
+  await gotoLive(page); // hire needs the LIVE office (__pixHire exists)
+  await page.evaluate(() => {
+    (window as unknown as { __hired: string[] }).__hired = [];
+    document.addEventListener('pix:hired', (e) =>
+      (window as unknown as { __hired: string[] }).__hired.push(
+        (e as CustomEvent<{ name: string }>).detail.name
+      )
+    );
+    // Instrument the REAL Office.hire() call BEFORE firing any copies.
+    const real = window.__pixHire!;
+    (window as unknown as { __hireCalls: number }).__hireCalls = 0;
+    window.__pixHire = function () {
+      (window as unknown as { __hireCalls: number }).__hireCalls++;
+      real();
+    };
+  });
+  for (let i = 0; i < 4; i++) {
+    expect(await page.evaluate(() => window.__pixInstall!.copy('statusline'))).toBe(true);
+  }
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __hired: string[] }).__hired))
+    .toEqual(['cc·yours', 'cc·yours', 'cc·yours']); // receipt caps at MAX_LIVE (3), not 4
+  expect(
+    await page.evaluate(() => (window as unknown as { __hireCalls: number }).__hireCalls)
+  ).toBe(4); // Office.hire() is still called every time — only the receipt stops
+  expect(errors()).toEqual([]);
+});
+
+test('reduced motion: an install copy writes the clipboard but hires nobody', async ({
+  browser,
+}) => {
+  // The no-wasm strand of the same finding: under reduced motion the wasm
+  // fetch never runs, so window.__pixHire is never published. copy() must
+  // still succeed (the clipboard write is independent of the office) and
+  // OfficeBackdrop's `if (!window.__pixHire) return;` guard must make the
+  // hire side a true no-op — no throw, no pix:hired receipt.
+  const context = await browser.newContext({
+    reducedMotion: 'reduce',
+    permissions: ['clipboard-read', 'clipboard-write'],
+  });
+  const page = await context.newPage();
+  const errors = watchErrors(page);
+  await page.addInitScript(() => sessionStorage.setItem('pix-booted', '1'));
+  await page.goto('./');
+  await expect(page.locator('.backdrop.is-live')).not.toBeAttached();
+  await page.evaluate(() => {
+    (window as unknown as { __hired: string[] }).__hired = [];
+    document.addEventListener('pix:hired', (e) =>
+      (window as unknown as { __hired: string[] }).__hired.push(
+        (e as CustomEvent<{ name: string }>).detail.name
+      )
+    );
+  });
+  expect(await page.evaluate(() => window.__pixInstall!.copy('statusline'))).toBe(true);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    'brew install IvanWng97/pixtuoid/pixtuoid'
+  );
+  await page.waitForTimeout(500); // settle window: no late/async hire lands
+  expect(await page.evaluate(() => (window as unknown as { __hired: string[] }).__hired)).toEqual(
+    []
+  );
+  expect(errors()).toEqual([]);
+  await context.close();
 });
 
 test('docs pages keep the sticky nav with section links', async ({ page }) => {
@@ -290,24 +427,127 @@ test('wasm fetch failure keeps the still poster without an uncaught error', asyn
   await context.close();
 });
 
-test('single-char shortcuts are focus-gated to a neutral context (WCAG 2.1.4)', async ({
+test('key vocabulary: digits ride globally, typing surfaces stay guarded, t keeps its gate', async ({
   page,
 }) => {
   await gotoLive(page);
-  // Baseline: from the page body the digit still rides the lift.
   await page.keyboard.press('3');
   await expect(page.locator('[data-lift-digit]')).toHaveText('3F', { timeout: 10_000 });
-  // Focus a real interactive control (the fixed pause button — no scroll on
-  // focus): bare digits + `t` must go INERT so voice-control dictation / stray
-  // focus can't trigger floor or theme changes.
+  // The audit's dead-digit-keys bug, pinned FIXED (§4): focus parked on a real
+  // control no longer kills the floor keys — digits are document-global now.
   await page.locator('#office-pause').focus();
   await page.keyboard.press('1');
-  await expect(page.locator('[data-lift-digit]')).toHaveText('3F'); // unchanged
+  await expect(page.locator('[data-lift-digit]')).toHaveText('1F', { timeout: 10_000 });
+  // …but a typing surface still swallows them (no teleport mid-input).
+  await page.evaluate(() => {
+    const inp = document.createElement('input');
+    inp.id = 'e2e-typing-probe';
+    document.body.appendChild(inp);
+    inp.focus();
+  });
+  await page.keyboard.press('3');
+  await expect(page.locator('[data-lift-digit]')).toHaveText('1F'); // unchanged
+  await page.evaluate(() => document.getElementById('e2e-typing-probe')!.remove());
+  // `t` (decorative retint) KEEPS the old WCAG 2.1.4 focus gate.
+  await page.locator('#office-pause').focus();
   await page.evaluate(() => document.documentElement.style.removeProperty('--coral'));
   await page.keyboard.press('t');
   expect(
     await page.evaluate(() => document.documentElement.style.getPropertyValue('--coral'))
-  ).toBe(''); // no retint from a focused control
+  ).toBe('');
+});
+
+test('statusline install chip: copy flashes ✓, clipboard gets the one-liner, then the hire receipt', async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const errors = watchErrors(page);
+  await gotoLive(page); // live office → the copy also hires → the receipt
+  const label = page.locator('#sl-install .sl__copy-label');
+  await expect(label).toHaveText('brew install');
+  await page.locator('#sl-install [data-sl-copy]').click();
+  await expect(label).toHaveText('copied ✓');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    'brew install IvanWng97/pixtuoid/pixtuoid'
+  );
+  // the receipt queues BEHIND the 2s copied-✓ window, then flashes
+  await expect(label).toHaveText('you · hired · just now', { timeout: 6_000 });
+  // …and the chip returns to rest
+  await expect(label).toHaveText('brew install', { timeout: 6_000 });
+  expect(errors()).toEqual([]);
+});
+
+test('statusline install chip: the icon-only mobile collapse still shows the copied/hired flash (review round, #504)', async ({
+  page,
+  context,
+}) => {
+  // ≤760px hides .sl__copy-label — the desktop test above asserts on TEXT
+  // that's invisible here. This pins the glyph swap + chip pulse that stand
+  // in for it (a pixel-diff at this width showed no perceivable change
+  // before this fix — sighted mobile users got zero copy confirmation).
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const errors = watchErrors(page);
+  await gotoLive(page); // live office → the copy also hires → the receipt
+  await page.setViewportSize({ width: 375, height: 800 });
+  const chip = page.locator('#sl-install .sl__copy');
+  const flashIcon = page.locator('#sl-install .sl__copy-icon-flash');
+  await expect(chip).not.toHaveClass(/is-flash/);
+  await expect(flashIcon).toBeHidden();
+  await page.locator('#sl-install [data-sl-copy]').click();
+  await expect(chip).toHaveClass(/is-flash/);
+  await expect(flashIcon).toBeVisible();
+  // …and once the whole copied → hired-receipt sequence settles, it reverts
+  await expect(page.locator('#sl-install .sl__copy-label')).toHaveText('brew install', {
+    timeout: 8_000,
+  });
+  await expect(chip).not.toHaveClass(/is-flash/);
+  await expect(flashIcon).toBeHidden();
+  expect(errors()).toEqual([]);
+});
+
+test('statusline install chip: the ★ star segment renders the overridden count, never a literal null/undefined', async ({
+  page,
+}) => {
+  // __GH_STARS__ is a build-time GitHub API fetch (astro.config.mjs calls
+  // fetchStarCount()); `just site-e2e` / CI's site.yml e2e build both set
+  // GH_STARS_OVERRIDE=842 (config/gh-stars.mjs) so this suite's single shared
+  // webServer/dist gets a deterministic count instead of racing an
+  // unauthenticated, rate-limited GitHub API call. A dev running bare
+  // `npx playwright test` against a stale build made WITHOUT that override may
+  // see this fail (chip absent or a different count) — rebuild with the env
+  // var set first. The shape guard stays broad so a regression to the
+  // stringified-null/undefined defect class (`★null`/`★undefined`) still fails
+  // even if the override value above ever changes.
+  await gotoLive(page);
+  const stars = page.locator('#sl-install .sl__stars');
+  await expect(stars).toBeVisible();
+  await expect(stars).toHaveText('★ 842');
+  await expect(stars).toHaveText(/^\s*★\s*\d+\s*$/);
+});
+
+test('WCAG 2.1.4: the statusline keys toggle turns the digit shortcuts off, then back on', async ({
+  page,
+}) => {
+  await gotoLive(page);
+  // digits ride by default
+  await page.keyboard.press('2');
+  await expect(page.locator('[data-lift-digit]')).toHaveText('2F', { timeout: 10_000 });
+  // open the floor popover and flip the shortcuts OFF
+  await page.locator('[data-floor-toggle]').click();
+  const keysToggle = page.locator('[data-keys-toggle]');
+  await keysToggle.click();
+  await expect(keysToggle).toHaveAttribute('aria-checked', 'false');
+  // OFF: a floor digit is inert — the lift readout does not move
+  await page.keyboard.press('4');
+  await expect(page.locator('[data-lift-digit]')).toHaveText('2F');
+  // …and the choice is persisted (single-char shortcuts have a real off-switch)
+  expect(await page.evaluate(() => localStorage.getItem('pix-keys'))).toBe('off');
+  // flip it back ON — the digit rides again
+  await keysToggle.click();
+  await expect(keysToggle).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('4');
+  await expect(page.locator('[data-lift-digit]')).toHaveText('4F', { timeout: 10_000 });
 });
 
 test('the clock forces night after hours and clears on an explicit theme act', async ({ page }) => {
@@ -727,7 +967,7 @@ test('landing fixed chrome: floating nav, statusline readouts, floor popover, da
   await page.keyboard.press('Escape');
   await expect(page.locator('#sl-floors')).toBeHidden();
   await toggle.click();
-  await page.locator('[data-floor-btn="1"]').click();
+  await page.locator('[data-floor-btn="1F"]').click();
   await expect(page.locator('#sl-floors')).toBeHidden();
   await expect(page.locator('[data-lift-digit]')).toHaveText('1F', { timeout: 10_000 });
 });
@@ -798,4 +1038,73 @@ test('docs-table code cells render single-line (column-collapse guard)', async (
   ).toBeGreaterThan(0);
   expect(cells.wrapped, 'code tokens inside table cells wrapped mid-token').toEqual([]);
   await context.close();
+});
+
+test('text over the live office carries its own scrim (.text-scrim)', async ({ page }) => {
+  await gotoLive(page);
+  // §5: legibility must not depend on the center-anchored scroll dimmer — the
+  // hero subcopy and the feature ledger rows carry a local scrim.
+  const bg = await page.evaluate(
+    () => getComputedStyle(document.querySelector('.hero .statement-sub')!).backgroundColor
+  );
+  expect(bg).not.toBe('rgba(0, 0, 0, 0)');
+  expect(await page.locator('#features .ledger__row.text-scrim').count()).toBeGreaterThan(0);
+});
+
+test('the scrimmed hero subcopy clears WCAG AA at the worst-case composite (day theme)', async ({
+  page,
+}) => {
+  // Review finding (task 2): the binding constraint is WCAG AA (4.5:1) for
+  // EVERY token, but the shipped test above only checked a scrim EXISTS, not
+  // that it's dark/opaque enough. The worst case is day theme, since it's the
+  // theme whose --fg-muted/--scrim pairing has the least headroom: the hero
+  // subcopy (--fg-muted) inside .text-scrim, with the dimmer capped at the
+  // hero's own data-lit-max (below its usual ceiling — see [data-lit-max] in
+  // OfficeBackdrop.astro) instead of fully dark, painted over --screen (the
+  // darkest pixel the office ever renders). Reads REAL computed styles (not
+  // hardcoded token values) so a future --scrim/--fg-muted regression fails
+  // this test rather than only a visual read.
+  await page.addInitScript(() => {
+    sessionStorage.setItem('pix-booted', '1');
+    localStorage.setItem('pix-theme', 'day');
+  });
+  await page.goto('./');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'day');
+
+  const measured = await page.evaluate(() => {
+    const sub = document.querySelector('.hero .statement-sub')!;
+    const litBlock = document.querySelector('.hero__copy') as HTMLElement;
+    return {
+      textColor: getComputedStyle(sub).color,
+      scrimBg: getComputedStyle(sub).backgroundColor,
+      dimmerBg: getComputedStyle(document.getElementById('dimmer')!).backgroundColor,
+      dataLitMax: parseFloat(litBlock.dataset.litMax!),
+      screenToken: getComputedStyle(document.documentElement).getPropertyValue('--screen'),
+    };
+  });
+
+  // --screen is a PROXY for the darkest pixel the live office canvas actually
+  // renders (a real frame sample isn't practical here) — reviewer-verified
+  // immaterial: at the hero's 90% dimmer alpha, the ratio shift from any
+  // plausible canvas-vs-token delta is <0.005, against a 0.26 margin above
+  // the 4.5:1 floor.
+  const officeWorstPixel = parseHex(measured.screenToken);
+  const afterDimmer = compositeOver(
+    [...parseRgb(measured.dimmerBg).slice(0, 3), measured.dataLitMax] as [
+      number,
+      number,
+      number,
+      number,
+    ],
+    officeWorstPixel
+  );
+  const afterScrim = compositeOver(parseRgb(measured.scrimBg), afterDimmer);
+  const ratio = contrastRatio(
+    parseRgb(measured.textColor).slice(0, 3) as [number, number, number],
+    afterScrim
+  );
+
+  expect(ratio, `WCAG AA floor is 4.5:1; measured ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+    4.5
+  );
 });

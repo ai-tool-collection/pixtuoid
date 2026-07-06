@@ -1,5 +1,8 @@
 // Injected at build time from the workspace Cargo.toml (see astro.config.mjs).
 declare const __PIXTUOID_VERSION__: string;
+// Build-time GitHub star count ("342"), or null when the API was unreachable
+// at build (offline builds must not fail) — consumers omit the count then.
+declare const __GH_STARS__: string | null;
 
 // The page's cross-component runtime contracts (producers/consumers documented
 // in README.md "Cross-component seams"; existence pinned by tests/e2e). All
@@ -26,10 +29,24 @@ interface Window {
     ok: (_v: string) => boolean;
     fallback: () => string;
   };
-  /** Key-shortcut guards (Base.astro): the typing-surface check + the WCAG
-   * 2.1.4 focus gate for the bare single-char shortcuts (digits 1–6, t). */
+  /** Key-shortcut guards (Base.astro): the typing-surface check, shared by
+   * every single-char shortcut, and the WCAG 2.1.4 focus gate — which only
+   * `t` (decorative retint) rides; digits 1–6 are document-global instead,
+   * gated by enabled()/typing() below and the boot-splash guard. */
   __pixKeys?: {
     typing: (_e: Event) => boolean;
     shortcutContext: () => boolean;
+    /** WCAG 2.1.4 off-switch for the bare digit shortcuts, persisted in
+     * localStorage('pix-keys'); read at each keydown, written by the statusline
+     * toggle. */
+    enabled: () => boolean;
+    setEnabled: (_on: boolean) => void;
+  };
+  /** THE install one-liner + copy dispatcher (Base.astro, parse-first). copy()
+   * resolves true after a successful clipboard write (and fires
+   * pix:install-copy {source}); false when the Clipboard API is unavailable. */
+  __pixInstall?: {
+    CMD: string;
+    copy: (_source: 'hero' | 'statusline' | 'docs' | 'closer' | 'install') => Promise<boolean>;
   };
 }

@@ -1,8 +1,9 @@
 ---
 import featuresData from '../features.json';
-import { floorByNumber } from '../consts';
+import { floorById, floorName } from '../consts';
+import PixIcon from './PixIcon.astro';
 
-const floor = floorByNumber(4);
+const floor = floorById('features');
 
 // A feature card MAY deep-link to the Studio Wall channel that demos it
 // (`card.href`); the 4F "small touches" cards don't — their subjects aren't
@@ -13,6 +14,7 @@ type Feature = {
   name: string;
   desc: string;
   featured?: boolean;
+  pix?: string;
   card?: { blurb: string; href?: string };
 };
 
@@ -25,6 +27,7 @@ const cells = features.flatMap((f) =>
     ? [
         {
           icon: f.icon,
+          pix: f.pix,
           title: f.name,
           body: f.card.blurb ?? f.desc,
           href: f.card.href,
@@ -34,10 +37,16 @@ const cells = features.flatMap((f) =>
 );
 ---
 
-<section id={floor.id} class="features" data-lit data-floor={floor.n}>
+<section
+  id={floor.id}
+  class="features"
+  data-lit
+  data-floor={floor.fl}
+  data-floor-label={floor.label}
+>
   <div class="container">
     <div class="section-head reveal">
-      <p class="eyebrow">{floor.n}F · {floor.name} — the office is alive</p>
+      <p class="eyebrow">{floor.fl} · {floorName(floor)} — the office is alive</p>
       <h2 class="statement statement--md">Not a dashboard.<br />A little world.</h2>
       <p class="lead">
         pixtuoid renders your agents as coworkers in a top-down pixel office — with the small
@@ -48,9 +57,9 @@ const cells = features.flatMap((f) =>
     <div class="ledger">
       {
         cells.map((c) => (
-          <article class="ledger__row reveal">
+          <article class="ledger__row reveal text-scrim">
             <span class="ledger__icon" aria-hidden="true">
-              {c.icon}
+              {c.pix ? <PixIcon name={c.pix} scale={2} /> : c.icon}
             </span>
             <h3 class="ledger__name">{c.title}</h3>
             <p class="ledger__body">{c.body}</p>

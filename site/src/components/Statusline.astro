@@ -10,7 +10,12 @@
 // office — with canned office-life beats interleaved; falls back to the
 // canned reel when the API is unreachable so the build never fails.
 import sources from '../sources.json';
-import { FLOORS, DIM_RESTING } from '../consts';
+import { FLOORS, floorName, DIM_RESTING, REPO } from '../consts';
+import { GH_FETCH_TIMEOUT_MS } from '../../config/gh-stars.mjs';
+
+// Build-time star count (§2): null when the API was unreachable at build —
+// the chip stays, the ★ segment is omitted (offline builds never fail).
+const ghStars: string | null = __GH_STARS__;
 
 const FALLBACK = [
   { state: 'active', who: 'claude-code', what: 'editing src/reducer.rs' },
@@ -35,7 +40,7 @@ try {
   if (process.env.GITHUB_TOKEN) headers.authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
   const res = await fetch(
     'https://api.github.com/repos/IvanWng97/pixtuoid/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=12',
-    { headers, signal: AbortSignal.timeout(5000) }
+    { headers, signal: AbortSignal.timeout(GH_FETCH_TIMEOUT_MS) }
   );
   if (res.ok) {
     const prs = (await res.json()) as {
@@ -67,9 +72,9 @@ try {
   // offline / timeout → FALLBACK already in place
 }
 
-// FLOORS (number ↔ section id ↔ name) is single-sourced in consts.ts; each
-// narrative section stamps its own data-floor/id/eyebrow from the SAME manifest,
-// so the scrollspy can't desync from the sections it drives.
+// FLOORS (id ↔ fl string ↔ label) is single-sourced in consts.ts; each
+// narrative section stamps its own data-floor/data-floor-label/id/eyebrow from
+// the SAME manifest, so the scrollspy can't desync from the sections it drives.
 
 // per-CLI hue for a feed credit like "cc·pixtuoid" — the same manifest colors
 // the tools-matrix chips use (badge includes the trailing '·')
@@ -88,8 +93,8 @@ const badgeColor = (who: string): string | undefined => {
       aria-controls="sl-floors"
       aria-label="Jump to a floor"
     >
-      <span class="sl__digit" data-lift-digit>6F</span>
-      <span class="sl__name" data-lift-name>penthouse</span>
+      <span class="sl__digit" data-lift-digit>{FLOORS[0].fl}</span>
+      <span class="sl__name" data-lift-name>{floorName(FLOORS[0])}</span>
       <span class="sl__caret" aria-hidden="true">▴</span>
     </button>
     <div id="sl-floors" class="sl__floors" hidden>
@@ -97,15 +102,28 @@ const badgeColor = (who: string): string | undefined => {
         FLOORS.map((f) => (
           <button
             class="sl__floorbtn"
-            data-floor-btn={String(f.n)}
+            data-floor-btn={f.fl}
             data-target={f.id}
-            data-name={f.name}
-            aria-current={f.n === 6 ? 'location' : undefined}
+            data-name={floorName(f)}
+            aria-current={f.fl === FLOORS[0].fl ? 'location' : undefined}
           >
-            {f.n}F <span class="sl__floorname">{f.name}</span>
+            {f.fl} <span class="sl__floorname">{floorName(f)}</span>
           </button>
         ))
       }
+      <div class="sl__keysrow">
+        <span class="sl__keyslabel">keys 1–6</span>
+        <button
+          class="sl__keystoggle"
+          type="button"
+          data-keys-toggle
+          role="switch"
+          aria-checked="true"
+          aria-label="Keyboard shortcuts"
+        >
+          <span data-keys-state>on</span>
+        </button>
+      </div>
     </div>
   </nav>
   <div class="sl__feed" aria-hidden="true">
@@ -126,6 +144,27 @@ const badgeColor = (who: string): string | undefined => {
     <span data-sl-clock></span>
     <span class="sl__sep">·</span>
     <span class="sl__onair" data-sl-onair>○ STILL</span>
+  </div>
+  <div class="sl__install hw-panel" id="sl-install">
+    {
+      ghStars && (
+        <a
+          class="sl__stars"
+          href={REPO}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`${ghStars} GitHub stars`}
+        >
+          ★ {ghStars}
+        </a>
+      )
+    }
+    <button class="sl__copy" data-sl-copy aria-label="Copy the install command">
+      <span class="sl__copy-icon" aria-hidden="true">⧉</span>
+      <span class="sl__copy-icon-flash led-selected" aria-hidden="true">✓</span>
+      <span class="sl__copy-label" aria-hidden="true">brew install</span>
+    </button>
+    <span class="sr-only" role="status" data-sl-copy-status></span>
   </div>
   <span class="sl__keys" aria-hidden="true">keys 1–6</span>
 </div>
@@ -219,6 +258,33 @@ const badgeColor = (who: string): string | undefined => {
   .sl__floorname {
     color: var(--chip-dim);
   }
+  .sl__keysrow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-top: 0.3rem;
+    padding: 0.4rem 0.5rem 0.15rem;
+    border-top: 1px solid var(--chip-line);
+    font-size: 0.82em;
+    color: var(--chip-dim);
+  }
+  .sl__keystoggle {
+    background: none;
+    border: 1px solid var(--chip-line);
+    padding: 0.05rem 0.45rem;
+    font: inherit;
+    color: var(--chip-dim);
+    cursor: pointer;
+  }
+  .sl__keystoggle[aria-checked='true'] {
+    color: var(--led);
+    border-color: var(--led);
+  }
+  .sl__keystoggle:hover,
+  .sl__keystoggle:focus-visible {
+    color: var(--chip-ink);
+  }
   .sl__feed {
     position: relative;
     flex: 1;
@@ -258,7 +324,7 @@ const badgeColor = (who: string): string | undefined => {
     background: var(--amber);
   }
   .sl__dot.idle {
-    background: #6f675a;
+    background: var(--led-off);
   }
   .sl__env {
     flex: none;
@@ -273,6 +339,60 @@ const badgeColor = (who: string): string | undefined => {
     color: var(--led);
     text-shadow: 0 0 6px var(--led-glow);
   }
+  .sl__install {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.1rem 0.55rem;
+  }
+  .sl__stars {
+    color: var(--chip-bright);
+    text-decoration: none;
+  }
+  .sl__stars:hover,
+  .sl__stars:focus-visible {
+    color: var(--led);
+  }
+  .sl__copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: none;
+    border: 0;
+    padding: 0.2rem 0;
+    font: inherit;
+    color: var(--chip-ink);
+    cursor: pointer;
+  }
+  .sl__copy:hover,
+  .sl__copy:focus-visible {
+    color: var(--led);
+  }
+  /* hidden everywhere by default — only the icon-only mobile collapse below
+     ever shows it, so wide screens (label visible) stay pixel-unchanged. */
+  .sl__copy-icon-flash {
+    display: none;
+  }
+  @keyframes chip-pulse {
+    0% {
+      box-shadow: 0 0 0 0 var(--led-glow);
+    }
+    100% {
+      box-shadow: 0 0 0 8px transparent;
+    }
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .sl__keys {
     flex: none;
     color: var(--chip-dim);
@@ -284,6 +404,22 @@ const badgeColor = (who: string): string | undefined => {
     }
     .statusline {
       justify-content: space-between;
+    }
+    .sl__copy-label,
+    .sl__stars {
+      display: none;
+    }
+    /* the label's copied/hire-receipt states are invisible in this collapse,
+       so the flash also swaps the glyph + pulses the chip (review round:
+       sighted mobile users got zero confirmation the copy worked). */
+    .sl__copy.is-flash {
+      animation: chip-pulse 0.6s ease-out;
+    }
+    .sl__copy.is-flash .sl__copy-icon {
+      display: none;
+    }
+    .sl__copy.is-flash .sl__copy-icon-flash {
+      display: inline;
     }
   }
   @media (pointer: coarse) {
@@ -314,7 +450,7 @@ const badgeColor = (who: string): string | undefined => {
         const on = b.dataset.floorBtn === String(n);
         if (on) {
           b.setAttribute('aria-current', 'location');
-          if (digit) digit.textContent = n + 'F';
+          if (digit) digit.textContent = n;
           if (name) name.textContent = b.dataset.name || '';
         } else {
           b.removeAttribute('aria-current');
@@ -356,19 +492,24 @@ const badgeColor = (who: string): string | undefined => {
         go(b);
       });
     });
-    // the app's literal floor keys: bare digits 1–6 ride the elevator. WCAG
-    // 2.1.4: fire only from a neutral focus context (page body / a section a
-    // jump parked focus on / the statusline), never a focused control or field,
-    // and never during the boot intro.
-    document.addEventListener('keydown', function (e) {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (document.documentElement.dataset.booting === '1') return;
-      if (window.__pixKeys.typing(e) || !window.__pixKeys.shortcutContext()) return;
-      const btn = btns.find(function (b) {
-        return b.dataset.floorBtn === e.key;
+    // ── keyboard-shortcuts off-switch (WCAG 2.1.4): render + persist the
+    // digit on/off state. The FLAG lives in window.__pixKeys (Base.astro,
+    // parse-first) — Base's document handler reads enabled() at each keydown;
+    // here we only reflect + toggle it. Default on. ──
+    const keysToggle = bar.querySelector('[data-keys-toggle]');
+    const keysState = bar.querySelector('[data-keys-state]');
+    function renderKeys(on) {
+      if (keysToggle) keysToggle.setAttribute('aria-checked', on ? 'true' : 'false');
+      if (keysState) keysState.textContent = on ? 'on' : 'off';
+    }
+    if (keysToggle && window.__pixKeys) {
+      renderKeys(window.__pixKeys.enabled());
+      keysToggle.addEventListener('click', function () {
+        const next = !window.__pixKeys.enabled();
+        window.__pixKeys.setEnabled(next);
+        renderKeys(next);
       });
-      if (btn) go(btn);
-    });
+    }
     // scrollspy — DEFERRED: this is:inline script renders BEFORE <main>, so a
     // parse-time querySelectorAll sees zero [data-floor] sections (the
     // documented parse-position trap).
@@ -484,6 +625,62 @@ const badgeColor = (who: string): string | undefined => {
     document.addEventListener('pix:onair', function (e) {
       isLive = !!(e.detail && e.detail.live);
       renderAir();
+    });
+
+    // ── the install chip (#sl-install): copy → copied ✓ (2s), then the hire
+    // receipt (pix:hired answers a successful copy via OfficeBackdrop). The
+    // receipt QUEUES behind an active flash so 'copied ✓' gets its full
+    // window. Left-segment feed/readouts above are untouched (locked). ──
+    const copyBtn = bar.querySelector('[data-sl-copy]');
+    const copyLabel = bar.querySelector('.sl__copy-label');
+    const copyStatus = bar.querySelector('[data-sl-copy-status]');
+    const CHIP_FLASH_MS = 2000; // §2: 'copied ✓' holds for 2s
+    const CHIP_REST = 'brew install';
+    let chipTimer = 0;
+    let chipBusyUntil = 0;
+    function armBusy() {
+      chipBusyUntil = Date.now() + CHIP_FLASH_MS;
+    }
+    // `confirm` also drives the icon-only mobile collapse's glyph swap + chip
+    // pulse (§sl__copy-icon-flash below) — a failed copy stays plain so a
+    // mobile visitor never sees a false ✓.
+    function chipFlash(text, announce, confirm) {
+      if (!copyLabel) return;
+      copyLabel.textContent = text;
+      if (copyStatus) copyStatus.textContent = announce || '';
+      if (copyBtn) copyBtn.classList.toggle('is-flash', !!confirm);
+      armBusy();
+      clearTimeout(chipTimer);
+      chipTimer = setTimeout(function () {
+        copyLabel.textContent = CHIP_REST;
+        if (copyStatus) copyStatus.textContent = '';
+        if (copyBtn) copyBtn.classList.remove('is-flash');
+      }, CHIP_FLASH_MS);
+    }
+    if (copyBtn) {
+      copyBtn.addEventListener('click', function () {
+        if (!window.__pixInstall) return;
+        // Arm the busy window SYNCHRONOUSLY, before the async copy resolves:
+        // OfficeBackdrop's pix:install-copy → hire → pix:hired cascade fires
+        // synchronously inside the SAME clipboard-write promise continuation
+        // that resolves copy() — i.e. BEFORE the .then() below runs — so the
+        // pix:hired listener would otherwise read a stale chipBusyUntil (0)
+        // and fire the receipt immediately instead of queuing behind it.
+        armBusy();
+        window.__pixInstall.copy('statusline').then(function (ok) {
+          chipFlash(
+            ok ? 'copied ✓' : 'copy failed',
+            ok ? 'Install command copied' : 'Clipboard unavailable',
+            ok
+          );
+        });
+      });
+    }
+    document.addEventListener('pix:hired', function () {
+      const wait = Math.max(0, chipBusyUntil - Date.now());
+      setTimeout(function () {
+        chipFlash('you · hired · just now', 'A coworker walked into the office', true);
+      }, wait);
     });
 
     // ONE control, ONE stop path: the office pause switch fans out here (the
