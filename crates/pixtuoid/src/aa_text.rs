@@ -1,31 +1,55 @@
-//! Shared anti-aliased text rasterizer (JetBrains Mono) for the binary's pixel
+//! Shared anti-aliased text rasterizer (Monaspace Neon) for the binary's pixel
 //! surfaces — the floating window's name badges + wall board (`floating/`) and
-//! the snapshot example's `--proof` panel.
+//! the snapshot example's cell text + `--proof` panel.
 //!
 //! Kept BINARY-side on purpose: `pixtuoid-scene` (which also compiles to wasm for
-//! the web hero) stays font-dep-free — no `ab_glyph`, no embedded TTF, no wasm
+//! the web hero) stays font-dep-free — no `ab_glyph`, no embedded font, no wasm
 //! bundle bloat (the web hero renders text as a crisp DOM overlay instead of
-//! baking it). `ab_glyph` + the vendored `fonts/JetBrainsMono-Regular.ttf`
-//! already lived here for `--proof`; this promotes them to a real module both
-//! `floating/` and the example share.
+//! baking it).
+//!
+//! ONE face by DESIGN — Monaspace Neon (GitHub Next, OFL), the brand mono across
+//! the whole project (the site's `--font-mono` is the same family via
+//! @fontsource). Chosen over JetBrains Mono because it natively covers the
+//! office's FULL symbol vocabulary (`★ ◐ ⬢ ▮ ▯ ↳ ◷ ▤` — JBM lacks all of the
+//! first six and needed an interim JuliaMono-subset fallback face, since
+//! retired; JetBrainsMono Nerd Font does NOT help — its patches live entirely
+//! in the Private Use Area). The `office_symbol_vocabulary_is_fully_covered`
+//! test is the gate: a new render glyph MUST be Monaspace-covered (or the
+//! vocabulary changes), never a second face.
 //!
 //! Surface-agnostic: [`draw_text_at`] hands each lit pixel's coverage to a
-//! `put(x, y, coverage)` closure — the SAME callback seam as
-//! `pixtuoid_scene::font::draw_text`, extended with an alpha channel — so every
-//! caller applies its own pixel-format blend (`RgbaImage` in the example, `u32`
-//! XRGB in the floating window).
+//! `put(x, y, coverage)` closure, so every caller applies its own pixel-format
+//! blend (`RgbImage`/`RgbaImage` in the snapshot example, `u32` XRGB in the
+//! floating window) — all through [`blend_channel`], the one blend curve.
 
 use std::sync::LazyLock;
 
-use ab_glyph::{point, Font, FontRef, PxScale, ScaleFont};
+use ab_glyph::{point, Font, FontRef, GlyphId, PxScale, ScaleFont};
 
-/// The bundled JetBrains Mono Regular (OFL 1.1) — the ONE AA face the binary's
-/// pixel surfaces share. License text in `fonts/OFL.txt`.
-const FONT_BYTES: &[u8] = include_bytes!("../fonts/JetBrainsMono-Regular.ttf");
+/// The bundled Monaspace Neon SemiBold (OFL 1.1 — the user-picked weight for the small-size pixel surfaces) — the ONE AA face every
+/// rasterized text surface shares. License text in `fonts/OFL-Monaspace.txt`.
+const FONT_BYTES: &[u8] = include_bytes!("../fonts/MonaspaceNeon-SemiBold.otf");
 
 static FONT: LazyLock<FontRef<'static>> = LazyLock::new(|| {
-    FontRef::try_from_slice(FONT_BYTES).expect("bundled JetBrains Mono TTF must parse")
+    FontRef::try_from_slice(FONT_BYTES).expect("bundled Monaspace Neon OTF must parse")
 });
+
+/// Linear per-channel coverage blend of `fg` over `bg` — THE one blend curve
+/// every AA-text surface composites with (snapshot PNG `mix_rgb`, proof-panel
+/// `blend_px`, floating `blend_xrgb` all wrap this per their pixel type), so a
+/// future curve change (e.g. gamma-correct blending) lands once, never drifts.
+/// `cov` is clamped here so callers don't each re-clamp.
+pub fn blend_channel(bg: u8, fg: u8, cov: f32) -> u8 {
+    let a = cov.clamp(0.0, 1.0);
+    (bg as f32 + (fg as f32 - bg as f32) * a).round() as u8
+}
+
+/// Whether the face covers `ch` with a real glyph (not `.notdef`). Callers with
+/// a non-text fallback (the snapshot cell rasterizer's centered block) gate on
+/// this so an uncovered decorative symbol renders as the fallback, never tofu.
+pub fn has_glyph(ch: char) -> bool {
+    FONT.glyph_id(ch) != GlyphId(0)
+}
 
 /// Sum of the face's per-glyph pixel-scaled advances at size `px` — the width
 /// function for wrapping / right-flush. Summing real advances (not `chars × one
@@ -119,5 +143,33 @@ mod tests {
             "AA glyph has anti-aliased (partial-coverage) edges"
         );
         assert!(advance > 0, "returns the advance width");
+    }
+
+    #[test]
+    fn blend_channel_endpoints_midpoint_and_clamp() {
+        assert_eq!(blend_channel(0, 200, 0.0), 0);
+        assert_eq!(blend_channel(0, 200, 1.0), 200);
+        assert_eq!(blend_channel(0, 200, 0.5), 100);
+        assert_eq!(blend_channel(0, 200, 2.0), 200, "over-coverage clamps");
+        assert_eq!(blend_channel(0, 200, -1.0), 0, "negative clamps");
+    }
+
+    #[test]
+    fn office_symbol_vocabulary_is_fully_covered() {
+        // Every non-ASCII glyph the TUI's text surfaces emit (labels, footer,
+        // board, tooltip, dashboard, doctor) must be a REAL Monaspace Neon
+        // glyph — the vocabulary is single-face by design (no fallback face).
+        // An uncovered glyph would rasterize as the snapshot fallback block
+        // and as tofu in floating.
+        // HAND-MAINTAINED allowlist (no single machine-readable source of the
+        // render vocabulary exists to derive from): adding a glyph to hud.rs /
+        // board.rs / overlay.rs / tooltip.rs / dashboard.rs means ADDING IT
+        // HERE — and it must be Monaspace-covered, or the vocabulary changes.
+        for ch in [
+            '●', '○', '◐', '◌', '▲', '▸', '▾', '★', '⬢', '▮', '▯', '↳', '◷', '▤', '↑', '↓', '·',
+            '×', '⚠', '…', '⋮', '─', '│', '█', '▓', '▒', '░', '▀', '✓', '└', '├',
+        ] {
+            assert!(has_glyph(ch), "Monaspace Neon does not cover {ch:?}");
+        }
     }
 }
