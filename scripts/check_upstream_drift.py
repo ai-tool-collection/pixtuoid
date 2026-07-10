@@ -395,6 +395,48 @@ HERMES_SHELL_HOOK_URL = (
 # dict-key literals in _serialize_payload; ONE-DIRECTIONAL (a depended field gone).
 HERMES_PAYLOAD_FIELDS = {"session_id", "cwd", "tool_name", "tool_input"}
 
+# Oh My Pi (omp) is TRANSCRIPT-ONLY: the decoder tails the session JSONL, so the
+# depended names are the entry `type` discriminators (source/omp.rs `match kind`)
+# plus a handful of field literals, split across the upstream files that define
+# them (open TS, can1357/oh-my-pi). ONE-DIRECTIONAL like copilot: omp persists
+# ~15 entry types and we map 3 by design — only a name WE DEPEND ON vanishing is
+# breaking (a rename → the transcript still flows but decodes to nothing).
+OMP_SESSION_ENTRIES_URL = (
+    "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/session/session-entries.ts"
+)
+# Field names defined in session-entries.ts: the header `cwd` (the label/first-
+# sight identity) + the `customType` discriminator decode_omp_line keys custom
+# entries on — checked as TS property keys (`cwd: string`), not bare words. The
+# entry `type` values from read_omp_entry_types are checked against the SAME
+# file as QUOTED literals (`type: "message"`): these are generic English words,
+# so a \b word match would survive an upstream rename on any stray prose use.
+OMP_SESSION_ENTRY_FIELDS = {"cwd", "customType"}
+# The clean-teardown marker (SESSION_EXIT_CUSTOM_TYPE) lives in exit-diagnostics.ts
+# — the session-ended checker + the SessionEnd decode both key on it.
+OMP_EXIT_DIAG_URL = (
+    "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/session/exit-diagnostics.ts"
+)
+# The message-level names (roles + tool-call block shape) live in the pi-ai LLM
+# types: `role:"assistant"`/`"toolResult"`, the `"toolCall"` content-block type
+# (quoted TS literals), plus the result's `toolCallId` back-reference and the
+# call's `arguments` (property keys).
+OMP_AI_TYPES_URL = (
+    "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/ai/src/types.ts"
+)
+OMP_MESSAGE_LITERALS = {"assistant", "toolResult", "toolCall"}
+OMP_MESSAGE_FIELDS = {"toolCallId", "arguments"}
+# The ask tool (#519): its toolCall NAME is STATE-bearing — decode_omp_line
+# maps an assistant `ask` block to Waiting — and the first question's text
+# feeds the Waiting reason. Checked against the tool's own source (`readonly
+# name = "ask"` + the arkType schema property keys). `arguments.i` (the
+# intent fallback) is the harness-wide tool-call intent key, NOT defined in
+# ask.ts — its loss only degrades the reason label, so it is deliberately
+# unwatched.
+OMP_ASK_URL = (
+    "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/tools/ask.ts"
+)
+OMP_ASK_FIELDS = {"questions", "question"}
+
 
 def fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "pixtuoid-drift-watch"})
@@ -603,6 +645,23 @@ def read_opencode_events() -> set[str]:
     return set(re.findall(r'"((?:session|message|permission)\.[a-z0-9.]+)"', m.group(1)))
 
 
+def read_omp_entry_types() -> set[str]:
+    """The session-entry `type` strings decode_omp_line maps, read from the
+    `match kind` block in source/omp.rs (the source of truth — stays in sync
+    with the decoder by construction). Scoped to the match block so the unit
+    tests further down the file (which embed the same strings as JSON) don't
+    leak in."""
+    src = (REPO / "crates/pixtuoid-core/src/source/omp.rs").read_text()
+    m = re.search(r"let out = match kind \{(.*?)\n    \};", src, re.S)
+    if not m:
+        raise RuntimeError("could not locate the `match kind` block in source/omp.rs")
+    # Arm-position capture (a line-leading quoted pattern, `"session" => {` or a
+    # guarded `"custom"` on its own line) — a 4th decode arm is picked up
+    # automatically, and arm-BODY literals (`"toolCall"`, `"session_exit"`) that
+    # belong to the other two upstream checks never leak in.
+    return set(re.findall(r'(?m)^\s*"(\w+)"\s*(?:=>|if\b|$)', m.group(1)))
+
+
 def read_copilot_events() -> set[str]:
     """The event `type` strings the decoder maps, read from the `match kind`
     block in source/copilot.rs (the source of truth — stays in sync with the
@@ -752,6 +811,7 @@ def run_checks(
     codewhale_ours: set[str] | None,
     opencode_ours: set[str] | None,
     copilot_ours: set[str] | None,
+    omp_ours: set[str] | None,
     cursor_ours: set[str] | None,
     openclaw_ours: set[str] | None,
     hermes_ours: set[str] | None,
@@ -1010,6 +1070,70 @@ def run_checks(
                             f"no tool label / permission never gates)."
                         )
 
+    # --- omp session-entry types + wire names (only the FETCH is transient) --
+    if omp_ours is not None:
+        text = try_fetch(OMP_SESSION_ENTRIES_URL, "omp session-entries", breaking, errors)
+        if text is not None:
+            # Entry `type` discriminators are QUOTED TS literal types
+            # (`type: "message"`); the names are generic English words, so a
+            # bare \b match would stay green on prose/comment uses after an
+            # upstream rename — quote-anchored on purpose.
+            for name in sorted(omp_ours):
+                if f'"{name}"' not in text:
+                    breaking.append(
+                        f"omp entry type `{name}` (decoded in source/omp.rs) is GONE "
+                        f"from session-entries.ts — likely renamed; the transcript "
+                        f"still flows but the decoder maps it to nothing (no sprite "
+                        f"/ no activity)."
+                    )
+            # Field names appear as TS property keys (`cwd: string`).
+            for field in sorted(OMP_SESSION_ENTRY_FIELDS):
+                if not re.search(rf"(?m)^\s*(?:readonly\s+)?{re.escape(field)}\??\s*:", text):
+                    breaking.append(
+                        f"omp field `{field}` (read by decode_omp_line) is GONE from "
+                        f"session-entries.ts property keys — renamed; the decoder "
+                        f"reads None (no cwd label / no session_exit end)."
+                    )
+        diag = try_fetch(OMP_EXIT_DIAG_URL, "omp exit-diagnostics", breaking, errors)
+        if diag is not None and '"session_exit"' not in diag:
+            breaking.append(
+                "omp customType `session_exit` (the clean-teardown marker the "
+                "session-ended checker + SessionEnd decode key on) is GONE from "
+                "exit-diagnostics.ts — renamed; finished sessions resurrect at "
+                "first sight and never SessionEnd."
+            )
+        ai = try_fetch(OMP_AI_TYPES_URL, "omp pi-ai types", breaking, errors)
+        if ai is not None:
+            for name in sorted(OMP_MESSAGE_LITERALS):
+                if f'"{name}"' not in ai:
+                    breaking.append(
+                        f"omp message literal `{name}` (read by decode_omp_line) is "
+                        f"GONE from pi-ai types.ts — renamed; tool rounds decode to "
+                        f"nothing."
+                    )
+            for field in sorted(OMP_MESSAGE_FIELDS):
+                if not re.search(rf"(?m)^\s*(?:readonly\s+)?{re.escape(field)}\??\s*:", ai):
+                    breaking.append(
+                        f"omp message field `{field}` (read by decode_omp_line) is "
+                        f"GONE from pi-ai types.ts property keys — renamed; tool "
+                        f"rounds lose their key/target."
+                    )
+        ask = try_fetch(OMP_ASK_URL, "omp ask tool", breaking, errors)
+        if ask is not None:
+            if '"ask"' not in ask:
+                breaking.append(
+                    "omp tool name `ask` (drives the ask→Waiting decode) is GONE "
+                    "from tools/ask.ts — renamed; a session parked on a user "
+                    "question renders active instead of waiting."
+                )
+            for field in sorted(OMP_ASK_FIELDS):
+                if not re.search(rf"(?m)^\s*(?:readonly\s+)?{re.escape(field)}\??\s*:", ask):
+                    breaking.append(
+                        f"omp ask field `{field}` (feeds the Waiting reason) is GONE "
+                        f"from tools/ask.ts property keys — renamed; the Waiting "
+                        f"reason degrades to the intent/bare-name fallback."
+                    )
+
     # --- Cursor hook events (only the FETCH is transient) ------------------
     if cursor_ours is not None:
         text = try_fetch(CURSOR_HOOKS_URL, "Cursor hooks doc", breaking, errors)
@@ -1148,6 +1272,7 @@ def main() -> int:
     codewhale_ours = None
     opencode_ours = None
     copilot_ours = None
+    omp_ours = None
     cursor_ours = None
     openclaw_ours = None
     hermes_ours = None
@@ -1160,6 +1285,7 @@ def main() -> int:
         codewhale_ours = read_codewhale_events()
         opencode_ours = read_opencode_events()
         copilot_ours = read_copilot_events()
+        omp_ours = read_omp_entry_types()
         cursor_ours = read_cursor_events()
         openclaw_ours = read_openclaw_events()
         hermes_ours = read_hermes_events()
@@ -1180,6 +1306,7 @@ def main() -> int:
             codewhale_ours,
             opencode_ours,
             copilot_ours,
+            omp_ours,
             cursor_ours,
             openclaw_ours,
             hermes_ours,
