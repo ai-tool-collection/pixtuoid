@@ -274,10 +274,6 @@ fn resolve_characters(
     // on the first couch's index) so the couch hosts a single group
     // conversation like the meeting room — without overloading the
     // meeting-only `room_id` field (which indexes `meeting_furniture`).
-    let couch_group_idx = layout
-        .waypoints
-        .iter()
-        .position(|w| w.kind == crate::layout::WaypointKind::Couch);
     // The pack's character sprite width (8 for the bundled pack, 10 for the
     // robot pack). All character poses share one width, so resolve it ONCE from
     // a reference pose and center every anchor on it — a non-8-wide pack would
@@ -398,7 +394,7 @@ fn resolve_characters(
                             (anim, back_couch_anchor(stand, char_w), 9u16, flip)
                         }
                         // Meeting stand: beside the table, facing inward.
-                        WaypointKind::MeetingStand => {
+                        WaypointKind::MeetingStand | WaypointKind::Island => {
                             let (anim, flip) = seat_sprite(kind, wp_obj.facing);
                             (anim, waypoint_anchor(stand, char_w), 12u16, flip)
                         }
@@ -409,7 +405,8 @@ fn resolve_characters(
                         WaypointKind::PhoneBooth
                         | WaypointKind::StandingDesk
                         | WaypointKind::VendingMachine
-                        | WaypointKind::Printer => {
+                        | WaypointKind::Printer
+                        | WaypointKind::SnackShelf => {
                             ("standing", waypoint_anchor(stand, char_w), 12u16, false)
                         }
                     };
@@ -421,7 +418,7 @@ fn resolve_characters(
                         waypoint_visitors.push(chitchat::Visitor {
                             // Couch seats share one venue (group chat); other
                             // waypoints key on their own index.
-                            wp_idx: chitchat::venue_wp_idx(kind, wp, couch_group_idx),
+                            wp_idx: chitchat::venue_wp_idx(kind, wp, &layout.waypoints),
                             agent_id: agent.agent_id,
                             anchor: anchor_no_breath,
                             room_id: wp_obj.room_id,
@@ -438,14 +435,18 @@ fn resolve_characters(
                         // Seats route through `SeatView::z_key_for_seat` — the SAME
                         // key the sit-down/stand-up glide uses, so the agent can't
                         // pop across its furniture's z-key at the walk→seat seam.
-                        // (back/front sofa+couch → pos+2; stand → pos+3, clearing
-                        // the meeting table.) Obstacles (pantry/booth/vending/
-                        // printer) keep the stand-at-the-approach-cell key — the
-                        // agent stands AT them, there is no settle onto them.
+                        // (back/front sofa+couch → pos+2; meeting stand → pos+3,
+                        // clearing the meeting table; island stander → the plain
+                        // feet row, staying BEHIND the island's south-row key —
+                        // the bartender occlusion.) Obstacles (pantry/booth/
+                        // vending/printer) keep the stand-at-the-approach-cell
+                        // key — the agent stands AT them, there is no settle onto
+                        // them.
                         anchor_y: match kind {
                             WaypointKind::Couch
                             | WaypointKind::MeetingSofa
-                            | WaypointKind::MeetingStand => {
+                            | WaypointKind::MeetingStand
+                            | WaypointKind::Island => {
                                 SeatView::of(kind, wp_obj.facing).z_key_for_seat(stand)
                             }
                             _ => anchor_no_breath.y + sprite_h,

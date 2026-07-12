@@ -511,12 +511,12 @@ fn paint_frame(
         paint_glass_wall_v(ctx.buf, ctx.theme, start.x, y_top, y_bot.min(buf_h - 1));
     }
 
-    // Meeting sofas + table, pantry table + chairs are all painted by
+    // Meeting sofas + table and the kitchen island are all painted by
     // the y-sorted Drawable pass below (MeetingSofa / MeetingTable /
-    // PantryTable / PantryChair variants). They used to be painted
-    // here in the background pass too — leftover from before the
-    // y-sort refactor; the duplicate paints were dead pixels
-    // overwritten 50 lines later. Removed.
+    // KitchenIsland variants). They used to be painted here in the
+    // background pass too — leftover from before the y-sort refactor;
+    // the duplicate paints were dead pixels overwritten 50 lines
+    // later. Removed.
     //
     // Entry mat was also painted here (a small blue rug just south of
     // the door). The old wooden-door era used it to define the arrival
@@ -565,15 +565,44 @@ fn paint_frame(
         // Couch shadow is emitted once below (3 seat waypoints; per-seat
         // shadows would overlap). Printer is handled just after — its 4px-tall
         // sprite's south is pos.y+1, so the generic +2 would float 1px below.
-        if matches!(wp.kind, WaypointKind::Couch | WaypointKind::Printer) {
+        // Island stands are EMPTY FLOOR cells beside the island (the body
+        // carries its own fitted shadow below) — a generic blob at each stand
+        // painted phantom shadows left/right of the island.
+        if matches!(
+            wp.kind,
+            WaypointKind::Couch | WaypointKind::Printer | WaypointKind::Island
+        ) {
             continue;
         }
+        // Fit the ellipse to the piece's actual sprite width — the flat 7
+        // half-width doubled a 7px shelf's shadow. The .min(7) is a CAP at
+        // the old value (currently dead: no shadowed sprite reaches 13px) so
+        // a future wide piece can't over-shadow; the narrow appliances
+        // deliberately churned to their fitted widths.
+        let vis_w = crate::layout::furniture_def(wp.kind.furniture()).visual.w;
+        let half_w = if vis_w > 0 { (vis_w / 2 + 1).min(7) } else { 7 };
         paint_shadow(
             ctx.buf,
             Ellipse {
                 cx: wp.pos.x,
                 cy: wp.pos.y + 2,
-                half_w: 7,
+                half_w,
+                half_h: 2,
+            },
+            shadow_strength,
+            ctx.theme,
+        );
+    }
+    if let Some(island) = ctx.layout.kitchen_island {
+        // One fitted shadow under the island BODY (its stands are skipped
+        // above): south edge = the visual south row, width tracks the sprite.
+        let vis = crate::layout::furniture_def(crate::layout::Furniture::KitchenIsland).visual;
+        paint_shadow(
+            ctx.buf,
+            Ellipse {
+                cx: island.x,
+                cy: island.y + center_pin_south_offset(vis.h),
+                half_w: vis.w / 2 + 1,
                 half_h: 2,
             },
             shadow_strength,
@@ -1003,34 +1032,22 @@ fn enqueue_meeting_furniture<'a>(layout: &'a Layout, drawables: &mut Vec<Drawabl
     }
 }
 
-/// Pantry bistro table + stools, the lounge couch (emitted ONCE via
+/// The kitchen island, the lounge couch (emitted ONCE via
 /// `couch_sprite_center` — 3 seat waypoints share one sprite), and the
 /// center-pinned waypoint appliances (pantry counter, vending, printer).
 /// PhoneBooth/StandingDesk render via pod-decor; meeting slots ride the
 /// sofa/table — so those waypoint kinds emit nothing here.
 fn enqueue_lounge_pantry_appliances<'a>(layout: &'a Layout, drawables: &mut Vec<Drawable<'a>>) {
-    if let Some(table) = layout.pantry_table {
+    if let Some(island) = layout.kitchen_island {
         drawables.push(Drawable {
             anchor_y: z_sort_row(
                 Anchor::Center,
-                table,
-                crate::layout::furniture_def(crate::layout::Furniture::PantryTable)
+                island,
+                crate::layout::furniture_def(crate::layout::Furniture::KitchenIsland)
                     .visual
                     .h,
             ),
-            kind: DrawableKind::PantryTable { pos: table },
-        });
-    }
-    for chair in &layout.pantry_chairs {
-        drawables.push(Drawable {
-            anchor_y: z_sort_row(
-                Anchor::Center,
-                *chair,
-                crate::layout::furniture_def(crate::layout::Furniture::PantryChair)
-                    .visual
-                    .h,
-            ),
-            kind: DrawableKind::PantryChair { pos: *chair },
+            kind: DrawableKind::KitchenIsland { pos: island },
         });
     }
 
@@ -1104,7 +1121,15 @@ fn enqueue_lounge_pantry_appliances<'a>(layout: &'a Layout, drawables: &mut Vec<
                     kind: DrawableKind::Printer { pos: wp.pos },
                 });
             }
-            WaypointKind::MeetingSofa | WaypointKind::MeetingStand => {}
+            WaypointKind::SnackShelf => {
+                drawables.push(Drawable {
+                    anchor_y: z_sort_row(Anchor::Center, wp.pos, visual_h),
+                    kind: DrawableKind::SnackShelf { pos: wp.pos },
+                });
+            }
+            // Island stands carry no art of their own: the island BODY draws
+            // via `layout.kitchen_island` (like the meeting furniture).
+            WaypointKind::MeetingSofa | WaypointKind::MeetingStand | WaypointKind::Island => {}
         }
     }
 }
