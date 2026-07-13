@@ -987,7 +987,7 @@ fn meeting_table_ends_are_chair_seats_not_stands() {
     assert_eq!(west.facing, Facing::East, "west chair faces the table");
     assert_eq!(east.facing, Facing::West, "east chair faces the table");
     assert_eq!(west.pos.y, trio.table.y, "chairs sit on the table's row");
-    // Owner catch (PR #561): the stands-era offsets were -9/+8, so the east
+    // The stands-era offsets were -9/+8, so the east
     // chair body sat 1px closer to the table wood and swallowed the rug
     // border its west twin showed. Chairs must MIRROR around the table.
     assert_eq!(
@@ -1075,7 +1075,7 @@ fn desk_columns_stay_on_one_lattice_and_never_shift_with_width() {
 
 #[test]
 fn desk_rows_stay_on_one_lattice() {
-    // The Y twin of the #553 column invariant (owner catch: the partial
+    // The Y twin of the #553 column invariant (the partial
     // bottom row sat 14px below the last full row vs the 23px inter-pod
     // rhythm). Every desk row top must be on the row lattice: offset from
     // the grid origin is k*stride_y + {0 | intra row step}.
