@@ -209,9 +209,10 @@ struct SnapshotArgs {
     /// Animation-verification mode: render ONE agent walking to + settling at a
     /// chosen furniture, so the approach→settle reads correctly (no pop, no
     /// teleport) BEFORE human verify. One of: couch | sofa | chair | pantry |
-    /// desk. Forces `--gif`; the agent is back-dated so its walk-out starts at
-    /// frame 0. Pair with `--gif-duration`/`--gif-fps`. The target furniture's
-    /// buffer position is printed so you can crop to it.
+    /// printer | vending | island | snackshelf | desk. Forces `--gif`; the
+    /// agent is back-dated so its walk-out starts at frame 0. Pair with
+    /// `--gif-duration`/`--gif-fps`. The target furniture's buffer position
+    /// is printed so you can crop to it.
     #[arg(long)]
     anim: Option<String>,
 

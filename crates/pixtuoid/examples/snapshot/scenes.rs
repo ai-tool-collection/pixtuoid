@@ -579,8 +579,9 @@ pub(crate) fn dashboard_scene(now: SystemTime) -> SceneState {
 /// Build a ONE-agent scene whose wander targets `target` furniture, back-dated so
 /// the walk-OUT starts at frame 0 — for `--anim` visual verification of the
 /// approach→settle (no pop, no teleport). Prints the furniture's buffer position
-/// so the caller can crop the GIF to it. `target` ∈ {couch, sofa, stand, pantry,
-/// desk}; "desk" captures the always-present return-to-desk leg.
+/// so the caller can crop the GIF to it. `target` ∈ {couch, sofa, chair, pantry,
+/// printer, vending, island, snackshelf, desk}; "desk" captures the
+/// always-present return-to-desk leg.
 pub(crate) fn anim_scene(
     now: SystemTime,
     target: &str,
@@ -607,6 +608,8 @@ pub(crate) fn anim_scene(
         "sofa" => Some(WaypointKind::MeetingSofa),
         "chair" => Some(WaypointKind::MeetingChair),
         "pantry" => Some(WaypointKind::Pantry),
+        "printer" => Some(WaypointKind::Printer),
+        "vending" => Some(WaypointKind::VendingMachine),
         "island" => Some(WaypointKind::Island),
         "snackshelf" => Some(WaypointKind::SnackShelf),
         _ => None, // "desk": always visited (return-to-desk), not a waypoint
