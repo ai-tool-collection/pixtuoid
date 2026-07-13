@@ -225,9 +225,17 @@ pub(super) enum DrawableKind<'a> {
 /// (Busy → desks, Idle → social) with no corridor. They share where-beside-the-
 /// furniture, not which-furniture-when — two different domains.
 fn desk_visit_spot(desk: Point) -> Point {
+    // Below the desk's own GROUND (walk-behind End: the blocked strip reaches
+    // DESK_GROUND_H under the Point, deeper than the DESK_H slot) and on the
+    // desk's centerline — the first row past the desk's OBSTACLE_PAD_PX
+    // strip. Walkable in the packed grid almost everywhere (the old
+    // x+DESK_W+1 corner spot sat inside the desk's OWN padded ground and
+    // relied on snap for every desk); the one residue is a bottom-row desk
+    // whose spot lands on a corridor appliance's ground — snap still covers
+    // that sliver.
     Point {
-        x: desk.x + DESK_W + 1,
-        y: desk.y + DESK_H + 2,
+        x: desk.x + DESK_W / 2,
+        y: desk.y + crate::layout::DESK_GROUND_H + crate::layout::OBSTACLE_PAD_PX,
     }
 }
 
@@ -1193,9 +1201,8 @@ mod tests {
         mask.mark_blocked(80, 0, 40, h, 0);
         let reachable = ReachSet::from_mask(&mask, Point { x: 20, y: 20 });
         let mut layout = crate::layout::Layout::compute(w, h, Some(4)).expect("layout fits");
-        // Override geometry: exactly two spots, one per pocket. The desk spot
-        // resolves to (desk.x+DESK_W+1, desk.y+DESK_H+2) on the LEFT; the
-        // corridor centre on the RIGHT.
+        // Override geometry: exactly two spots, one per pocket — the desk's
+        // visit spot on the LEFT, the corridor centre on the RIGHT.
         layout.home_desks = vec![Point { x: 20, y: 30 }];
         layout.waypoints.clear();
         layout.meeting_rooms.clear();
@@ -1212,10 +1219,7 @@ mod tests {
         // The two spots pet_position gathers, in its order: the home desk
         // (left pocket) then the corridor centre (right pocket).
         let spots = [
-            Point {
-                x: 20 + DESK_W + 1,
-                y: 30 + DESK_H + 2,
-            },
+            desk_visit_spot(Point { x: 20, y: 30 }),
             Point { x: 160, y: 50 },
         ];
         // Walk phase: elapsed 5s → frac 0.125 (<0.35); cycle_n == pet_seed

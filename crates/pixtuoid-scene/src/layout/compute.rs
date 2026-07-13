@@ -376,6 +376,24 @@ pub(super) fn compute_with_seed(
             ]
         }
     }))
+    // The packed pod grid (bottom row + lattice partials, #552/#553) can now
+    // legitimately reach the corridor-edge scatter spots — a plant yields to
+    // any desk whose ground its own would overlap (scatter decor is optional,
+    // desks are the floor's purpose). Rects come from THE shared
+    // mask::ground_rect authority, so this check can't drift from the stamp.
+    .filter(|p| {
+        let def = furniture_def(p.kind.furniture());
+        let Some(fp) = def.footprint else { return true };
+        let plant_r = mask::ground_rect(
+            Anchor::Center,
+            p.pos,
+            fp,
+            def.visual,
+            def.ground_x,
+            def.ground_y,
+        );
+        !overlaps_a_desk_ground(plant_r, &home_desks)
+    })
     .collect();
 
     // Floor lamp now sits right next to the viewing couch so its halo
@@ -578,7 +596,7 @@ pub(super) fn compute_with_seed(
         // strip would collide with any desk's ground.
         let wb_def = furniture_def(WallDecor::Whiteboard.furniture());
         let collides_a_desk = wb_def.footprint.is_some_and(|fp| {
-            let (wb_tl, wb_sz) = mask::ground_rect(
+            let wb_r = mask::ground_rect(
                 Anchor::TopLeft,
                 pos,
                 fp,
@@ -586,23 +604,7 @@ pub(super) fn compute_with_seed(
                 wb_def.ground_x,
                 wb_def.ground_y,
             );
-            let desk = super::decor::desk_furniture_def();
-            home_desks.iter().any(|&d| {
-                // is_some_and: the desk row's footprint is statically Some,
-                // but the house rule bans unwrap/expect in prod — a None
-                // simply means no ground to collide with.
-                desk.footprint.is_some_and(|fp| {
-                    let desk_ground = mask::ground_rect(
-                        Anchor::TopLeft,
-                        d,
-                        fp,
-                        desk.visual,
-                        desk.ground_x,
-                        desk.ground_y,
-                    );
-                    super::placement::rects_overlap((wb_tl, wb_sz), desk_ground)
-                })
-            })
+            overlaps_a_desk_ground(wb_r, &home_desks)
         });
         if !collides_a_desk {
             wall_decor.push(WallDecorItem {
@@ -789,6 +791,29 @@ pub(super) fn compute_with_seed(
     })
 }
 
+/// Does `r` (a blocked ground rect) overlap ANY home desk's ground? THE one
+/// desk-collision scan — the whiteboard-yield and the scatter-plant-yield
+/// both read it, so a future pad/anchor tweak can't land on one copy.
+/// `is_some_and`: the desk row's footprint is statically Some, but the house
+/// rule bans unwrap/expect in prod — a None simply means no ground to collide
+/// with.
+fn overlaps_a_desk_ground(r: (Point, Size), home_desks: &[Point]) -> bool {
+    let desk = super::decor::desk_furniture_def();
+    desk.footprint.is_some_and(|fp| {
+        home_desks.iter().any(|&d| {
+            let desk_ground = mask::ground_rect(
+                Anchor::TopLeft,
+                d,
+                fp,
+                desk.visual,
+                desk.ground_x,
+                desk.ground_y,
+            );
+            super::placement::rects_overlap(r, desk_ground)
+        })
+    })
+}
+
 /// 2×2-pod grid geometry shared by [`compute_pod_desks`] + [`compute_pod_decor`].
 /// `right_x`/`right_w`/`cubicle_h` are NOT carried — they equal the cubicle
 /// band's `.x`/`.width`/`.height` and are derived in-body from the `&Bounds`.
@@ -923,15 +948,10 @@ pub(super) fn compute_pod_desks(
     cubicle_band: &Bounds,
     grid: PodGrid,
 ) -> Vec<Point> {
-    let right_x = cubicle_band.x;
-    let right_w = cubicle_band.width;
-    let cubicle_h = cubicle_band.height;
     let PodGrid {
         cols: pod_cols,
         rows: pod_rows,
-        stride_x: pod_stride_x,
-        stride_y: pod_stride_y,
-        couch_to_desk_extra,
+        ..
     } = grid;
     // `None` fills the grid (emission unbounded); `Some(cap)` caps the count —
     // the deterministic knob for tests/snapshots. Bound the allocation hint to
@@ -1000,14 +1020,21 @@ pub(super) fn compute_pod_desks(
     // column. Resolves the "office looks empty on the right" issue
     // at wide buffers where a full 2nd pod doesn't fit but multiple
     // single-desk columns do.
-    let main_pod_used_w = INTER_POD_AISLE_X / 2 + pod_cols * pod_stride_x;
-    let residual_w = right_w.saturating_sub(main_pod_used_w);
-    let partial_col_stride = DESK_W + INTER_POD_AISLE_X / 2;
-    let partial_col_count = (residual_w / partial_col_stride).min(4);
-    let partial_col_at_right = partial_col_count > 0;
+    // Partial columns CONTINUE the pod lattice — column i is the
+    // (i % POD_SIDE)-th column of the (pod_cols + i/POD_SIDE)-th pod — so
+    // spacing never jumps as the width changes (#553, owner-ratified
+    // snap-to-stride over redistribute/drop).
     let partial_col_x = |i: u16| -> u16 {
-        right_x + main_pod_used_w + INTER_POD_AISLE_X / 2 + i * partial_col_stride
+        let (x, _) = grid.pod_origin(cubicle_band, pod_cols + i / POD_SIDE, 0);
+        x + (i % POD_SIDE) * (DESK_W + INTRA_POD_GAP_X)
     };
+    // POD_SIDE: the partials are exactly one pod's own columns; the lattice
+    // makes a further column arithmetically unreachable (it would need a
+    // residual wider than the pod stride pod_cols already consumed).
+    let partial_col_count = (0..POD_SIDE)
+        .take_while(|&i| partial_col_x(i) <= desk_x_max)
+        .count() as u16;
+    let partial_col_at_right = partial_col_count > 0;
     if partial_col_at_right {
         'partial_x: for pod_r in 0..pod_rows {
             let (_, pod_origin_y) = grid.pod_origin(cubicle_band, 0, pod_r);
@@ -1026,14 +1053,14 @@ pub(super) fn compute_pod_desks(
         }
     }
 
-    // Partial pod ROW at the BOTTOM edge — same idea but vertical.
-    // Adds POD_SIDE × pod_cols extra desks (+ the partial column's
-    // single desk if it also fits).
-    let main_pod_used_h = INTER_POD_AISLE_Y / 2 + couch_to_desk_extra + pod_rows * pod_stride_y;
-    let residual_h = cubicle_h.saturating_sub(main_pod_used_h);
-    let partial_row_at_bottom = residual_h >= DESK_H + INTER_POD_AISLE_Y / 2;
+    // Partial pod ROW at the BOTTOM edge — the Y twin of the partial
+    // columns above: the row IS the first row of the (pod_rows)-th pod, so
+    // the inter-pod rhythm holds (the old residual_h math both counted a
+    // phantom trailing aisle (#552) and parked the row 14px below the last
+    // one vs the 23px pod rhythm — owner catch on the fix's first cut).
+    let (_, partial_y) = grid.pod_origin(cubicle_band, 0, pod_rows);
+    let partial_row_at_bottom = partial_y <= desk_y_max;
     if partial_row_at_bottom {
-        let partial_y = cubicle_band.y + main_pod_used_h + INTER_POD_AISLE_Y / 2;
         'partial_y: for pod_c in 0..pod_cols {
             let (pod_origin_x, _) = grid.pod_origin(cubicle_band, pod_c, 0);
             for c in 0..POD_SIDE {
