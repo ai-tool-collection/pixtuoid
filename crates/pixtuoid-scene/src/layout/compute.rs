@@ -5,34 +5,12 @@
 use super::mask;
 use super::*;
 
-/// `n`% of a dimension, computed in u32 to avoid u16 overflow on very large
-/// terminals — a bare `buf_h * 30` overflows u16 once `buf_h > 2184` (and the
-/// derived sub-region multiplies overflow at the same extreme sizes). Truncating
-/// division, matching the original `v * n / 100`.
-#[inline]
-fn pct(v: u16, n: u16) -> u16 {
-    ((v as u32 * n as u32) / 100) as u16
-}
-
 /// Counter width that marks the LARGE (detailed kitchen) pantry sprite. The size
 /// producer emits this width when the pantry room is wide enough; consumers test
 /// `>= PANTRY_COUNTER_LARGE_W` rather than the bare `32` literal (`pub` + re-exported
 /// from `layout` so the painter's `use_large` selector and the binary's coffee
 /// hit-test share this one source instead of re-hardcoding 32).
 pub const PANTRY_COUNTER_LARGE_W: u16 = 32;
-
-/// Y-position percentage of the pantry counter within its room — lower (65%) for
-/// the large counter, a touch higher (60%) for the small one. SINGLE SOURCE: the
-/// island clamp (which keeps the island clear of the counter) and the
-/// counter's own waypoint placement both read it, so they cannot disagree — were
-/// they to drift, the clamp would guard a phantom counter position.
-fn pantry_counter_y_pct(counter_w: u16) -> u16 {
-    if counter_w >= PANTRY_COUNTER_LARGE_W {
-        65
-    } else {
-        60
-    }
-}
 
 /// Horizontal seat offsets for a 3-across sofa, relative to the middle-seat
 /// anchor — shared by the 20px lounge couch and the meeting sofas so the two
@@ -77,9 +55,8 @@ pub(super) fn compute_with_seed(
     // repetition, not a bug).
     let variant = FloorVariant::from_seed(floor_seed);
     let has_meeting = variant.has_meeting();
-    // (The vertical-wall presence == has_meeting; open-plan OpenPlan/Lounge floors
-    // skip it — the pantry counter is the boundary. compute_room_walls reads it
-    // off `geom`, so no separate local here.)
+    // (Open-plan OpenPlan/Lounge floors have no walls at all — the pantry
+    // counter is the boundary; in wall-request terms nobody asks for one.)
     // Dense: two meeting rooms stacked vertically, ONLY when tall enough for two
     // rooms with furniture + door gaps. This is the ONE size-dependent bit; every
     // other geometry choice is a const of the variant.
@@ -111,55 +88,25 @@ pub(super) fn compute_with_seed(
             h: 10,
         }
     } else {
-        Size { w: 20, h: 8 }
+        super::rooms::pantry::COMPACT_COUNTER
     };
 
-    // One source of truth: the meeting-sofa SPRITE height (was a bare `7`). A
-    // hardcoded literal would silently let 1px-too-short rooms pass the fit
-    // gate if the sprite ever grows → MeetingSofa seat teleport on the coarse
-    // grid. furniture_def is a const fn returning Copy.
-    let sofa_h = furniture_def(Furniture::MeetingSofaBody).visual.h;
-    // Height must price the TABLE between the sofas, not just the two sofa
-    // bodies: with both sofa clamps bound (short room) the mirror positions
-    // leave `height − 2·sofa_h` between the sofa centres, and the centred
-    // table needs its own footprint depth plus the sofa's not to overlap
-    // either body (placement-sweep catch: at 96×60 the table ground clipped
-    // BOTH sofas by a row). Derived from the same table rows the mask stamps.
-    let sofa_fp_h = furniture_def(Furniture::MeetingSofaBody)
-        .footprint
-        .map_or(0, |s| s.h);
-    let table_fp_h = furniture_def(Furniture::MeetingTable)
-        .footprint
-        .map_or(0, |s| s.h);
-    let trio_fit_h = sofa_h * 2 + sofa_fp_h + table_fp_h;
-
     // Meeting-room height: CONTENT-FIT, donating the surplus to the pantry
-    // below. The screen + bookshelf hang on the top WALL BAND (zero floor
-    // rows), so the room needs only its sofa/table trio; the old
-    // unconditional half-split left the trio floating in empty floor on
-    // short terminals while the pantry below starved (island + snack shelf
-    // y-refused). The donation is ALL-OR-NOTHING: the room shrinks exactly
-    // to `usable_h − pantry_content_h` when that both keeps the trio fit
-    // (`trio_fit_h`) AND actually reaches the pantry's content height
-    // (`pantry_content_h` — the inverse of the island's y-clamps: the
-    // counter line sits at pct(h, pantry_counter_y_pct) and the island needs
-    // `island_need` rows of ceiling above it; the snack shelf's bound is
-    // identical, its half-height 5 == the island's half_h + pad). Otherwise
-    // the old half-split stands — a partial donation would cram the trio to
-    // its fit gate to buy rows the island still couldn't use, and floors
-    // already tall enough keep their exact pre-change geometry. Dense keeps
-    // the raw split: BOTH halves host a trio. Drift guard vs the island
-    // block's own clamps: `meeting_room_donates_surplus_height_to_the_pantry`.
-    let island_clr = super::WALL_THICK_H + super::OBSTACLE_PAD_PX;
-    let island_half_h = furniture_def(Furniture::KitchenIsland).visual.h / 2;
-    let island_need = island_clr
-        + 2 * (island_half_h + super::OBSTACLE_PAD_PX)
-        + 1
-        + pantry_counter_size.h / 2
-        + super::OBSTACLE_PAD_PX;
-    let pantry_content_h = (u32::from(island_need) * 100)
-        .div_ceil(u32::from(pantry_counter_y_pct(pantry_counter_size.w)))
-        as u16;
+    // below — a NEGOTIATION between the two rooms' own fit methods. The
+    // screen + bookshelf hang on the top WALL BAND (zero floor rows), so the
+    // meeting room needs only its trio; the old unconditional half-split
+    // left the trio floating in empty floor on short terminals while the
+    // pantry below starved (island + snack shelf y-refused). The donation is
+    // ALL-OR-NOTHING: the room shrinks exactly to `usable_h −
+    // pantry_content_h` when that both keeps the trio fit AND actually
+    // reaches the pantry's content height. Otherwise the old half-split
+    // stands — a partial donation would cram the trio to its fit gate to buy
+    // rows the island still couldn't use, and floors already tall enough
+    // keep their exact pre-change geometry. Dense keeps the raw split: BOTH
+    // halves host a trio. Behavior pin (all three arms):
+    // `meeting_room_donates_surplus_height_to_the_pantry`.
+    let trio_fit_h = MeetingRoom::trio_fit_h();
+    let pantry_content_h = PantryRoom::content_fit_h(pantry_counter_size);
     let half_split = usable_h / 2;
     let donated = usable_h.saturating_sub(pantry_content_h);
     let meeting_h = if (trio_fit_h..half_split).contains(&donated) {
@@ -172,6 +119,10 @@ pub(super) fn compute_with_seed(
     } else {
         top_margin + half_split
     };
+
+    // The sofa sprite height — the trio clamps below and the per-room
+    // north_floor both read it (furniture_def is a const fn returning Copy).
+    let sofa_h = furniture_def(Furniture::MeetingSofaBody).visual.h;
 
     let meeting_room = if has_meeting {
         // A meeting always shares the left column with either the pantry or a
@@ -315,18 +266,27 @@ pub(super) fn compute_with_seed(
         };
         (sofas, table)
     };
-    let mut meeting_furniture: Vec<MeetingFurniture> = Vec::new();
-    // Order is load-bearing: room 0 = `meeting_room`, room 1 = `meeting_room_2`
-    // (dense layout). `compute_waypoints` keys seats to a room by this index.
+    // Vec index IS the room_id (room 0 always exists when any room does, so
+    // push order == the [room0, room1] enumeration index). A room too small
+    // for its trio still occupies its slot with `trio: None` — bounds and
+    // furniture can't mis-join (see `MeetingRoom`'s doc).
+    let mut meeting_rooms: Vec<MeetingRoom> = Vec::new();
     for (room_idx, room) in [meeting_room, meeting_room_2].into_iter().enumerate() {
-        if let Some(mr) = room.filter(&room_fits_furniture) {
+        let Some(mr) = room else { continue };
+        let trio = room_fits_furniture(&mr).then(|| {
             let north_floor = if room_idx == 0 { sofa_h / 2 } else { sofa_h };
             let (sofas, table) = room_furniture(&mr, north_floor);
-            meeting_furniture.push(MeetingFurniture { sofas, table });
-        }
+            MeetingTrio { sofas, table }
+        });
+        meeting_rooms.push(MeetingRoom { bounds: mr, trio });
     }
 
-    let room_walls = compute_room_walls(geom, mid_x, mid_y_split, top_margin, usable_h);
+    // Walls are a FUNCTION of the rooms: each room requests its enclosure
+    // edges + doors, the resolver merges shared boundaries and cuts gaps
+    // (rooms/walls.rs). The committed room_walls goldens pin the non-dense
+    // output byte-identical to the old scalar-derived fn; dense's
+    // inter-meeting wall deliberately went solid (#557 door policy).
+    let room_walls = super::rooms::walls::derive_room_walls(&meeting_rooms, pantry_room);
 
     let Point {
         x: couch_x,
@@ -349,7 +309,7 @@ pub(super) fn compute_with_seed(
         pantry_counter_size,
         &pod_decor,
         &cubicle_aisle,
-        &meeting_furniture,
+        &meeting_rooms,
         lounge_fits,
     );
 
@@ -646,7 +606,11 @@ pub(super) fn compute_with_seed(
         // footprint (pad + 1, derived — not a re-hardcoded 3). They must stay
         // in-room too, so the x clamps price the stand extent, not the body.
         let stand_dx = half_w + super::OBSTACLE_PAD_PX + 1;
-        let counter_y = pr.y + pct(pr.height, pantry_counter_y_pct(pantry_counter_size.w));
+        let counter_y = pr.y
+            + pct(
+                pr.height,
+                super::rooms::pantry::pantry_counter_y_pct(pantry_counter_size.w),
+            );
         let counter_north =
             counter_y.saturating_sub(pantry_counter_size.h / 2 + super::OBSTACLE_PAD_PX);
         let min_x = pr.x + clr + stand_dx;
@@ -699,7 +663,11 @@ pub(super) fn compute_with_seed(
         let vis = def.visual;
         let (half_w, half_h) = (vis.w / 2, vis.h / 2);
         let clr = super::WALL_THICK_H + super::OBSTACLE_PAD_PX;
-        let counter_y = pr.y + pct(pr.height, pantry_counter_y_pct(pantry_counter_size.w));
+        let counter_y = pr.y
+            + pct(
+                pr.height,
+                super::rooms::pantry::pantry_counter_y_pct(pantry_counter_size.w),
+            );
         let counter_north =
             counter_y.saturating_sub(pantry_counter_size.h / 2 + super::OBSTACLE_PAD_PX);
         let sx = pr.x + 1 + half_w;
@@ -734,7 +702,7 @@ pub(super) fn compute_with_seed(
         top_margin,
         door,
         &home_desks,
-        &meeting_furniture,
+        &meeting_rooms,
         kitchen_island,
         &waypoints,
         &plants,
@@ -773,14 +741,14 @@ pub(super) fn compute_with_seed(
         lounge_side_table,
         door,
         door_threshold,
-        meeting_room,
-        meeting_room_2,
-        pantry_room,
-        meeting_furniture,
+        meeting_rooms,
+        pantry: pantry_room.map(|bounds| PantryRoom {
+            bounds,
+            counter_size: pantry_counter_size,
+            kitchen_island,
+        }),
         room_walls,
         top_margin,
-        pantry_counter_size,
-        kitchen_island,
         corridor,
         couch_sprite_center,
         walkable,
@@ -884,8 +852,8 @@ impl FloorVariant {
 }
 
 /// The resolved floor geometry: the `variant` plus the ONE size-dependent bit,
-/// `has_dual_meeting` (a Dense floor tall enough for two meeting rooms). Drives
-/// [`compute_room_walls`]'s segment set; the `has_pantry` / `mid_x_pct` accessors
+/// `has_dual_meeting` (a Dense floor tall enough for two meeting rooms). The
+/// `has_pantry` / `mid_x_pct` accessors
 /// fold in the Dense-degrade (a too-short Dense floor gains a pantry and widens to
 /// the Standard column). Replaced the 4 mutually-constrained bools + debug_asserts.
 #[derive(Clone, Copy)]
@@ -895,12 +863,6 @@ pub(super) struct FloorGeometry {
 }
 
 impl FloorGeometry {
-    fn has_meeting(self) -> bool {
-        self.variant.has_meeting()
-    }
-    fn has_vertical_wall(self) -> bool {
-        self.variant.has_meeting()
-    }
     /// Resolved pantry presence AFTER the Dense-degrade: a Dense floor too short
     /// for two rooms gains a pantry (Standard geometry).
     fn has_pantry(self) -> bool {
@@ -1139,118 +1101,6 @@ pub(super) fn compute_pod_decor(
     pod_decor
 }
 
-/// Wall segments with door gaps for meeting/pantry rooms. Branches on the
-/// [`FloorGeometry`] (variant + `has_dual_meeting`); every wall condition folds
-/// from the variant's consts, so the old debug_asserts guarding the bool tuple
-/// (`has_pantry || has_dual_meeting` when `has_meeting`) are now structural.
-pub(super) fn compute_room_walls(
-    geom: FloorGeometry,
-    mid_x: u16,
-    mid_y_split: u16,
-    top_margin: u16,
-    usable_h: u16,
-) -> Vec<WallSegment> {
-    let has_vertical_wall = geom.has_vertical_wall();
-    let has_dual_meeting = geom.has_dual_meeting;
-    let has_meeting = geom.has_meeting();
-    let has_pantry = geom.has_pantry();
-    // Doorway widths are ABSOLUTE pixels — using percentages here makes
-    // the gap shrink to zero on smaller terminals, which after the
-    // 2-px wall obstacle padding leaves no walkable cell for A* and
-    // disconnects the meeting room from the rest of the office.
-    //
-    // Minimums: 14 px gives ≥10 px effective gap after padding, which
-    // is wide enough that the coarsened 4×4 router grid has at least
-    // one row of walkable cells through the doorway.
-    const DOOR_GAP_V: u16 = 14;
-    const DOOR_GAP_H: u16 = 14;
-    let mut room_walls = Vec::new();
-    // Vertical wall: only when we have enclosed rooms (meeting or
-    // meeting+pantry). Open-plan/lounge pantry-only floors skip it
-    // — the counter is the visual boundary.
-    if has_vertical_wall {
-        // has_vertical_wall == has_meeting, and a meeting-bearing variant always
-        // shares the left column with the pantry or a second meeting room (structural
-        // in `FloorVariant`: Standard/Senior carry a pantry, Dense either has dual
-        // meetings or degrades to has_pantry) — so the vertical wall always stops at
-        // the mid-height split. The full-usable_h else-arm is dead by construction.
-        let v_x = mid_x;
-        let v_top = top_margin;
-        let v_bot = mid_y_split;
-        let v_door_center = top_margin + (v_bot - v_top) / 2;
-        let v_door_top = v_door_center.saturating_sub(DOOR_GAP_V / 2);
-        let v_door_bot = (v_door_center + DOOR_GAP_V / 2).min(v_bot);
-        room_walls.push(WallSegment {
-            start: Point { x: v_x, y: v_top },
-            end: Point {
-                x: v_x,
-                y: v_door_top,
-            },
-        });
-        room_walls.push(WallSegment {
-            start: Point {
-                x: v_x,
-                y: v_door_bot,
-            },
-            end: Point { x: v_x, y: v_bot },
-        });
-        // Second meeting room or pantry below: extend wall with
-        // its own door gap.
-        if has_dual_meeting {
-            // Second meeting room: extend wall below horizontal.
-            // Start below the horizontal wall's mask footprint — the offset IS
-            // the wall thickness (horizontal walls stamp with pad 0), so read
-            // it from WALL_THICK_H rather than a second copy of the value.
-            // This keeps the offset within the renderer's bridge-up tolerance
-            // by construction (`WALL_THICK_H_PX + 2` in `stitch_vertical_wall`,
-            // where WALL_THICK_H_PX is defined AS this const) — a hardcoded 6
-            // would leave this segment rendering as a detached strip if the
-            // wall face were ever thinned.
-            let v2_top = mid_y_split + super::WALL_THICK_H;
-            let v2_bot = top_margin + usable_h;
-            let v2_center = v2_top + (v2_bot - v2_top) / 2;
-            let v2_door_top = v2_center.saturating_sub(DOOR_GAP_V / 2);
-            let v2_door_bot = (v2_center + DOOR_GAP_V / 2).min(v2_bot);
-            room_walls.push(WallSegment {
-                start: Point { x: v_x, y: v2_top },
-                end: Point {
-                    x: v_x,
-                    y: v2_door_top,
-                },
-            });
-            room_walls.push(WallSegment {
-                start: Point {
-                    x: v_x,
-                    y: v2_door_bot,
-                },
-                end: Point { x: v_x, y: v2_bot },
-            });
-        }
-    }
-    // Horizontal wall: separates meeting from pantry, or two meetings.
-    let h_y = mid_y_split;
-    let h_door_center = pct(mid_x, 60);
-    let h_door_left = h_door_center.saturating_sub(DOOR_GAP_H / 2);
-    let h_door_right = (h_door_center + DOOR_GAP_H / 2).min(mid_x);
-    if (has_meeting && has_pantry) || has_dual_meeting {
-        room_walls.push(WallSegment {
-            start: Point { x: 0, y: h_y },
-            end: Point {
-                x: h_door_left,
-                y: h_y,
-            },
-        });
-        room_walls.push(WallSegment {
-            start: Point {
-                x: h_door_right,
-                y: h_y,
-            },
-            end: Point { x: mid_x, y: h_y },
-        });
-    }
-    room_walls
-}
-
 /// Waypoints: couch, pantry, pod-decor-promoted (PhoneBooth/StandingDesk),
 /// corridor appliances (VendingMachine/Printer).
 #[allow(clippy::too_many_arguments)] // layout inputs — each arg a distinct zone/fact
@@ -1261,7 +1111,7 @@ pub(super) fn compute_waypoints(
     pantry_counter_size: Size,
     pod_decor: &[PodDecorItem],
     cubicle_aisle: &Bounds,
-    meeting_furniture: &[MeetingFurniture],
+    meeting_rooms: &[MeetingRoom],
     lounge_fits: bool,
 ) -> (Vec<Waypoint>, Option<Point>) {
     let right_x = cubicle_band.x;
@@ -1315,7 +1165,11 @@ pub(super) fn compute_waypoints(
         if min_cx <= max_cx {
             // y is single-sourced with the island clamp; only x is size-shaped
             // (large counter is room-centred, small one sits at 60% width).
-            let wy = pr.y + pct(pr.height, pantry_counter_y_pct(pantry_counter_size.w));
+            let wy = pr.y
+                + pct(
+                    pr.height,
+                    super::rooms::pantry::pantry_counter_y_pct(pantry_counter_size.w),
+                );
             let wx = if pantry_counter_size.w >= PANTRY_COUNTER_LARGE_W {
                 (pr.x + pr.width / 2).clamp(min_cx, max_cx)
             } else {
@@ -1380,13 +1234,15 @@ pub(super) fn compute_waypoints(
     }
 
     // Meeting-room slots. Each room's 2 sofas are stored north→south
-    // (`MeetingFurniture.sofas[0/1]`); each seats up to 3 agents (dx ∈ {-6, 0, +6}
+    // (`MeetingTrio.sofas[0/1]`); each seats up to 3 agents (dx ∈ {-6, 0, +6}
     // along the 20px sofa) facing the table. Two standing slots flank the table.
-    // Every slot in a room shares its `room_id` (the room's index) so the
-    // group-chitchat venue keys on the room, not the individual seat.
-    for (room_id, room) in meeting_furniture.iter().enumerate() {
-        let table = room.table;
-        for sofa in room.sofas {
+    // Every slot in a room shares its `room_id` (the room's TRUE index in
+    // `meeting_rooms` — a bare trio-less room keeps its slot, so the id can
+    // never shift) so the group-chitchat venue keys on the room.
+    for (room_id, room) in meeting_rooms.iter().enumerate() {
+        let Some(trio) = room.trio else { continue };
+        let table = trio.table;
+        for sofa in trio.sofas {
             // North-of-table sofa faces South (front toward the viewer); the
             // south sofa faces North (back toward the viewer) — the pair reads
             // as two people facing each other across the table.

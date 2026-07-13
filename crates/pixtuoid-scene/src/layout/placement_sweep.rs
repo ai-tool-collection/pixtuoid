@@ -178,15 +178,11 @@ fn pieces(l: &SceneLayout) -> Vec<Piece> {
         //                    through the blocked band (DOOR_CUT); pinned by the
         //                    connectivity invariant + door_threshold below
         door_threshold: _, // a walkable POINT, asserted by the connectivity tests
-        meeting_room: _,   // container (room 0)
-        meeting_room_2: _, // container (room 1)
-        pantry_room: _,    // container
-        meeting_furniture,
+        meeting_rooms,
+        pantry,
         room_walls: _, // the containers' edges; overlap-vs-walls is its own invariant
         top_margin: _, // wall-band geometry, read via wall_band_h() in invariants
-        pantry_counter_size,
-        kitchen_island,
-        corridor: _, // router/pet zone, spans the full width by design
+        corridor: _,   // router/pet zone, spans the full width by design
         couch_sprite_center,
         walkable: _,  // probed directly by the connectivity invariant
         reachable: _, // conservative routing truth, exercised by pathfind tests
@@ -225,7 +221,7 @@ fn pieces(l: &SceneLayout) -> Vec<Piece> {
         // two meeting plants in room 0 — same kinds, different homes, so the
         // container is picked by position (inside room 0 → room 0).
         let in_meeting = l
-            .meeting_room
+            .meeting_room_bounds(0)
             .map(|mr| contains_point(mr, p.pos))
             .unwrap_or(false);
         out.push(Piece::table(
@@ -292,7 +288,7 @@ fn pieces(l: &SceneLayout) -> Vec<Piece> {
             WaypointKind::Pantry => {
                 // Runtime-sized: geometry comes from the shared
                 // pantry_ground_rect, not the (deliberately empty) table row.
-                let counter = *pantry_counter_size;
+                let counter = l.pantry_counter_size();
                 out.push(Piece {
                     label: format!("waypoint[{i}] Pantry counter"),
                     ground: Some(pantry_ground_rect(wp.pos, counter)),
@@ -336,7 +332,19 @@ fn pieces(l: &SceneLayout) -> Vec<Piece> {
         }
     }
 
-    for (room, mf) in meeting_furniture.iter().enumerate() {
+    for (room, r) in meeting_rooms.iter().enumerate() {
+        // Tooth #2 EXTENDS into the aggregate: destructure MeetingRoom (and
+        // its trio) with no `..`, so a NEW field on either struct is a
+        // compile error here until its pieces are registered — the same
+        // force the SceneLayout destructure above exerts on flat fields.
+        let MeetingRoom { bounds: _, trio } = r;
+        let Some(MeetingTrio { sofas, table }) = trio else {
+            continue;
+        };
+        let mf = MeetingTrio {
+            sofas: *sofas,
+            table: *table,
+        };
         for (s, &sofa) in mf.sofas.iter().enumerate() {
             out.push(Piece::table(
                 format!("meeting[{room}].sofa[{s}]"),
@@ -386,7 +394,17 @@ fn pieces(l: &SceneLayout) -> Vec<Piece> {
     // (the mask's truth); presence still feeds the every-kind coverage test.
     let _ = couch_sprite_center;
 
-    if let Some(p) = kitchen_island {
+    // Tooth #2 on the pantry aggregate (same rationale as MeetingRoom above).
+    let island = pantry.as_ref().and_then(|p| {
+        let PantryRoom {
+            bounds: _,       // container, asserted by Container::Pantry below
+            counter_size: _, // the runtime-sized counter piece registers via
+            //                  the Pantry waypoint arm above
+            kitchen_island,
+        } = p;
+        kitchen_island.as_ref()
+    });
+    if let Some(p) = island {
         out.push(Piece::table(
             "kitchen_island".into(),
             Anchor::Center,
@@ -416,7 +434,7 @@ fn container_bounds(l: &SceneLayout, c: Container) -> Option<Bounds> {
         Container::Band => Some(l.cubicle_band),
         Container::Aisle => Some(l.cubicle_aisle),
         Container::MeetingRoom(i) => l.meeting_room_bounds(i),
-        Container::Pantry => l.pantry_room,
+        Container::Pantry => l.pantry.map(|p| p.bounds),
         Container::WallApron => Some(Bounds {
             x: 0,
             y: l.wall_band_h(),
@@ -734,7 +752,7 @@ fn every_kind_is_placed_somewhere_in_the_sweep() {
         if l.lounge_side_table.is_some() {
             seen.insert("lounge_side_table".into());
         }
-        if l.kitchen_island.is_some() {
+        if l.pantry.is_some_and(|p| p.kitchen_island.is_some()) {
             seen.insert("kitchen_island".into());
         }
         if l.couch_sprite_center.is_some() {
@@ -829,9 +847,9 @@ fn the_sweep_reaches_every_floor_variant() {
     for seed in SWEEP_SEEDS {
         let l = SceneLayout::compute_with_seed(240, 160, None, seed).expect("fits");
         shapes.insert((
-            l.meeting_room.is_some(),
-            l.pantry_room.is_some(),
-            l.meeting_room_2.is_some(),
+            !l.meeting_rooms.is_empty(),
+            l.pantry.is_some(),
+            l.meeting_rooms.len() > 1,
             l.cubicle_band.x,
         ));
     }

@@ -6,7 +6,7 @@
 
 use super::decor::GroundAlign;
 use super::{
-    anchored_top_left, furniture_def, Anchor, Furniture, MeetingFurniture, PlantItem, PodDecorItem,
+    anchored_top_left, furniture_def, Anchor, Furniture, MeetingRoom, PlantItem, PodDecorItem,
     Point, Size, WallDecorItem, WallSegment, Waypoint, WaypointKind, OBSTACLE_PAD_PX,
     PANTRY_FOOTPRINT_DEPTH, WALL_BAND_TO_TOP_MARGIN,
 };
@@ -109,7 +109,7 @@ pub(super) fn build_walkable_mask(
     top_margin: u16,
     door: Option<Point>,
     home_desks: &[Point],
-    meeting_furniture: &[MeetingFurniture],
+    meeting_rooms: &[MeetingRoom],
     kitchen_island: Option<Point>,
     waypoints: &[Waypoint],
     plants: &[PlantItem],
@@ -164,8 +164,8 @@ pub(super) fn build_walkable_mask(
     //     coarse grid — every straddling cell keeps ≥12/16 px walkable, so A*
     //     routes STRAIGHT THROUGH the wall. It needs OBSTACLE_PAD_PX (→5px blocked)
     //     to drive the wall's whole cell-column under the threshold. This is the
-    //     original design: DOOR_GAP_V=14 is sized for "≥10px effective gap after
-    //     [this] padding" (see compute_room_walls). The 1px FOOTPRINT is unchanged
+    //     original design: DOOR_GAP=14 is sized for "≥10px effective gap after
+    //     [this] padding" (see rooms/walls.rs). The 1px FOOTPRINT is unchanged
     //     (characters still stand right next to the 3px visual); the pad is a
     //     routing-only clearance band, not a wider wall.
     for &WallSegment { start, end } in room_walls {
@@ -229,13 +229,13 @@ pub(super) fn build_walkable_mask(
         }
     }
 
-    for room in meeting_furniture {
+    for trio in meeting_rooms.iter().filter_map(|r| r.trio.as_ref()) {
         // Sofa BODY footprint from the table (16 ON PURPOSE: 16 + 2·pad = the
         // 20px sprite X footprint, with the pad giving vertical sit clearance —
         // see the furniture_def row). Top-down rule: walk up to its sides.
         let sofa_def = furniture_def(Furniture::MeetingSofaBody);
         if let Some(fp) = sofa_def.footprint {
-            for sofa in room.sofas {
+            for sofa in trio.sofas {
                 // Declared CENTERED inside the visual (the sofa row's
                 // ground_y) — the strip sits on the sofa pos, not its base.
                 stamp_ground(
@@ -255,7 +255,7 @@ pub(super) fn build_walkable_mask(
             stamp_ground(
                 &mut mask,
                 Anchor::Center,
-                room.table,
+                trio.table,
                 fp,
                 table_def.visual,
                 table_def.ground_x,
