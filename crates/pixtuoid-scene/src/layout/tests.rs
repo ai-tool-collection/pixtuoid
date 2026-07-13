@@ -284,7 +284,7 @@ fn meeting_rooms_vec_indexes_are_the_waypoint_room_ids() {
         for wp in l.waypoints.iter().filter(|w| {
             matches!(
                 w.kind,
-                WaypointKind::MeetingSofa | WaypointKind::MeetingStand
+                WaypointKind::MeetingSofa | WaypointKind::MeetingChair
             )
         }) {
             let id = wp.room_id.expect("meeting slots carry a room_id");
@@ -618,7 +618,7 @@ fn compute_places_all_waypoint_kinds() {
             WaypointKind::VendingMachine | WaypointKind::Printer => {
                 assert!(w.pos.y >= l.top_margin);
             }
-            WaypointKind::MeetingSofa | WaypointKind::MeetingStand => {
+            WaypointKind::MeetingSofa | WaypointKind::MeetingChair => {
                 // A meeting slot only exists when a meeting room does, and
                 // it carries the room id it belongs to.
                 assert!(!l.meeting_rooms.is_empty());
@@ -730,7 +730,7 @@ fn meeting_slots_track_meeting_trios() {
             .filter(|w| {
                 matches!(
                     w.kind,
-                    WaypointKind::MeetingSofa | WaypointKind::MeetingStand
+                    WaypointKind::MeetingSofa | WaypointKind::MeetingChair
                 )
             })
             .collect();
@@ -745,8 +745,8 @@ fn meeting_slots_track_meeting_trios() {
             assert!(
                 sofa_slots
                     .iter()
-                    .any(|w| w.kind == WaypointKind::MeetingStand),
-                "seed {seed}: meeting room but no standing slot"
+                    .any(|w| w.kind == WaypointKind::MeetingChair),
+                "seed {seed}: meeting room but no chair seat"
             );
             let rooms = l.meeting_rooms.len();
             for w in &sofa_slots {
@@ -816,9 +816,10 @@ fn meeting_table_is_centered_between_its_two_sofas() {
 #[test]
 fn meeting_slots_face_the_table() {
     // Sofa seats face the table across the room (north seat faces South,
-    // south seat faces North); standing slots face inward toward the table
-    // centre (west faces East, east faces West). This is what makes the
-    // render pick front "seated" vs "back_couch" and the correct flip.
+    // south seat faces North); chair seats face inward toward the table
+    // centre (west faces East, east faces West). Sofa facing drives front
+    // "seated" vs "back_couch"; chair facing drives the painted chair body's
+    // backrest side (the occupant always renders front "seated").
     for seed in 0..40u64 {
         let l = SceneLayout::compute_with_seed(160, 120, Some(8), seed).expect("fits");
         for w in &l.waypoints {
@@ -840,7 +841,7 @@ fn meeting_slots_face_the_table() {
                         w.pos, table
                     );
                 }
-                WaypointKind::MeetingStand => {
+                WaypointKind::MeetingChair => {
                     let want = if w.pos.x < table.x {
                         Facing::East
                     } else {
@@ -858,20 +859,25 @@ fn meeting_slots_face_the_table() {
     }
 }
 
-// Regression: the WEST MeetingStand point used to land on the table's padded
+// Regression: the WEST MeetingChair point used to land on the table's padded
 // obstacle (blocked x ∈ [t.x-8, t.x+7]; the symmetric -8 hit the inclusive
-// left edge), so the router had to snap it off-target. Both stands must be on
-// walkable cells across seeds/sizes.
+// left edge), so the router had to snap it off-target. Both chair cells must
+// stay walkable across seeds/sizes — DELIBERATELY so, unlike the island's
+// in-body slots: the chair has no furniture body to sit inside
+// (`Furniture::MeetingChair` keeps `footprint: None`, the painted 7×7 chair
+// blocks nothing), and blocking the cell would ripple the mask/approach for
+// a piece walkers can visually clip at worst. See the scene CLAUDE.md decor
+// entry.
 #[test]
-fn meeting_stand_points_are_walkable() {
+fn meeting_chair_cells_stay_walkable() {
     for seed in 0..40u64 {
         for (w, h) in [(160u16, 120u16), (200, 100), (240, 140)] {
             let l = SceneLayout::compute_with_seed(w, h, Some(8), seed).expect("fits");
             for wp in &l.waypoints {
-                if wp.kind == WaypointKind::MeetingStand {
+                if wp.kind == WaypointKind::MeetingChair {
                     assert!(
                         l.is_walkable(wp.pos.x, wp.pos.y),
-                        "seed {seed} @ {w}x{h}: MeetingStand {:?} is non-walkable",
+                        "seed {seed} @ {w}x{h}: MeetingChair {:?} is non-walkable",
                         wp.pos
                     );
                 }
@@ -917,5 +923,96 @@ fn whiteboard_blocks_only_its_wheel_base_not_the_elevated_panel() {
     assert!(
         !l.is_walkable(pos.x + 5, pos.y + 9),
         "the whiteboard wheel base must block the floor"
+    );
+}
+
+#[test]
+fn fish_tank_sits_east_of_the_lounge_lamp_clear_of_the_elevator() {
+    // Decor arc: the aquarium joins the lounge vignette (owner-picked spot —
+    // east of the couch's floor lamp, against the north wall band). It rides
+    // the SAME lounge gate as lamp/side table, plus an east-clearance gate so
+    // it never crowds the elevator door threshold.
+    let l = SceneLayout::compute(192, 160, Some(TEST_DEFAULT_DESKS)).expect("fits");
+    let lamp = l.floor_lamp.expect("lounge fits at this size");
+    let tank = l.fish_tank.expect("tank fits at this size");
+    let half_w = furniture_def(Furniture::FishTank).visual.w / 2;
+    let lamp_east = lamp.x + (furniture_def(Furniture::FloorLamp).visual.w - 1) / 2;
+    assert_eq!(
+        tank.x - half_w,
+        lamp_east + 2,
+        "tank west edge sits exactly the pinned gap past the lamp's east edge"
+    );
+    let door_west = l.door.expect("elevator fits at this size").x;
+    assert!(
+        tank.x + half_w + super::compute::FISH_TANK_ELEVATOR_CLEARANCE <= door_west,
+        "tank + clearance stays west of the elevator door column"
+    );
+    // The vignette lives and dies together: never a tank without the couch.
+    for (w, h) in [(96u16, 70u16), (120, 80), (150, 68), (215, 98), (240, 160)] {
+        let Some(l) = SceneLayout::compute(w, h, Some(TEST_DEFAULT_DESKS)) else {
+            continue;
+        };
+        if l.fish_tank.is_some() {
+            assert!(
+                l.couch_sprite_center.is_some(),
+                "{w}x{h}: tank requires the lounge"
+            );
+        }
+    }
+}
+
+#[test]
+fn meeting_table_ends_are_chair_seats_not_stands() {
+    // Decor arc (owner-ratified): the two table-end spots are SEATS now —
+    // same positions/facings as the old stands (E/W flanking the table),
+    // renamed MeetingChair with a seated render + a painted chair body.
+    let l = SceneLayout::compute(192, 160, Some(TEST_DEFAULT_DESKS)).expect("fits");
+    let trio = l.meeting_rooms[0].trio.as_ref().expect("trio");
+    let chairs: Vec<_> = l
+        .waypoints
+        .iter()
+        .filter(|w| w.kind == WaypointKind::MeetingChair)
+        .collect();
+    assert_eq!(chairs.len(), 2, "one chair per table end");
+    let (west, east) = (
+        chairs
+            .iter()
+            .find(|w| w.pos.x < trio.table.x)
+            .expect("west chair"),
+        chairs
+            .iter()
+            .find(|w| w.pos.x > trio.table.x)
+            .expect("east chair"),
+    );
+    assert_eq!(west.facing, Facing::East, "west chair faces the table");
+    assert_eq!(east.facing, Facing::West, "east chair faces the table");
+    assert_eq!(west.pos.y, trio.table.y, "chairs sit on the table's row");
+    // Owner catch (PR #561): the stands-era offsets were -9/+8, so the east
+    // chair body sat 1px closer to the table wood and swallowed the rug
+    // border its west twin showed. Chairs must MIRROR around the table.
+    assert_eq!(
+        trio.table.x - west.pos.x,
+        east.pos.x - trio.table.x,
+        "chair offsets mirror around the table center"
+    );
+}
+
+#[test]
+fn coat_rack_yields_to_the_east_chair_in_narrow_fitted_rooms() {
+    // Arc-final audit catch (PR #561): on fitted rooms ≲40 wide the rack's
+    // coats (west reach cx−2) overprinted the east chair body + its sitter.
+    // The rack yields in that geometry; bare rooms and roomy floors keep it.
+    let narrow = SceneLayout::compute(120, 160, Some(TEST_DEFAULT_DESKS)).expect("fits");
+    let r = &narrow.meeting_rooms[0];
+    assert!(r.trio.is_some(), "120x160 hosts a fitted room");
+    assert_eq!(
+        r.coat_rack_pos(),
+        None,
+        "narrow fitted room drops the rack instead of interpenetrating the chair"
+    );
+    let roomy = SceneLayout::compute(192, 160, Some(TEST_DEFAULT_DESKS)).expect("fits");
+    assert!(
+        roomy.meeting_rooms[0].coat_rack_pos().is_some(),
+        "roomy fitted room keeps the rack"
     );
 }

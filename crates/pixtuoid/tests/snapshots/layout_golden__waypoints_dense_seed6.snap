@@ -146,7 +146,7 @@ expression: l.waypoints
             x: 24,
             y: 75,
         },
-        kind: MeetingStand,
+        kind: MeetingChair,
         facing: East,
         room_id: Some(
             0,
@@ -154,10 +154,10 @@ expression: l.waypoints
     },
     Waypoint {
         pos: Point {
-            x: 41,
+            x: 42,
             y: 75,
         },
-        kind: MeetingStand,
+        kind: MeetingChair,
         facing: West,
         room_id: Some(
             0,

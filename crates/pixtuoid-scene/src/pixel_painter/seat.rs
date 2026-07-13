@@ -67,8 +67,9 @@ pub(super) fn paint_character_at(
 /// from the approach side). A `Facing::North` sitter shows its back (`back_couch`):
 /// the lounge couch (always looks at the window/North) and the south-side meeting
 /// sofa; other meeting-sofa seats face the viewer across the table (front
-/// `seated`); a meeting stand faces inward (west stander marked `Facing::East` is
-/// mirrored). Extracted so the facing→sprite mapping is unit-testable.
+/// `seated`), and the head-of-table chairs sit the same way — the painted
+/// chair body carries their E/W orientation. Extracted so the facing→sprite
+/// mapping is unit-testable.
 pub(super) fn seat_sprite(
     kind: crate::layout::WaypointKind,
     facing: crate::layout::Facing,
@@ -126,10 +127,12 @@ impl SeatView {
                 Facing::North => SeatView::Back,
                 _ => SeatView::Front,
             },
-            // Stand beside the meeting table, facing inward; east-facing flips.
-            WaypointKind::MeetingStand => SeatView::Side {
-                flip: matches!(facing, Facing::East),
-            },
+            // Head-of-table chairs (decor arc): the occupant SITS. No side-
+            // facing seated sprite exists, so both ends use the front `seated`
+            // render — the pixel-office convention the north-sofa sitters
+            // already follow; the chair body painted under them carries the
+            // E/W orientation.
+            WaypointKind::MeetingChair => SeatView::Front,
             // Island slots (flanks + the in-body bartender pair) stand at the
             // plain feet-row z — see the `Stander` variant's WHY.
             WaypointKind::Island => SeatView::Stander {
@@ -189,7 +192,11 @@ impl SeatView {
             // Behind a couch/sofa back (furniture sorts at pos+3) or tied with a
             // front sofa (pos+2, insertion order puts the sitter on top).
             SeatView::Front | SeatView::Back => wp_pos.y + 2,
-            // Stand clears the meeting table (table.y+2) it stands beside.
+            // Historical stand-beside-the-table clearance (+3 over the
+            // table's y+2). No SEAT kind routes Side since the head-of-table
+            // chairs went Front; only the six non-seat obstacle kinds still
+            // produce Side, and they never settle onto a seat, so this arm is
+            // a defensive default rather than a live seat key.
             SeatView::Side { .. } => wp_pos.y + 3,
             // Plain feet-row key — the AtWaypoint default for a stander. The
             // bartender's pos row sits INSIDE the island body, below the

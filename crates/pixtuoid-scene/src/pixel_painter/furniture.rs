@@ -312,3 +312,211 @@ pub(super) fn paint_trash_bin(buf: &mut RgbBuffer, pr: Bounds) {
         }
     }
 }
+
+/// Entry mat centered under the pantry's north doorway — the pantry-scale
+/// sibling of the meeting doormat (decor-arc taste pin B1). Reuses the area-rug
+/// palette so every soft-goods piece stays one family. One clear floor row
+/// separates it from the wall face (offset derived from the SAME
+/// `WALL_THICK_H` the wall painter is thick by, so they can't drift).
+pub(super) fn paint_pantry_entry_mat(
+    buf: &mut RgbBuffer,
+    layout: &crate::layout::SceneLayout,
+    theme: &crate::theme::Theme,
+) {
+    const ENTRY_MAT_W: u16 = 16;
+    const ENTRY_MAT_H: u16 = 5;
+    let Some(p) = layout.pantry else { return };
+    let Some(dw) = layout
+        .doorways
+        .iter()
+        .find(|d| d.start.y == d.end.y && d.start.y == p.bounds.y)
+    else {
+        return;
+    };
+    let cx = (dw.start.x + dw.end.x) / 2;
+    let cy = dw.start.y + crate::layout::WALL_THICK_H + 1 + ENTRY_MAT_H / 2;
+    paint_area_rug(buf, cx, cy, ENTRY_MAT_W, ENTRY_MAT_H, theme);
+}
+
+/// Thin bordered bar mat under the kitchen island (decor-arc taste pin B2):
+/// the island body covers most of it, leaving a mat sliver peeking out along
+/// the bar's south serving front. Painted in the background pass so the
+/// island drawable and every character stack on top.
+pub(super) fn paint_island_bar_mat(
+    buf: &mut RgbBuffer,
+    layout: &crate::layout::SceneLayout,
+    theme: &crate::theme::Theme,
+) {
+    const BAR_MAT_W: u16 = 26;
+    const BAR_MAT_H: u16 = 4;
+    // The island anchor is its body center; +4 drops the mat's center to the
+    // seat row so the sliver clears the body's south edge (mock-verified).
+    const BAR_MAT_Y_OFF: u16 = 4;
+    let Some(isl) = layout.pantry.and_then(|p| p.kitchen_island) else {
+        return;
+    };
+    paint_area_rug(
+        buf,
+        isl.x,
+        isl.y + BAR_MAT_Y_OFF,
+        BAR_MAT_W,
+        BAR_MAT_H,
+        theme,
+    );
+}
+
+/// Aquarium on a low cabinet (decor arc): theme water behind a shared-dark
+/// frame, two fish patrolling opposite lanes on the anim clock, a rising
+/// bubble and a plant sprig rooted in the gravel. Geometry derives from the
+/// `FishTank` furniture row (center-anchored, matching its mask stamp); only
+/// water/fish/plant are tank-specific theme fields — frame reuses
+/// `room_wall_trim_dark`, cabinet + gravel the wood family.
+pub(super) fn paint_fish_tank(
+    buf: &mut RgbBuffer,
+    pos: crate::layout::Point,
+    now: std::time::SystemTime,
+    theme: &crate::theme::Theme,
+) {
+    use crate::layout::{furniture_def, Furniture};
+    let def = furniture_def(Furniture::FishTank);
+    let (w, h) = (def.visual.w, def.visual.h);
+    let x0 = pos.x.saturating_sub(w / 2);
+    let y0 = pos.y.saturating_sub(h / 2);
+    let frame = theme.office.room_wall_trim_dark;
+    let fc = &theme.furniture;
+    let mut put = |dx: u16, dy: u16, c: Rgb| {
+        let (px, py) = (x0 + dx, y0 + dy);
+        if px < buf.width() && py < buf.height() {
+            buf.put(px, py, c);
+        }
+    };
+    // Lid, glass walls, water (lit surface row under the lid), gravel bed.
+    for dx in 0..w {
+        put(dx, 0, frame);
+        put(dx, h - 3, frame);
+    }
+    for dy in 1..=(h - 4) {
+        put(0, dy, frame);
+        put(w - 1, dy, frame);
+        for dx in 1..w - 1 {
+            let c = if dy == 1 {
+                fc.tank_water_line
+            } else if dy == h - 4 {
+                if dx % 2 == 0 {
+                    fc.wood_trim
+                } else {
+                    fc.wood_top
+                }
+            } else {
+                fc.tank_water
+            };
+            put(dx, dy, c);
+        }
+    }
+    // Cabinet: wood door face with a center seam, then the plinth shadow row.
+    for dx in 0..w {
+        put(
+            dx,
+            h - 2,
+            if dx == w / 2 {
+                fc.wood_trim
+            } else {
+                fc.wood_top
+            },
+        );
+        put(dx, h - 1, fc.wood_trim);
+    }
+    // Fish patrol: a triangle wave over the interior span, one lane each,
+    // opposite phases so they rarely mirror. 3px bodies read at half-block
+    // scale; direction comes free from the wave's half.
+    let t = super::epoch_ms(now);
+    // Patrol/rise cadences: one cell per step. Distinct fish periods (and a
+    // phase offset) keep the pair from mirroring in lockstep.
+    const FISH_STEP_MS: u64 = 430;
+    const FISH_ALT_STEP_MS: u64 = 520;
+    const FISH_ALT_PHASE_STEPS: u64 = 7;
+    const BUBBLE_RISE_STEP_MS: u64 = 300;
+    let span = (w - 5) as u64;
+    let mut fish = |lane_dy: u16, color: Rgb, step_ms: u64, phase: u64| {
+        let cycle = span * 2;
+        let step = ((t / step_ms) + phase) % cycle;
+        let start = if step < span {
+            1 + step as u16
+        } else {
+            1 + (cycle - step) as u16
+        };
+        for dx in start..start + 3 {
+            put(dx, lane_dy, color);
+        }
+    };
+    fish(3, fc.tank_fish, FISH_STEP_MS, 0);
+    fish(5, fc.tank_fish_alt, FISH_ALT_STEP_MS, FISH_ALT_PHASE_STEPS);
+    // One bubble rising near the east glass.
+    let bubble_dy = (h - 5) - ((t / BUBBLE_RISE_STEP_MS) % (h as u64 - 6)) as u16;
+    put(w - 3, bubble_dy, fc.tank_water_line);
+    // Plant sprig last: fish swim behind it.
+    put(2, 5, fc.tank_plant);
+    put(2, 6, fc.tank_plant);
+    put(2, 7, fc.tank_plant);
+    put(3, 6, fc.tank_plant);
+}
+
+/// Head-of-table meeting chair (decor arc): a 7x7 cushion-and-backrest body
+/// centered on its MeetingChair waypoint. The backrest bar rides the OUTER
+/// side (`back_west`), carrying the E/W orientation the Front-seated occupant
+/// can't (no side-facing seated sprite). Colors reuse the desk-chair family.
+pub(super) fn paint_meeting_chair(
+    buf: &mut RgbBuffer,
+    pos: crate::layout::Point,
+    back_west: bool,
+    theme: &crate::theme::Theme,
+) {
+    let fc = &theme.furniture;
+    let chair = crate::layout::furniture_def(crate::layout::Furniture::MeetingChair).visual;
+    let (x0, y0) = (
+        pos.x.saturating_sub(chair.w / 2),
+        pos.y.saturating_sub(chair.h / 2),
+    );
+    let mut put = |dx: u16, dy: u16, c: Rgb| {
+        let (px, py) = (x0 + dx, y0 + dy);
+        if px < buf.width() && py < buf.height() {
+            buf.put(px, py, c);
+        }
+    };
+    let back_dx = if back_west { 0 } else { chair.w - 1 };
+    for dy in 0..5u16 {
+        put(back_dx, dy, fc.chair_trim);
+    }
+    for dy in 1..5u16 {
+        for dx in 1..chair.w - 1 {
+            let c = if dy == 1 {
+                MEETING_FABRIC_LIT
+            } else {
+                MEETING_FABRIC
+            };
+            put(dx, dy, c);
+        }
+    }
+    // Feet on the ground row, table side + outer side.
+    for dx in [1u16, chair.w - 2] {
+        put(dx, 5, fc.chair_trim);
+        put(dx, 6, fc.chair_trim);
+    }
+}
+
+/// The meeting chairs upholster in the SAME fabric as the sofas they flank —
+/// and the sofa is a SPRITE (un-themed, palette keys "C"/"G"), so the chair
+/// cannot read the value from `Theme`. These are deliberate second copies of
+/// the pack palette entries, pinned by
+/// `meeting_chair_fabric_matches_the_sofa_sprite_palette` so a sofa retint
+/// can't silently strand the chairs.
+pub(super) const MEETING_FABRIC: Rgb = Rgb {
+    r: 0x4f,
+    g: 0x6d,
+    b: 0x77,
+};
+pub(super) const MEETING_FABRIC_LIT: Rgb = Rgb {
+    r: 0x6a,
+    g: 0x8e,
+    b: 0x98,
+};

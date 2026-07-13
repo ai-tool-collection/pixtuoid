@@ -166,7 +166,7 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
             // Meeting slots hover via the dedicated meeting_sofas loop below;
             // island stands are footprint-less slots on the island body,
             // which has its own hover region — skip.
-            WaypointKind::MeetingSofa | WaypointKind::MeetingStand | WaypointKind::Island => {
+            WaypointKind::MeetingSofa | WaypointKind::MeetingChair | WaypointKind::Island => {
                 continue
             }
             // Footprint owned by furniture_def — same shape the mask + stand
@@ -193,7 +193,7 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
                 // `continue`s.
                 WaypointKind::Couch
                 | WaypointKind::MeetingSofa
-                | WaypointKind::MeetingStand
+                | WaypointKind::MeetingChair
                 | WaypointKind::Island => continue,
             });
         }
@@ -246,6 +246,35 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
                 PlantKind::Flower => "Flower Pot",
                 PlantKind::Succulent => "Succulent",
             });
+        }
+    }
+
+    // Fish tank — center-anchored like its mask stamp.
+    if let Some(tank) = layout.fish_tank {
+        let Size { w, h } = visual(Furniture::FishTank);
+        if hit(
+            tank.x.saturating_sub(w / 2),
+            tank.y.saturating_sub(h / 2),
+            w,
+            h,
+        ) {
+            return Some("Fish Tank");
+        }
+    }
+
+    // Head-of-table meeting chairs (the occupant's own hover wins when
+    // someone sits — the agent pass runs before furniture).
+    for wp in &layout.waypoints {
+        if wp.kind == pixtuoid_scene::layout::WaypointKind::MeetingChair {
+            let Size { w, h } = visual(Furniture::MeetingChair);
+            if hit(
+                wp.pos.x.saturating_sub(w / 2),
+                wp.pos.y.saturating_sub(h / 2),
+                w,
+                h,
+            ) {
+                return Some("Meeting Chair");
+            }
         }
     }
 
@@ -303,12 +332,13 @@ pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static 
     }
 
     // Meeting room procedural items (coat rack, doormat) — EVERY room
-    // (#555: room 1 used to render bare of decor, keyed room 0 only).
-    for mr in layout.meeting_rooms.iter().map(|r| r.bounds) {
-        if mr.width > 20 {
-            let cx = mr.x + mr.width - 5;
-            let cy = mr.y + mr.height / 2 - 4;
-            if hit(cx.saturating_sub(2), cy, 5, 8) {
+    // (#555: room 1 used to render bare of decor, keyed room 0 only). The
+    // rack spot (incl. the narrow-fitted-room yield) comes from
+    // coat_rack_pos, the same authority the painter enqueues from.
+    for room in &layout.meeting_rooms {
+        let mr = room.bounds;
+        if let Some(rack) = room.coat_rack_pos() {
+            if hit(rack.x.saturating_sub(2), rack.y, 5, 8) {
                 return Some("Coat Rack");
             }
         }
@@ -881,6 +911,35 @@ mod tests {
             hit_test_furniture(&layout, p.x, p.y / 2),
             Some("Floor Lamp")
         );
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_fish_tank_via_synthetic() {
+        use pixtuoid_scene::layout::Point;
+        let mut layout = Layout::compute(160, 200, Some(4)).expect("layout");
+        let p = Point { x: 40, y: 40 };
+        layout.fish_tank = Some(p);
+        assert_eq!(hit_test_furniture(&layout, p.x, p.y / 2), Some("Fish Tank"));
+    }
+
+    #[test]
+    fn furniture_hit_test_finds_meeting_chairs_on_a_real_layout() {
+        // Both head-of-table chairs label on hover (the occupant's own hover
+        // wins when someone sits — the agent pass runs first).
+        let layout = Layout::compute(192, 160, Some(12)).expect("layout");
+        let chairs: Vec<_> = layout
+            .waypoints
+            .iter()
+            .filter(|w| w.kind == pixtuoid_scene::layout::WaypointKind::MeetingChair)
+            .map(|w| w.pos)
+            .collect();
+        assert_eq!(chairs.len(), 2);
+        for c in chairs {
+            assert_eq!(
+                hit_test_furniture(&layout, c.x, c.y / 2),
+                Some("Meeting Chair")
+            );
+        }
     }
 
     #[test]

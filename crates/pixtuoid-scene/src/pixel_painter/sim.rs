@@ -385,16 +385,21 @@ fn resolve_characters(
                             12u16,
                             false,
                         ),
-                        // Lounge couch + meeting sofa: the sprite follows the
-                        // SEATED facing (couch always North/window → back_couch;
-                        // the sofa's two seats face each other across the table).
-                        // Both reuse the 16×7-sofa anchor.
-                        WaypointKind::Couch | WaypointKind::MeetingSofa => {
+                        // Lounge couch + meeting sofa + head-of-table chair:
+                        // the sprite follows the SEATED facing (couch always
+                        // North/window → back_couch; the sofa's two seats face
+                        // each other across the table; the chair sits Front).
+                        // All reuse the seat anchor — pairing the chair with
+                        // the stand-era waypoint_anchor left its 10-row seated
+                        // sprite hovering 5 rows above the chair body.
+                        WaypointKind::Couch
+                        | WaypointKind::MeetingSofa
+                        | WaypointKind::MeetingChair => {
                             let (anim, flip) = seat_sprite(kind, wp_obj.facing);
                             (anim, back_couch_anchor(stand, char_w), 9u16, flip)
                         }
-                        // Meeting stand: beside the table, facing inward.
-                        WaypointKind::MeetingStand | WaypointKind::Island => {
+                        // Island stander anchors on the waypoint cell itself.
+                        WaypointKind::Island => {
                             let (anim, flip) = seat_sprite(kind, wp_obj.facing);
                             (anim, waypoint_anchor(stand, char_w), 12u16, flip)
                         }
@@ -435,8 +440,8 @@ fn resolve_characters(
                         // Seats route through `SeatView::z_key_for_seat` — the SAME
                         // key the sit-down/stand-up glide uses, so the agent can't
                         // pop across its furniture's z-key at the walk→seat seam.
-                        // (back/front sofa+couch → pos+2; meeting stand → pos+3,
-                        // clearing the meeting table; island stander → the plain
+                        // (back/front sofa+couch + the head-of-table chair →
+                        // pos+2, clearing the chair body; island stander → the plain
                         // feet row, staying BEHIND the island's south-row key —
                         // the bartender occlusion.) Obstacles (pantry/booth/
                         // vending/printer) keep the stand-at-the-approach-cell
@@ -445,7 +450,7 @@ fn resolve_characters(
                         anchor_y: match kind {
                             WaypointKind::Couch
                             | WaypointKind::MeetingSofa
-                            | WaypointKind::MeetingStand
+                            | WaypointKind::MeetingChair
                             | WaypointKind::Island => {
                                 SeatView::of(kind, wp_obj.facing).z_key_for_seat(stand)
                             }

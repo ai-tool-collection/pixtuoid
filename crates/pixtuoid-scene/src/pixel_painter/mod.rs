@@ -547,6 +547,12 @@ fn paint_frame(
 
         furniture::paint_doormat(ctx.buf, mr, ctx.theme);
     }
+    // Soft goods (decor arc) paint FIRST: floor-level mats sit under every
+    // upright pantry fixture — on a narrow pantry the entry mat's box reaches
+    // the water-cooler column, and mats-after-cooler clipped the cooler's
+    // west edge (lens-1 catch at 120x160).
+    furniture::paint_pantry_entry_mat(ctx.buf, ctx.layout, ctx.theme);
+    furniture::paint_island_bar_mat(ctx.buf, ctx.layout, ctx.theme);
     if let Some(pr) = ctx.layout.pantry.map(|p| p.bounds) {
         furniture::paint_water_cooler(ctx.buf, pr, ctx.theme);
         furniture::paint_trash_bin(ctx.buf, pr);
@@ -1154,7 +1160,7 @@ fn enqueue_lounge_pantry_appliances<'a>(layout: &'a Layout, drawables: &mut Vec<
             }
             // Island stands carry no art of their own: the island BODY draws
             // via `layout.kitchen_island` (like the meeting furniture).
-            WaypointKind::MeetingSofa | WaypointKind::MeetingStand | WaypointKind::Island => {}
+            WaypointKind::MeetingSofa | WaypointKind::MeetingChair | WaypointKind::Island => {}
         }
     }
 }
@@ -1199,18 +1205,48 @@ fn enqueue_floor_fixtures<'a>(
             kind: DrawableKind::FloorLamp { pos: lamp },
         });
     }
-    // One coat rack per meeting room (#555: room 1 used to go without).
-    for mr in ctx.layout.meeting_rooms.iter().map(|r| r.bounds) {
-        if mr.width > 20 {
-            let cx = mr.x + mr.width - 5;
-            let cy = mr.y + mr.height / 2 - 4;
-            drawables.push(Drawable {
-                anchor_y: cy + 7,
-                kind: DrawableKind::CoatRack {
-                    pos: Point { x: cx, y: cy },
-                },
-            });
-        }
+    for wp in ctx
+        .layout
+        .waypoints
+        .iter()
+        .filter(|w| w.kind == crate::layout::WaypointKind::MeetingChair)
+    {
+        drawables.push(Drawable {
+            // One row UNDER the sitter's z — derived from the SAME seat key
+            // the occupant sorts by, so the pair can't drift apart.
+            anchor_y: seat::SeatView::Front.z_key_for_seat(wp.pos) - 1,
+            kind: DrawableKind::MeetingChair {
+                pos: wp.pos,
+                // The backrest rides the side AWAY from the table: a chair
+                // FACING East sits west of the table, bar on its west.
+                back_west: wp.facing == crate::layout::Facing::East,
+            },
+        });
+    }
+    if let Some(tank) = ctx.layout.fish_tank {
+        // Center anchor: z at the sprite's south (cabinet base) row, via the
+        // SAME center-pin helper the lamp derives its base from.
+        let h = crate::layout::furniture_def(crate::layout::Furniture::FishTank)
+            .visual
+            .h;
+        drawables.push(Drawable {
+            anchor_y: tank.y + center_pin_south_offset(h),
+            kind: DrawableKind::FishTank { pos: tank },
+        });
+    }
+    // One coat rack per meeting room (#555: room 1 used to go without);
+    // placement + the narrow-fitted-room yield live in coat_rack_pos — THE
+    // one authority the hover hit-test shares.
+    for rack in ctx
+        .layout
+        .meeting_rooms
+        .iter()
+        .filter_map(|r| r.coat_rack_pos())
+    {
+        drawables.push(Drawable {
+            anchor_y: rack.y + 7,
+            kind: DrawableKind::CoatRack { pos: rack },
+        });
     }
     if let Some(door_pos) = ctx.layout.door {
         let frame_idx = compute_door_frame_idx(agents, ctx.now, ctx.door_anim_max_ms);

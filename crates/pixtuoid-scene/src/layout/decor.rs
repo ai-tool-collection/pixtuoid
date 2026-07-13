@@ -29,7 +29,7 @@ pub enum WaypointKind {
     MeetingSofa,
     /// Meeting-room standing spot beside the table — agent stands, facing
     /// the table. Part of the same room conversation venue as MeetingSofa.
-    MeetingStand,
+    MeetingChair,
     /// Kitchen-island standing spot — agent stands at the island edge
     /// (coffee-and-chat). All of one island's stands share ONE chitchat
     /// venue, couch-style.
@@ -149,7 +149,7 @@ pub const DESK_APPROACH: ApproachSides = ApproachSides {
 pub struct FurnitureDef {
     /// Ground footprint `(w, h)` the walkable mask stamps (top-down z=0
     /// rect), or `None` for slots that add no obstacle of their own
-    /// (MeetingSofa/MeetingStand sit on sofa/table furniture stamped
+    /// (MeetingSofa/MeetingChair sit on sofa/table furniture stamped
     /// elsewhere). NB: `Pantry` is also `None` here because its footprint is
     /// runtime-sized (`pantry_counter_size`); `obstacle_footprint`
     /// special-cases it — the one kind whose shape isn't a static literal.
@@ -166,11 +166,11 @@ pub struct FurnitureDef {
     /// The agent occupies `pos` DIRECTLY (sprite renders ON the furniture),
     /// so `stand_point` passes `pos` through unchanged instead of resolving a
     /// walkable cell beside the furniture (A* then snaps the walk adjacent).
-    /// NOT "a human can sit here": `MeetingStand` is *standing* yet sets this
+    /// NOT "a human can sit here": `MeetingChair` is *standing* yet sets this
     /// true (the agent still occupies its `pos`). Opposite case (Pantry/
     /// vending/printer/phone-booth/standing-desk): `pos` = blocked obstacle
     /// CENTER, approached from a side. True set: {Couch, MeetingSofa,
-    /// MeetingStand}. (Desks are NOT rows here — home workstation is separate.)
+    /// MeetingChair}. (Desks are NOT rows here — home workstation is separate.)
     pub occupies_pos: bool,
     /// Per-spot idle dwell window. `range_ms == 0` (the `DECOR` rows) marks a
     /// kind that is NOT a wander destination and is never fed to
@@ -235,7 +235,7 @@ impl WaypointKind {
         WaypointKind::VendingMachine,
         WaypointKind::Printer,
         WaypointKind::MeetingSofa,
-        WaypointKind::MeetingStand,
+        WaypointKind::MeetingChair,
         WaypointKind::Island,
         WaypointKind::SnackShelf,
     ];
@@ -252,7 +252,7 @@ impl WaypointKind {
             WaypointKind::VendingMachine => Furniture::VendingMachine,
             WaypointKind::Printer => Furniture::Printer,
             WaypointKind::MeetingSofa => Furniture::MeetingSofa,
-            WaypointKind::MeetingStand => Furniture::MeetingStand,
+            WaypointKind::MeetingChair => Furniture::MeetingChair,
             WaypointKind::Island => Furniture::IslandStand,
             WaypointKind::SnackShelf => Furniture::SnackShelf,
         }
@@ -275,7 +275,7 @@ pub enum Furniture {
     VendingMachine,
     Printer,
     MeetingSofa,
-    MeetingStand,
+    MeetingChair,
     PlantFicus,
     PlantTall,
     PlantFlower,
@@ -288,7 +288,7 @@ pub enum Furniture {
     MeetingScreen,
     // Singleton / per-room furniture (not keyed by a role enum — placed
     // directly in the layout). The meeting sofa/table BODIES are distinct from
-    // the `MeetingSofa`/`MeetingStand` SEAT rows above (3 seats sit on 1 body):
+    // the `MeetingSofa`/`MeetingChair` SEAT rows above (3 seats sit on 1 body):
     // the seat rows carry `None` footprint, these carry the obstacle the mask
     // stamps once per room.
     MeetingSofaBody,
@@ -310,6 +310,10 @@ pub enum Furniture {
     /// `seated_foot_cell` + approach/settle path. Replaces the old standalone
     /// `desk_furniture_def` literal (now a shim over this row).
     Desk,
+    /// Aquarium on a low cabinet, east of the lounge lamp against the north
+    /// wall band (decor arc). Pure decor: glass tank overhangs a shallow
+    /// cabinet base, idle fish animate in the paint pass.
+    FishTank,
 }
 
 impl Furniture {
@@ -325,7 +329,7 @@ impl Furniture {
         Furniture::VendingMachine,
         Furniture::Printer,
         Furniture::MeetingSofa,
-        Furniture::MeetingStand,
+        Furniture::MeetingChair,
         Furniture::PlantFicus,
         Furniture::PlantTall,
         Furniture::PlantFlower,
@@ -344,6 +348,7 @@ impl Furniture {
         Furniture::IslandStand,
         Furniture::SnackShelf,
         Furniture::Desk,
+        Furniture::FishTank,
     ];
 }
 
@@ -473,9 +478,14 @@ pub const fn furniture_def(kind: Furniture) -> FurnitureDef {
             ground_x: GroundAlign::Center,
             ground_y: GroundAlign::Center,
         },
-        Furniture::MeetingStand => FurnitureDef {
+        Furniture::MeetingChair => FurnitureDef {
+            // No footprint DELIBERATELY: the chair has no furniture body to
+            // sit inside (unlike the island's in-body slots) — its cell stays
+            // walkable exactly as the old stand's did, and blocking it would
+            // ripple mask/approach for a 7x7 body walkers can at worst
+            // visually clip. Sharp edge in the scene CLAUDE.md decor entry.
             footprint: None,
-            visual: Size { w: 0, h: 0 }, // procedural render
+            visual: Size { w: 7, h: 7 },
             occupies_pos: true,
             dwell: DwellWindow {
                 base_ms: 20_000,
@@ -584,7 +594,7 @@ pub const fn furniture_def(kind: Furniture) -> FurnitureDef {
             ..DECOR
         },
         // 11×5 = the real meeting-table sprite (paint_meeting_table). footprint ==
-        // visual so the mask blocks exactly what's drawn; the MeetingStand west
+        // visual so the mask blocks exactly what's drawn; the MeetingChair west
         // offset (compute.rs, t.x-9) still clears (padded west edge = cx-7).
         Furniture::MeetingTable => FurnitureDef {
             footprint: Some(Size { w: 11, h: 5 }),
@@ -606,7 +616,7 @@ pub const fn furniture_def(kind: Furniture) -> FurnitureDef {
         },
         // Island stand slot — two shapes share this row: the E/W FLANKS,
         // pre-positioned CLEAR of the body's padded footprint by compute.rs
-        // (the MeetingStand pattern), and the BARTENDER pair, whose `pos` is
+        // (the MeetingChair pattern), and the BARTENDER pair, whose `pos` is
         // INSIDE the island body (the couch-seat pattern: a blocked pos is
         // fine for `occupies_pos` — A* routes to a BAR_APPROACH cell and the
         // settle glide bridges on; the island's south-row z-key then occludes
@@ -654,6 +664,14 @@ pub const fn furniture_def(kind: Furniture) -> FurnitureDef {
         Furniture::LoungeSideTable => FurnitureDef {
             footprint: Some(Size { w: 7, h: 4 }),
             visual: Size { w: 7, h: 4 },
+            ..DECOR
+        },
+        Furniture::FishTank => FurnitureDef {
+            // Ground rule (invariant #6): only the cabinet base blocks; the
+            // glass tank above it is visual overhang (ground_y End pins the
+            // 3-row strip to the sprite base).
+            footprint: Some(Size { w: 14, h: 3 }),
+            visual: Size { w: 14, h: 11 },
             ..DECOR
         },
         // The home desk — the agent's OWNED workstation, now a first-class row
@@ -821,19 +839,22 @@ pub fn seated_foot_cell(kind: Furniture, pos: Point) -> Option<Point> {
         return None;
     }
     Some(match kind {
-        // back_couch render (`pos.y − SEAT_RENDER_Y_OFF`): S is
+        // Seat render (`pos.y − SEAT_RENDER_Y_OFF`): S is
         // `WALKING_Y_OFF − SEAT_RENDER_Y_OFF` px south of `pos`, the one cell
-        // where `walking_anchor` lands exactly on `back_couch_anchor`.
-        Furniture::Couch | Furniture::MeetingSofa => Point {
+        // where `walking_anchor` lands exactly on `back_couch_anchor`. The
+        // meeting chair joined this branch when its occupant went from
+        // standing to SEATED — the old waypoint pairing left the seated
+        // sprite hovering 5 rows above its chair body.
+        Furniture::Couch | Furniture::MeetingSofa | Furniture::MeetingChair => Point {
             x: pos.x,
             y: pos.y + (WALKING_Y_OFF - SEAT_RENDER_Y_OFF),
         },
         // waypoint render (`== walking_anchor`): S == pos.
-        Furniture::MeetingStand | Furniture::IslandStand => pos,
+        Furniture::IslandStand => pos,
         // desk render is `seated_anchor`; its inverse is the bespoke
         // `desk_walk_anchor` (pinned by DESK_WALK_X/Y_OFF). ONE source.
         Furniture::Desk => desk_walk_anchor(pos),
-        // `occupies_pos` is exactly {Couch, MeetingSofa, MeetingStand,
+        // `occupies_pos` is exactly {Couch, MeetingSofa, MeetingChair,
         // IslandStand, Desk}
         // (guarded by `furniture_def_invariants_hold_for_every_row`); the early
         // return handled every obstacle kind. A FUTURE occupies_pos seat that
@@ -1143,7 +1164,7 @@ mod tests {
         // silent wrong-mask/wrong-render at runtime.
         assert_eq!(
             Furniture::ALL.len(),
-            26,
+            27,
             "Furniture variant added/removed — update ALL (and this count)"
         );
         for &f in Furniture::ALL {
@@ -1161,7 +1182,7 @@ mod tests {
                 f,
                 Furniture::Couch
                     | Furniture::MeetingSofa
-                    | Furniture::MeetingStand
+                    | Furniture::MeetingChair
                     | Furniture::IslandStand
                     | Furniture::Desk
             );
@@ -1170,7 +1191,7 @@ mod tests {
             // stamped body: meeting sofa/table, kitchen island).
             if matches!(
                 f,
-                Furniture::MeetingSofa | Furniture::MeetingStand | Furniture::IslandStand
+                Furniture::MeetingSofa | Furniture::MeetingChair | Furniture::IslandStand
             ) {
                 assert!(
                     d.footprint.is_none(),

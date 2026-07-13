@@ -22,6 +22,11 @@ const SEAT_DX: [i16; 3] = [-6, 0, 6];
 /// waypoints + `couch_sprite_center`) both derive from it and must agree
 /// byte-for-byte — recomputed via this fn rather than threaded as an `Option`
 /// (no unwrap on a read-back).
+/// Gap kept between the fish tank's east edge and the elevator door column so
+/// the spawn threshold never routes around furniture. Module-scoped so the
+/// gate test references THE value instead of a re-typed copy.
+pub(super) const FISH_TANK_ELEVATOR_CLEARANCE: u16 = 2;
+
 fn couch_pos(cubicle_band: &Bounds, top_margin: u16) -> Point {
     Point {
         x: cubicle_band.x + pct(cubicle_band.width, 35),
@@ -424,6 +429,30 @@ pub(super) fn compute_with_seed(
         y: top_margin + 4,
     });
 
+    // Aquarium east of the floor lamp (decor arc, owner-picked spot). Center
+    // offsets derive from the lounge vignette: the lamp's east edge is
+    // couch_x+10 (the vignette comment above), +2 clearance + half the tank.
+    // Vertically the tank backs onto the wall band like band decor (top rows
+    // overlap the band bottom; the cabinet base is the only ground blocker).
+    // Extra gate vs lamp/table: the tank must stay clear of the elevator door
+    // column so the spawn threshold never routes around it.
+    let fish_tank = floor_lamp.and_then(|lamp| {
+        let def = furniture_def(Furniture::FishTank);
+        let half_w = def.visual.w / 2;
+        // The tank's west edge sits LAMP_TANK_GAP columns past the lamp
+        // shade's east edge (one clear floor column) — the vignette breathing
+        // room the mock round pinned. Center-pin east edge is (w-1)/2 past
+        // the anchor (the x-axis twin of center_pin_south_offset).
+        const LAMP_TANK_GAP: u16 = 2;
+        let lamp_east = lamp.x + (furniture_def(Furniture::FloorLamp).visual.w - 1) / 2;
+        let cx = lamp_east + LAMP_TANK_GAP + half_w;
+        let east_limit = door.map_or(buf_w.saturating_sub(2), |d| d.x);
+        (cx + half_w + FISH_TANK_ELEVATOR_CLEARANCE <= east_limit).then_some(Point {
+            x: cx,
+            y: couch_y.saturating_sub(4),
+        })
+    });
+
     // Wall decor anchored to the BOTTOM of the wall band so the sprites
     // sit "below the windows" no matter how tall the wall band grows.
     // Hardcoded y=6/8 (like the old code) leaves bookshelf + bulletin
@@ -709,6 +738,7 @@ pub(super) fn compute_with_seed(
         &plants,
         floor_lamp,
         lounge_side_table,
+        fish_tank,
         &wall_decor,
         &pod_decor,
         &room_walls,
@@ -740,6 +770,7 @@ pub(super) fn compute_with_seed(
         pod_decor,
         floor_lamp,
         lounge_side_table,
+        fish_tank,
         door,
         door_threshold,
         meeting_rooms,
@@ -1237,7 +1268,7 @@ pub(super) fn compute_waypoints(
 
     // Meeting-room slots. Each room's 2 sofas are stored north→south
     // (`MeetingTrio.sofas[0/1]`); each seats up to 3 agents (dx ∈ {-6, 0, +6}
-    // along the 20px sofa) facing the table. Two standing slots flank the table.
+    // along the 20px sofa) facing the table. Two chair seats flank the table.
     // Every slot in a room shares its `room_id` (the room's TRUE index in
     // `meeting_rooms` — a bare trio-less room keeps its slot, so the id can
     // never shift) so the group-chitchat venue keys on the room.
@@ -1265,19 +1296,21 @@ pub(super) fn compute_waypoints(
                 });
             }
         }
-        // West stand faces East (toward the table centre); east stand faces West.
-        // The table obstacle (mask.rs) is `mark_blocked(t.x-5, w=11, pad=2)` →
-        // blocks x ∈ [t.x-7, t.x+7] (symmetric, 7 px each side). West stand at
-        // t.x-9 clears by 2 px; east stand at t.x+8 clears by 1 px. (The -9 keeps
-        // margin for any future footprint bump — leave it even though -8 would
-        // also clear today.)
-        for (dx, facing) in [(-9i16, Facing::East), (8, Facing::West)] {
+        // West chair faces East (toward the table centre); east chair faces
+        // West. The table obstacle (mask.rs) is `mark_blocked(t.x-5, w=11,
+        // pad=2)` → blocks x ∈ [t.x-7, t.x+7]; ±9 clears it by 2 px on BOTH
+        // sides. The offsets must MIRROR: the stands-era -9/+8 pair put the
+        // east chair body 1px closer to the table wood and swallowed the rug
+        // border its west twin showed (owner catch, PR #561) — a standing
+        // agent was too thin for the skew to read, the 7px chair body isn't.
+        let chair_dx = super::rooms::meeting::MEETING_CHAIR_TABLE_DX as i16;
+        for (dx, facing) in [(-chair_dx, Facing::East), (chair_dx, Facing::West)] {
             waypoints.push(Waypoint {
                 pos: Point {
                     x: table.x.saturating_add_signed(dx),
                     y: table.y,
                 },
-                kind: WaypointKind::MeetingStand,
+                kind: WaypointKind::MeetingChair,
                 facing,
                 room_id: Some(room_id),
             });
@@ -1292,7 +1325,7 @@ pub(super) fn compute_waypoints(
         waypoints.iter().all(|w| {
             matches!(
                 w.kind,
-                WaypointKind::MeetingSofa | WaypointKind::MeetingStand
+                WaypointKind::MeetingSofa | WaypointKind::MeetingChair
             ) == w.room_id.is_some()
         }),
         "room_id must be Some exactly for meeting-slot waypoints"

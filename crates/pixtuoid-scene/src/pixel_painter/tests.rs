@@ -221,15 +221,15 @@ fn seat_sprite_maps_facing_to_sprite_and_flip() {
         seat_sprite(WaypointKind::MeetingSofa, Facing::South),
         ("seated", false)
     );
-    // West stand (layout marks it Facing::East) mirrors toward the table.
+    // Head-of-table chairs sit Front regardless of end (no side-facing
+    // seated sprite; the chair body carries the E/W orientation).
     assert_eq!(
-        seat_sprite(WaypointKind::MeetingStand, Facing::East),
-        ("standing", true)
+        seat_sprite(WaypointKind::MeetingChair, Facing::East),
+        ("seated", false)
     );
-    // East stand (Facing::West) is unmirrored.
     assert_eq!(
-        seat_sprite(WaypointKind::MeetingStand, Facing::West),
-        ("standing", false)
+        seat_sprite(WaypointKind::MeetingChair, Facing::West),
+        ("seated", false)
     );
 }
 
@@ -750,11 +750,15 @@ fn seated_foot_cell_settles_exactly_on_the_render_anchor() {
                     "{f:?}: walking_anchor(S={s:?}) must equal back_couch_anchor(pos={pos:?}) w={w}",
                 );
             }
-            let s = seated_foot_cell(Furniture::MeetingStand, pos).expect("occupies_pos seat");
+            // The chair occupant SITS (SeatView::Front), so its settle/render
+            // pair with the SEAT anchor like the sofas — the stands-era
+            // waypoint_anchor pairing left the seated sprite hovering 5 rows
+            // above its chair (lens-1 frame-census catch, PR #561).
+            let s = seated_foot_cell(Furniture::MeetingChair, pos).expect("occupies_pos seat");
             assert_eq!(
                 walking_anchor(s, w),
-                waypoint_anchor(pos, w),
-                "MeetingStand: walking_anchor(S={s:?}) must equal waypoint_anchor(pos={pos:?}) w={w}",
+                back_couch_anchor(pos, w),
+                "MeetingChair: walking_anchor(S={s:?}) must equal back_couch_anchor(pos={pos:?}) w={w}",
             );
             // The home desk flows through the SAME fn — its S is
             // desk_walk_anchor, its render seated_anchor. Same identity,
@@ -818,7 +822,7 @@ fn settle_view_matches_the_seated_view_for_every_seat() {
                 w.kind,
                 WaypointKind::Couch
                     | WaypointKind::MeetingSofa
-                    | WaypointKind::MeetingStand
+                    | WaypointKind::MeetingChair
                     | WaypointKind::Island
             ),
             "seat kind {:?} has a settle foot-cell but is not explicitly handled \
@@ -1013,11 +1017,13 @@ fn sit_arc_z_key_is_stable_and_on_the_right_side_of_its_furniture() {
                     );
                 }
             }
-            WaypointKind::MeetingStand => {
-                // Stand clears the meeting table row it stands beside.
+            WaypointKind::MeetingChair => {
+                // The sitter must paint OVER its chair body (enqueued at
+                // pos.y+1); the table never overlaps it horizontally, so no
+                // table-side constraint applies.
                 assert!(
-                    z > w.pos.y + 2,
-                    "stand z {z} must clear the table at pos.y+2"
+                    z > w.pos.y + 1,
+                    "chair sitter z {z} must clear the chair body at pos.y+1"
                 );
             }
             _ => {}
@@ -2215,5 +2221,302 @@ fn paint_frame_is_pure_and_byte_identical() {
         chitchat.len(),
         chitchat_before,
         "paint must not start/expire chitchat"
+    );
+}
+
+#[test]
+fn corridor_runner_weaves_sparse_diamonds_without_inner_edge_rows() {
+    // Taste pin from the interior-decor mock round (owner picked SOFT over
+    // keep/narrow): stride-10 lattice, border rows only. The old stride-6 +
+    // inner-edge treatment read as bathroom tiling, not a woven runner.
+    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let floor = Rgb {
+        r: 150,
+        g: 110,
+        b: 72,
+    };
+    let mut buf = RgbBuffer::filled(60, 24, floor);
+    let rect = crate::layout::Bounds {
+        x: 0,
+        y: 4,
+        width: 60,
+        height: 12,
+    };
+    paint_corridor_runner(&mut buf, rect, theme);
+    let base = theme.office.runner_base;
+    let stripe = theme.office.runner_stripe;
+    let edge = theme.office.runner_edge;
+    assert_eq!(buf.get(0, 4), edge, "border row stays");
+    // Inner-edge rows are plain weave now — no second stripe line.
+    assert_eq!(
+        buf.get(2, 5),
+        base,
+        "inner-edge row (dx=2,dy=1) must be base"
+    );
+    // The old stride-6 lattice point (dx=2,dy=4: 6%6==0) dissolves to weave...
+    assert_eq!(
+        buf.get(2, 8),
+        base,
+        "old stride-6 lattice point must be base"
+    );
+    // ...and the sparse stride-10 lattice appears where the old one had none.
+    assert_eq!(buf.get(7, 7), stripe, "(dx+dy)=10 lands on the new lattice");
+}
+
+#[test]
+fn pantry_doorway_gets_a_centered_entry_mat() {
+    // Decor-arc taste pin (owner picked B1): an entry mat centered under the
+    // pantry's north doorway, echoing the meeting-room doormat convention.
+    // One clear row separates it from the wall face (derived from the SAME
+    // WALL_THICK_H the impl offsets by, so they can't drift apart).
+    use crate::layout::{TEST_DEFAULT_DESKS, WALL_THICK_H};
+    let l = Layout::compute(192, 160, Some(TEST_DEFAULT_DESKS)).expect("fits");
+    let p = l.pantry.expect("pantry");
+    let dw = l
+        .doorways
+        .iter()
+        .find(|d| d.start.y == d.end.y && d.start.y == p.bounds.y)
+        .expect("the pantry north door");
+    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let floor = Rgb {
+        r: 150,
+        g: 110,
+        b: 72,
+    };
+    let mut buf = RgbBuffer::filled(192, 160, floor);
+    furniture::paint_pantry_entry_mat(&mut buf, &l, theme);
+    let cx = (dw.start.x + dw.end.x) / 2;
+    let mat_cy = dw.start.y + WALL_THICK_H + 3;
+    assert_ne!(buf.get(cx, mat_cy), floor, "mat center row painted");
+    assert_ne!(buf.get(cx - 7, mat_cy), floor, "mat spans west of center");
+    assert_ne!(buf.get(cx + 7, mat_cy), floor, "mat spans east of center");
+    assert_eq!(buf.get(cx - 9, mat_cy), floor, "floor beyond the west edge");
+    assert_eq!(buf.get(cx + 9, mat_cy), floor, "floor beyond the east edge");
+    assert_eq!(
+        buf.get(cx, dw.start.y + WALL_THICK_H),
+        floor,
+        "one clear row between wall face and mat"
+    );
+}
+
+#[test]
+fn kitchen_island_sits_on_a_bar_mat() {
+    // Decor-arc taste pin (owner picked B2 alongside B1): a thin bordered mat
+    // under the island whose south sliver peeks out in front of the bar.
+    use crate::layout::TEST_DEFAULT_DESKS;
+    let l = Layout::compute(192, 160, Some(TEST_DEFAULT_DESKS)).expect("fits");
+    let isl = l
+        .pantry
+        .and_then(|p| p.kitchen_island)
+        .expect("island at this size");
+    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let floor = Rgb {
+        r: 150,
+        g: 110,
+        b: 72,
+    };
+    let mut buf = RgbBuffer::filled(192, 160, floor);
+    furniture::paint_island_bar_mat(&mut buf, &l, theme);
+    assert_ne!(
+        buf.get(isl.x, isl.y + 4),
+        floor,
+        "mat painted under the island front"
+    );
+    assert_eq!(
+        buf.get(isl.x + 14, isl.y + 4),
+        floor,
+        "floor beyond the east edge"
+    );
+    assert_eq!(
+        buf.get(isl.x - 14, isl.y + 4),
+        floor,
+        "floor beyond the west edge"
+    );
+    // Under-furniture order: the island BODY paints over the mat's center
+    // (the mat lives in the background pass; only its south sliver shows).
+    let before = buf.get(isl.x, isl.y);
+    furniture::paint_kitchen_island(&mut buf, isl.x, isl.y, theme);
+    assert_ne!(
+        buf.get(isl.x, isl.y),
+        before,
+        "island body must cover the mat center"
+    );
+}
+
+#[test]
+fn pantry_mats_stay_inside_the_pantry_bounds() {
+    // Both soft-goods mats derive from in-pantry anchors; neither may bleed
+    // past the room, whatever the floor size.
+    use crate::layout::TEST_DEFAULT_DESKS;
+    // 120x160 is the narrow-pantry case where the entry mat box reaches the
+    // water-cooler column (the paint-order catch).
+    for (w, h) in [(192u16, 160u16), (240, 160), (160, 120), (120, 160)] {
+        let Some(l) = Layout::compute(w, h, Some(TEST_DEFAULT_DESKS)) else {
+            continue;
+        };
+        let Some(p) = l.pantry else { continue };
+        let floor = Rgb {
+            r: 150,
+            g: 110,
+            b: 72,
+        };
+        let theme = crate::theme::theme_by_name("normal").expect("theme");
+        let mut buf = RgbBuffer::filled(w, h, floor);
+        furniture::paint_pantry_entry_mat(&mut buf, &l, theme);
+        furniture::paint_island_bar_mat(&mut buf, &l, theme);
+        let b = p.bounds;
+        for y in 0..h {
+            for x in 0..w {
+                let inside = x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height;
+                if !inside {
+                    assert_eq!(
+                        buf.get(x, y),
+                        floor,
+                        "{w}x{h}: mat pixel escaped the pantry at ({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fish_tank_paints_water_fish_and_cabinet_from_the_furniture_row() {
+    // The aquarium's geometry derives from its FurnitureDef row (14x11,
+    // center-anchored like the mask stamp); fish patrol their lanes on the
+    // anim clock, so SOME cell in each lane must carry a fish color at any
+    // instant. Frame reuses room_wall_trim_dark, cabinet reuses wood_*.
+    use crate::layout::{furniture_def, Furniture};
+    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let floor = Rgb {
+        r: 150,
+        g: 110,
+        b: 72,
+    };
+    let mut buf = RgbBuffer::filled(60, 40, floor);
+    let pos = Point { x: 30, y: 20 };
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(1_234_567);
+    furniture::paint_fish_tank(&mut buf, pos, now, theme);
+    let def = furniture_def(Furniture::FishTank);
+    let (x0, y0) = (pos.x - def.visual.w / 2, pos.y - def.visual.h / 2);
+    let fc = &theme.furniture;
+    assert_eq!(
+        buf.get(x0, y0),
+        theme.office.room_wall_trim_dark,
+        "lid row is the shared dark frame"
+    );
+    assert_eq!(
+        buf.get(x0 + 7, y0 + 2),
+        fc.tank_water,
+        "water body fills the glass"
+    );
+    assert_eq!(
+        buf.get(x0 + 7, y0 + 1),
+        fc.tank_water_line,
+        "lit surface row under the lid"
+    );
+    let lane =
+        |dy: u16, color: Rgb| (1..def.visual.w - 1).any(|dx| buf.get(x0 + dx, y0 + dy) == color);
+    assert!(lane(3, fc.tank_fish), "a fish patrols the upper lane");
+    assert!(
+        lane(5, fc.tank_fish_alt),
+        "the alt fish patrols the lower lane"
+    );
+    assert!(
+        (2..8).any(|dy| buf.get(x0 + 2, y0 + dy) == fc.tank_plant),
+        "plant sprig rises from the gravel"
+    );
+    assert_eq!(
+        buf.get(x0 + 3, y0 + 9),
+        fc.wood_top,
+        "cabinet row reuses the wood family"
+    );
+}
+
+#[test]
+fn meeting_chairs_paint_with_backrests_toward_the_table_ends() {
+    // The chair body carries the E/W orientation its Front-seated occupant
+    // lost (no side-facing seated sprite): backrest bar on the OUTER side,
+    // cushion from the chair_* theme family shared with the desk chairs.
+    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let floor = Rgb {
+        r: 150,
+        g: 110,
+        b: 72,
+    };
+    let mut buf = RgbBuffer::filled(40, 20, floor);
+    let pos = Point { x: 20, y: 10 };
+    furniture::paint_meeting_chair(&mut buf, pos, true, theme);
+    let fc = &theme.furniture;
+    // back_west: the backrest column sits west of the cushion.
+    assert_eq!(
+        buf.get(pos.x - 3, pos.y),
+        fc.chair_trim,
+        "west backrest bar"
+    );
+    assert_eq!(
+        buf.get(pos.x, pos.y),
+        furniture::MEETING_FABRIC,
+        "cushion wears the sofa fabric"
+    );
+    let mut buf2 = RgbBuffer::filled(40, 20, floor);
+    furniture::paint_meeting_chair(&mut buf2, pos, false, theme);
+    assert_eq!(
+        buf2.get(pos.x + 3, pos.y),
+        fc.chair_trim,
+        "east backrest bar"
+    );
+    assert_eq!(
+        buf2.get(pos.x - 3, pos.y),
+        floor,
+        "no bar on the table side"
+    );
+}
+
+#[test]
+fn meeting_chair_fabric_matches_the_sofa_sprite_palette() {
+    // The chair consts are deliberate copies of the pack palette's couch
+    // fabric ("C"/"G") — the sofa is an un-themed sprite, so the painter
+    // can't read Theme for it. This pin makes a sofa retint fail HERE
+    // instead of silently stranding the chairs in the old fabric.
+    let pack = crate::embedded_pack::load_sprite_pack(None).expect("embedded pack");
+    let c = pack.palette.get('C').flatten().expect("couch fabric key");
+    let g = pack
+        .palette
+        .get('G')
+        .flatten()
+        .expect("cushion highlight key");
+    assert_eq!(furniture::MEETING_FABRIC, c, "chair fabric == sofa 'C'");
+    assert_eq!(
+        furniture::MEETING_FABRIC_LIT,
+        g,
+        "chair highlight == sofa 'G'"
+    );
+}
+
+#[test]
+fn chair_sitter_bottom_row_lands_on_its_z_key_overlapping_the_chair_body() {
+    // The three-way identity the floating-sitter bug broke silently: the
+    // seat render anchor (pos.y − SEAT_RENDER_Y_OFF) + the REAL seated
+    // sprite's height − 1 must land exactly on SeatView::Front's z-key row
+    // (pos.y + 2) — which sits INSIDE the 7-row chair body, so the sitter
+    // visibly occupies the cushion. The z-key tests alone passed while the
+    // sprite hovered 5 rows above the chair (lens-1 frame-census catch).
+    use crate::layout::{Point, SEAT_RENDER_Y_OFF};
+    let pack = crate::embedded_pack::load_sprite_pack(None).expect("embedded pack");
+    let seated_h = pack.animation("seated").expect("seated sprite").frames[0].height();
+    let pos = Point { x: 40, y: 30 };
+    let anchor_y = pos.y - SEAT_RENDER_Y_OFF;
+    let bottom = anchor_y + seated_h - 1;
+    assert_eq!(
+        bottom,
+        SeatView::Front.z_key_for_seat(pos),
+        "seated sprite bottom row must land on the Front z-key row"
+    );
+    let chair = crate::layout::furniture_def(crate::layout::Furniture::MeetingChair).visual;
+    let chair_top = pos.y - chair.h / 2;
+    assert!(
+        bottom > chair_top,
+        "sitter bottom ({bottom}) must overlap the chair body (top {chair_top})"
     );
 }
