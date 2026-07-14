@@ -112,17 +112,12 @@ impl OfficeRenderer {
     /// Build the neon wall-board model for the current scene — the SAME
     /// backend-agnostic `pixtuoid_scene::board` model the TUI footer/board and the
     /// wasm hero use. Floating shows one floor at a time, so `floor = None` (no
-    /// cross-floor breadcrumb); uptime is the oldest live-or-exiting agent's age.
+    /// cross-floor breadcrumb); uptime is `board::scene_uptime_secs`.
     pub fn board(&self, scene: &SceneState, now: SystemTime) -> pixtuoid_scene::board::BoardModel {
         let counts = pixtuoid_scene::board::scene_stats(scene);
-        let oldest = scene
-            .agents
-            .values()
-            .filter_map(|a| now.duration_since(a.created_at).ok())
-            .max()
-            .unwrap_or_default();
         let gateway = pixtuoid_scene::board::gateway_rollup(scene.daemons());
-        pixtuoid_scene::board::build_board(counts, oldest.as_secs(), None, gateway)
+        let uptime = pixtuoid_scene::board::scene_uptime_secs(scene, now);
+        pixtuoid_scene::board::build_board(counts, uptime, None, gateway)
     }
 }
 
