@@ -151,6 +151,39 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Create `path` for writing with the config-dir hardening every atomic write
+/// under `install/` shares. On Unix, `O_NOFOLLOW | O_EXCL`: a symlink an attacker
+/// with config-dir write pre-plants at the tmp name is NOT followed (that would
+/// clobber the link's target with our bytes), and the create owns a fresh inode
+/// rather than an adopted one. A pre-existing tmp — our own crash residue, or a
+/// hostile symlink O_NOFOLLOW rejected — is reclaimed ONCE (`remove_file` unlinks
+/// the entry itself, never following a symlink; the retry stays hardened). `mode`
+/// is the Unix create mode; the caller restates perms afterward as needed. Windows
+/// keeps plain create+truncate (its rename-retry path owns the sharing semantics).
+/// The final rename onto the RESOLVED target still follows that target's own
+/// symlink (invariant #4) — only the distinct, attacker-controllable tmp is guarded.
+fn create_hardened_tmp(path: &Path, mode: u32) -> Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(mode);
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_EXCL);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    match opts.open(path) {
+        Ok(f) => Ok(f),
+        #[cfg(unix)]
+        Err(_) if path.symlink_metadata().is_ok() => {
+            std::fs::remove_file(path)?;
+            Ok(opts.open(path)?)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// RAII guard over a config file's advisory lock. Holds the flock on the
 /// sibling `<target>.lock` file for its whole lifetime, so a caller can cover
 /// an entire read→merge→write round (taking it BEFORE the read closes the
@@ -227,22 +260,19 @@ impl ConfigLock {
     /// content is written — so a user-tightened settings.json (API keys) is
     /// never widened, and a fresh file defaults tight rather than
     /// umask-default. Windows is a no-op (ACLs inherit from the directory).
+    ///
+    /// Security: the tmp create is hardened (see [`create_hardened_tmp`] — a
+    /// symlink pre-planted at `<target>.tmp` is not followed); the final rename
+    /// simply lands on the already-resolved real target (invariant #4).
     pub(crate) fn write_atomic(&self, contents: &str) -> Result<()> {
         let tmp = sibling(&self.target, "tmp");
         {
-            let mut opts = OpenOptions::new();
-            opts.create(true).write(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            let mut f = opts.open(&tmp)?;
+            let mut f = create_hardened_tmp(&tmp, 0o600)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                // `mode(0o600)` only applies on CREATE — a stale tmp left by a
-                // crashed run keeps its old mode, so restate explicitly.
+                // Match the TARGET's mode (the 0600 create is just the floor): a
+                // user-tightened settings.json keeps its exact perms across the rename.
                 let perms = std::fs::metadata(&self.target)
                     .map(|m| m.permissions())
                     .unwrap_or_else(|_| std::fs::Permissions::from_mode(0o600));
@@ -278,6 +308,12 @@ fn backup_once(path: &Path, suffix: &str) -> Result<Option<PathBuf>> {
     backup_once_resolved(&resolve_symlink(path), suffix)
 }
 
+/// Take a ONE-TIME backup of the resolved target to `<target><suffix>` (skipped
+/// if it already exists — the take-once latch trusts those bytes forever). Temp +
+/// fsync + rename, NOT `fs::copy`: the .bak is the user's only recovery path, so a
+/// crash mid-copy must leave it complete or absent, never a latched truncated
+/// fragment. The tmp is hardened like `write_atomic`'s ([`create_hardened_tmp`] —
+/// a symlink at `<bak>.tmp` is not followed, closing the same class as `.tmp`).
 fn backup_once_resolved(target: &Path, suffix: &str) -> Result<Option<PathBuf>> {
     if !target.exists() {
         return Ok(None);
@@ -286,23 +322,16 @@ fn backup_once_resolved(target: &Path, suffix: &str) -> Result<Option<PathBuf>> 
     if bak.exists() {
         return Ok(Some(bak));
     }
-    // Temp + fsync + rename (the same pattern write_atomic uses), NOT a bare
-    // fs::copy: the take-once latch above permanently trusts whatever bytes sit
-    // at the .bak name, and this file is the user's only recovery path — a
-    // crash/power-loss mid-copy must leave the backup either complete or
-    // absent, never a latched truncated fragment. (fs::copy preserves the
-    // source's permissions on the temp, so a 0600 settings.json backs up 0600;
-    // an orphaned .tmp from a crash is overwritten by the next attempt.)
     let tmp = sibling(&bak, "tmp");
-    std::fs::copy(target, &tmp)?;
-    // Windows' FlushFileBuffers demands a WRITE handle — a read-only
-    // `File::open` + sync_all is Access-denied there (fsync on an O_RDONLY fd
-    // is Unix-only leniency). Best-effort: the rename below is the atomicity;
-    // the flush only narrows the power-loss window — don't fail the backup
-    // over it (a read-only-attribute source also copies to a read-only tmp).
-    if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&tmp) {
-        let _ = f.sync_all();
+    let mut dst = create_hardened_tmp(&tmp, 0o600)?;
+    // Preserve the source's mode (fs::copy's old behavior: 0600 → 0600).
+    if let Ok(m) = std::fs::metadata(target) {
+        let _ = dst.set_permissions(m.permissions());
     }
+    std::io::copy(&mut File::open(target)?, &mut dst)?;
+    // Best-effort fsync of the owned write handle (no read-only re-open, which
+    // Windows' FlushFileBuffers rejects); the rename is the atomicity.
+    let _ = dst.sync_all();
     rename_with_retry(&tmp, &bak)?;
     Ok(Some(bak))
 }
@@ -527,6 +556,85 @@ mod tests {
         write_config_atomic(&link, "{\"a\":1}").unwrap();
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"a\":1}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_refuses_a_symlink_planted_at_the_tmp() {
+        // A symlink pre-planted at `<target>.tmp` must NOT be followed: the victim
+        // keeps its content and the real target still receives the write.
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("settings.json");
+        std::fs::write(&target, "{}").unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "PRECIOUS").unwrap();
+        std::os::unix::fs::symlink(&victim, sibling(&target, "tmp")).unwrap();
+
+        lock_config(&target)
+            .unwrap()
+            .write_atomic("{\"hooks\":{}}")
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "PRECIOUS",
+            "the planted symlink must not be followed — victim untouched"
+        );
+        assert!(
+            std::fs::read_to_string(&target).unwrap().contains("hooks"),
+            "the real target still receives the write (the .tmp symlink was reclaimed)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_refuses_a_hardlink_planted_at_the_tmp() {
+        // O_NOFOLLOW ignores HARDLINKS; O_EXCL is what stops an attacker's hardlink
+        // at `<target>.tmp` from being opened+truncated through the shared inode.
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("settings.json");
+        std::fs::write(&target, "{}").unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "PRECIOUS").unwrap();
+        std::fs::hard_link(&victim, sibling(&target, "tmp")).unwrap();
+
+        lock_config(&target)
+            .unwrap()
+            .write_atomic("{\"hooks\":{}}")
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "PRECIOUS",
+            "O_EXCL must reclaim the hardlink, not write through it — victim untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_refuses_a_symlink_planted_at_the_bak_tmp() {
+        // The backup write is part of the config-write chokepoint: a symlink at
+        // `<target>.bak.tmp` must not be followed either (the `.tmp` sibling class).
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("settings.json");
+        std::fs::write(&target, "REAL").unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "PRECIOUS").unwrap();
+        let bak = sibling(&target, "bak");
+        std::os::unix::fs::symlink(&victim, sibling(&bak, "tmp")).unwrap();
+
+        backup_once(&target, "bak").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "PRECIOUS",
+            "the planted .bak.tmp symlink must not be followed — victim untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "REAL",
+            "the backup still captures the target's content"
+        );
     }
 
     // --- ConfigLock: the read→merge→write guard (#7/#16) ------------------------
