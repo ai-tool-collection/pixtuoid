@@ -52,4 +52,19 @@ exclude_re = [
     # / `pid_start_time_is_deliberately_unavailable_off_macos`), which run on
     # their own platforms.
     'cc_probe\.rs.*replace pid_start_time_secs',
+    # `plant_ground_in_bounds` selects which scatter plants the #566 connectivity
+    # guard drops (aisle-resident sealers) vs the `plants.clear()` last resort.
+    # Within the SWEPT space (narrow-band 32..=76 × {80,100,120,160} × seeds 0..11)
+    # the mutant is UNOBSERVABLE: at every config where the guard fires (the
+    # 59-60×160 single-pod-column seals) BOTH corridor plants are already aisle-
+    # resident, so the targeted retain empties the list identically to clear-all,
+    # and the configs that keep a plant (38-42×160) never seal. The targeted path
+    # is NOT dead, though — `plants` can also carry meeting-room + Ficus plants
+    # (compute.rs) that sit far from `cubicle_aisle`, so a seal involving one
+    # (outside the swept space) is exactly where `plant_ground_in_bounds` protects
+    # it from the clear-all sledgehammer: genuine future-proofing. The
+    # never-ship-a-pocket invariant IS pinned (appliance_strip_not_sealed_at_a_
+    # single_pod_band + the boundary scan), so only the unobservable culprit-vs-
+    # blanket distinction survives — an equivalent mutant within reach today.
+    'compute\.rs.*plant_ground_in_bounds',
 ]
