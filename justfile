@@ -235,6 +235,14 @@ mutants *args:
     base="${MUTANTS_BASE:-origin/main}"
     mkdir -p target
     git diff "$base...HEAD" > target/mutants.diff
+    # A diff with NO Rust changes (dispatched from `main` where HEAD==origin/main,
+    # or a docs/justfile/site-only branch) makes `--in-diff` test ZERO mutants and
+    # exit 0 — a vacuous green reading as "teeth verified" having checked nothing
+    # (cargo-mutants has no --error-on-zero flag). Gate on actual `.rs` changes.
+    if ! git diff --name-only "$base...HEAD" -- '*.rs' | grep -q .; then
+        echo "error: no Rust changes vs $base — no mutants to test. Run from a feature branch with .rs changes, or set MUTANTS_BASE." >&2
+        exit 1
+    fi
     cargo mutants --in-diff target/mutants.diff --features {{ features }} {{ args }}
 
 # Never-panic fuzz the per-source decoders over a JSONL corpus DIR (on-demand;
