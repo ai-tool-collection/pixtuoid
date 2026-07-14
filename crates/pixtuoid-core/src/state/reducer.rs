@@ -926,9 +926,11 @@ impl Reducer {
             // conjuncts are load-bearing (`resurrect_in_place` has no exiting
             // guard, so a `&&`→`||` here WOULD reset a LIVE root — NOT an
             // equivalent mutant): the exiting conjunct is pinned by
-            // `duplicate_root_session_start_does_not_resurrect_a_live_session`,
-            // the two root-gate conjuncts by the exiting-slot / exiting-subagent
-            // resurrect tests.
+            // `duplicate_root_session_start_does_not_resurrect_a_live_session`.
+            // The two parent conjuncts are belt-and-braces —
+            // `session_start_on_exiting_subagent_does_not_resurrect` blocks on the
+            // slot's OWN `parent_id.is_some()` regardless of the incoming one, so
+            // no existing test isolates either from the other (#612).
             if slot.exiting_at.is_some() && slot.parent_id.is_none() && parent_id.is_none() {
                 // Route through fsm so an in-flight Active span is folded
                 // into active_ms before the reset (every other
@@ -1249,6 +1251,9 @@ impl Reducer {
                 // Delegating for a Task that already completed. `gc` (run at
                 // apply-top with this same `now`) already pruned expired
                 // tombstones, so membership means fresh.
+                //
+                // Not slot-gated (unlike the hook-wins dedup record): the orphan
+                // is harmless + reaped by tick — see CLAUDE.md "active_tasks insert".
                 if self
                     .corr
                     .active_tasks
