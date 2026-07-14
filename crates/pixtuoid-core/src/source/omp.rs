@@ -259,8 +259,12 @@ pub fn decode_omp_line(transcript_path: &str, source: &str, v: Value) -> Result<
                         .iter()
                         .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("toolCall"))
                     {
-                        // Un-keyable calls are dropped (can't be closed).
+                        // Un-keyable calls are dropped (can't be closed) — but
+                        // breadcrumb it: `id` is a REQUIRED pairing key on a
+                        // toolCall block we're committed to decoding, so its
+                        // absence is upstream drift, not a line we ignore.
                         let Some(id) = b.get("id").and_then(|i| i.as_str()) else {
+                            crate::source::drift::missing_field(source, "toolCall", "id");
                             continue;
                         };
                         let name = b.get("name").and_then(|n| n.as_str()).unwrap_or_else(|| {
@@ -287,6 +291,11 @@ pub fn decode_omp_line(transcript_path: &str, source: &str, v: Value) -> Result<
                 // A tool result closes its call.
                 Some("toolResult") => {
                     let Some(tool_call_id) = msg.get("toolCallId").and_then(|i| i.as_str()) else {
+                        // The ActivityEnd pairing key — its absence is drift on a
+                        // lifecycle event we're committed to decoding (mirror of the
+                        // toolCall `id` gate above), and an unkeyable End can never
+                        // close its Start (leaks Active forever). Breadcrumb, then drop.
+                        crate::source::drift::missing_field(source, "toolResult", "toolCallId");
                         return Ok(vec![]);
                     };
                     vec![AgentEvent::ActivityEnd {
@@ -746,12 +755,22 @@ mod tests {
 
     #[test]
     fn tool_call_without_id_is_dropped_and_without_name_still_starts() {
-        // No block id → un-keyable (its result could never close it) → drop.
+        // No block id → un-keyable (its result could never close it) → drop,
+        // but the drop must leave a `missing_field` breadcrumb (`id` is a
+        // REQUIRED pairing key on a block we're committed to decoding).
         let no_id = r#"{"type":"message","id":"m5","parentId":null,"timestamp":"t","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{}}],"timestamp":1}}"#;
-        assert!(decode(no_id).is_empty(), "un-keyable toolCall → no event");
+        let out = crate::test_capture::capture_logs(|| {
+            assert!(decode(no_id).is_empty(), "un-keyable toolCall → no event");
+        });
+        for needle in [crate::source::drift::TARGET, "missing_field", "toolCall"] {
+            assert!(
+                out.contains(needle),
+                "no id breadcrumb: missing {needle:?}\n{out}"
+            );
+        }
         // Missing name → drift breadcrumb + empty name; "" is not "task".
         let no_name = r#"{"type":"message","id":"m6","parentId":null,"timestamp":"t","message":{"role":"assistant","content":[{"type":"toolCall","id":"t6","arguments":{}}],"timestamp":1}}"#;
-        match &decode(no_name)[..] {
+        let out = crate::test_capture::capture_logs(|| match &decode(no_name)[..] {
             [AgentEvent::ActivityStart {
                 tool_use_id,
                 detail: Some(d),
@@ -761,6 +780,31 @@ mod tests {
                 assert!(!d.is_task());
             }
             other => panic!("expected one ActivityStart, got {other:?}"),
+        });
+        for needle in [crate::source::drift::TARGET, "missing_field", "toolCall"] {
+            assert!(
+                out.contains(needle),
+                "no name breadcrumb: missing {needle:?}\n{out}"
+            );
+        }
+    }
+
+    /// A `toolResult` missing its `toolCallId` (the ActivityEnd pairing key) is
+    /// dropped — an unkeyable End can't close its Start — but must leave a
+    /// `missing_field` breadcrumb, the mirror of the `toolCall` `id` gate above.
+    /// It is NOT an ignorable line (it's a lifecycle event we decode), so it does
+    /// not belong in the "ignored, not panicked" bundle.
+    #[test]
+    fn toolresult_without_id_drops_with_a_drift_breadcrumb() {
+        let no_id = r#"{"type":"message","id":"m7","parentId":null,"timestamp":"t","message":{"role":"toolResult","toolName":"read","content":[],"timestamp":1}}"#;
+        let out = crate::test_capture::capture_logs(|| {
+            assert!(decode(no_id).is_empty(), "un-keyable toolResult → no event");
+        });
+        for needle in [crate::source::drift::TARGET, "missing_field", "toolResult"] {
+            assert!(
+                out.contains(needle),
+                "no toolResult breadcrumb: missing {needle:?}\n{out}"
+            );
         }
     }
 
@@ -783,8 +827,6 @@ mod tests {
             r#"{"type":"session_init","id":"x","parentId":null,"timestamp":"t","systemPrompt":"…","task":"…","tools":[]}"#,
             r#"{"type":"message","id":"x","parentId":null,"timestamp":"t","message":{"role":"user","content":"hi","timestamp":1}}"#,
             r#"{"type":"message","id":"x","parentId":null,"timestamp":"t","message":{"role":"bashExecution","command":"ls","output":"","exitCode":0,"timestamp":1}}"#,
-            // toolResult without a toolCallId is un-keyable.
-            r#"{"type":"message","id":"x","parentId":null,"timestamp":"t","message":{"role":"toolResult","toolName":"read","content":[],"timestamp":1}}"#,
             // message entry with no message object.
             r#"{"type":"message","id":"x","parentId":null,"timestamp":"t"}"#,
             // custom entry of an unrelated customType.
