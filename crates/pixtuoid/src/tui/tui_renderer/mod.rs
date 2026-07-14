@@ -266,6 +266,27 @@ impl<B: Backend<Error: Send + Sync + 'static>> TuiRenderer<B> {
         self.cached_layout.as_deref()
     }
 
+    /// The click twin of the hover hit-test (`renderer.rs`): anchors on
+    /// `character_anchor`, so it follows a walking / wandering / entry / exit
+    /// sprite — unlike home-desk-only `hit_test_from_tui`. Pass the event loop's
+    /// current `now` (the same clock `render()` runs on); `derive_with_routing` is
+    /// idempotent per `now`, so re-deriving here is a state no-op. `floor_scene`
+    /// must be projected to the visible floor (its `desk_index.single_floor_local()`
+    /// reads need floor-local indices). `None` on a too-small/transition frame.
+    pub(crate) fn hit_test_agent_at(
+        &mut self,
+        floor_scene: &SceneState,
+        now: SystemTime,
+        col: u16,
+        row: u16,
+    ) -> Option<pixtuoid_core::AgentId> {
+        // cached_layout / floors / current_floor are disjoint struct fields, so
+        // this shared layout borrow coexists with the &mut route_ctx below.
+        let layout = self.cached_layout.as_deref()?;
+        let mut rctx = self.floors[self.current_floor].ctx.route_ctx();
+        crate::tui::hit_test::hit_test_agent(floor_scene, layout, now, &mut rctx, col, row)
+    }
+
     pub fn current_floor_seed(&self) -> u64 {
         let nf = self.floors.len();
         FloorMeta::for_floor(self.current_floor, nf).floor_seed
