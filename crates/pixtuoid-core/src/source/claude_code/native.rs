@@ -50,8 +50,12 @@ impl ClaudeCodeSource {
         }
         #[cfg(unix)]
         {
+            // XDG spec: absolute-only. Empty → `/pixtuoid.sock` (fatal bind); relative →
+            // shim/daemon cwd mis-rendezvous → treated as unset. Parity with paths.rs.
             if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-                return PathBuf::from(format!("{dir}/pixtuoid.sock"));
+                if !dir.trim().is_empty() && std::path::Path::new(&dir).is_absolute() {
+                    return PathBuf::from(format!("{dir}/pixtuoid.sock"));
+                }
             }
             // No XDG_RUNTIME_DIR (macOS, bare Linux): a per-user SUBDIR the bind
             // creates 0700-owned-by-us (`hook::unix::ensure_owned_socket_dir`),
@@ -117,9 +121,9 @@ impl Source for ClaudeCodeSource {
 mod tests {
     use super::*;
 
-    // The socket-path and default-paths env precedence. All three socket
-    // branches are checked in ONE test because the env vars are process-global —
-    // splitting across tests would race under the default multi-thread runner.
+    // The socket-path and default-paths env precedence. Every socket branch
+    // (incl. the invalid-XDG fallback) is checked in ONE test because the env
+    // vars are process-global — splitting would race under the multi-thread runner.
     // Unix-specific branches (XDG_RUNTIME_DIR + getuid fallback) can only be
     // asserted on Unix; the platform-neutral default_paths check is split into
     // a separate test so it compiles + runs on all platforms.
@@ -160,10 +164,18 @@ mod tests {
             PathBuf::from("/run/user/1000/pixtuoid.sock")
         );
 
+        // Invalid (empty/whitespace/relative) XDG_RUNTIME_DIR is unset per the
+        // XDG absolute-only spec -> /tmp subdir (parity with paths.rs / the shim).
+        let uid = rustix::process::getuid().as_raw();
+        let tmp_fallback = PathBuf::from(format!("/tmp/pixtuoid-{uid}/pixtuoid.sock"));
+        for invalid in ["", "   ", "relative/run"] {
+            std::env::set_var("XDG_RUNTIME_DIR", invalid);
+            assert_eq!(ClaudeCodeSource::default_socket_path(), tmp_fallback);
+        }
+
         // With neither set, fall back to the uid-scoped /tmp SUBDIR socket
         // (#485: the bind creates `/tmp/pixtuoid-{uid}/` 0700-owned-by-us).
         std::env::remove_var("XDG_RUNTIME_DIR");
-        let uid = rustix::process::getuid().as_raw();
         assert_eq!(
             ClaudeCodeSource::default_socket_path(),
             PathBuf::from(format!("/tmp/pixtuoid-{uid}/pixtuoid.sock"))
