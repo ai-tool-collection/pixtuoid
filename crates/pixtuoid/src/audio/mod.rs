@@ -27,7 +27,9 @@ use std::time::Instant;
 
 #[cfg(feature = "audio")]
 use mixer::{DropScheduler, LoopStem, Mixer, TypingScheduler};
-use pixtuoid_scene::audio::{AudioFrame, OneShot};
+use pixtuoid_scene::audio::AudioFrame;
+#[cfg(feature = "audio")]
+use pixtuoid_scene::audio::OneShot;
 #[cfg(feature = "audio")]
 use sink::AudioSink;
 
@@ -54,11 +56,9 @@ const DROP_GAIN: f32 = 0.9;
 struct AssetBank {
     keystrokes: Vec<Arc<Vec<f32>>>,
     drops: Vec<Arc<Vec<f32>>>,
-    elevator_ding: Arc<Vec<f32>>,
     door_chime: Arc<Vec<f32>>,
     printer_whir: Arc<Vec<f32>>,
     vending_drop: Arc<Vec<f32>>,
-    cooler_glug: Arc<Vec<f32>>,
     rain_bed: Arc<Vec<f32>>,
 }
 
@@ -74,22 +74,18 @@ impl AssetBank {
             drops: (0..DROP_POOL)
                 .map(|_| Arc::new(synth::rain_drop(&mut rng)))
                 .collect(),
-            elevator_ding: Arc::new(synth::elevator_ding(&mut rng)),
             door_chime: Arc::new(synth::door_chime()),
             printer_whir: Arc::new(synth::printer_whir(&mut rng)),
             vending_drop: Arc::new(synth::vending_drop(&mut rng)),
-            cooler_glug: Arc::new(synth::cooler_glug(&mut rng)),
             rain_bed: Arc::new(synth::rain_bed(&mut rng)),
         }
     }
 
     fn one_shot(&self, event: OneShot) -> Arc<Vec<f32>> {
         match event {
-            OneShot::ElevatorDing => Arc::clone(&self.elevator_ding),
             OneShot::DoorChime => Arc::clone(&self.door_chime),
             OneShot::PrinterWhir => Arc::clone(&self.printer_whir),
             OneShot::VendingDrop => Arc::clone(&self.vending_drop),
-            OneShot::CoolerGlug => Arc::clone(&self.cooler_glug),
         }
     }
 }
@@ -97,7 +93,7 @@ impl AssetBank {
 // without the audio feature the handle's tx is always None, so the
 // payloads are provably unread — not a bug, the inert path
 #[cfg_attr(not(feature = "audio"), allow(dead_code))]
-enum Msg {
+pub(crate) enum Msg {
     Frame(AudioFrame),
     Muted(bool),
 }
@@ -128,20 +124,32 @@ impl AudioHandle {
         }
     }
 
-    /// Fire a painter-local one-shot (e.g. the TUI's elevator ding on
-    /// floor navigation) through the same gateway.
-    pub(crate) fn one_shot(&self, event: OneShot) {
-        self.frame(AudioFrame {
-            events: vec![event],
-            ..Default::default()
-        });
-    }
-
     pub(crate) fn set_muted(&self, muted: bool) {
         if let Some(tx) = &self.tx {
             let _ = tx.try_send(Msg::Muted(muted));
         }
     }
+
+    /// Test seam: a live handle whose receiver the test drains — the ONE
+    /// way to observe what the render path actually feeds the audio thread
+    /// (the online-review HIGH: the floor-scoping wiring needs a pin).
+    #[cfg(test)]
+    pub(crate) fn test_pair() -> (Self, mpsc::Receiver<Msg>) {
+        let (tx, rx) = mpsc::sync_channel(256);
+        (Self { tx: Some(tx) }, rx)
+    }
+}
+
+/// Drain every queued frame, returning them in order (test helper).
+#[cfg(test)]
+pub(crate) fn drain_frames(rx: &mpsc::Receiver<Msg>) -> Vec<AudioFrame> {
+    let mut out = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        if let Msg::Frame(f) = msg {
+            out.push(f);
+        }
+    }
+    out
 }
 
 /// How often the audio thread wakes to ramp gains / run schedulers when no
@@ -243,8 +251,10 @@ mod tests {
     fn disabled_handle_swallows_everything() {
         let h = AudioHandle::disabled();
         assert!(!h.is_enabled());
-        h.frame(AudioFrame::default());
-        h.one_shot(OneShot::DoorChime);
+        h.frame(AudioFrame {
+            events: vec![OneShot::DoorChime],
+            ..Default::default()
+        });
         h.set_muted(true); // no panic, no effect — the inert path
     }
 
@@ -451,8 +461,6 @@ mod listen_gate {
             (5.0, OneShot::DoorChime),
             (10.0, OneShot::PrinterWhir),
             (15.0, OneShot::VendingDrop),
-            (20.0, OneShot::CoolerGlug),
-            (25.0, OneShot::ElevatorDing),
         ];
         for (name, stems, events, expect_sound) in [
             // Phase 1: an empty office is truly SILENT (texture waits for

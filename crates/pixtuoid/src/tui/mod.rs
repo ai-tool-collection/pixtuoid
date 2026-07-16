@@ -512,8 +512,8 @@ pub(crate) struct TuiSession {
     /// drive the footer nudge (`main` owns the resolution; `None` = no surfacing).
     pub log_path: Option<std::path::PathBuf>,
     /// The ambient-audio gateway (#633) — inert unless `[audio] enabled`.
-    /// The TUI feeds per-frame `AudioFrame`s (renderer-side) and fires the
-    /// painter-local elevator ding on floor navigation; `m` toggles mute.
+    /// The TUI feeds per-frame `AudioFrame`s (renderer-side, floor-scoped);
+    /// `m` toggles mute.
     pub audio: crate::audio::AudioHandle,
     /// Focus-jump pid point-query roots: (CC projects root, Codex sessions
     /// root) — threaded from RunConfig so a sprite click can resolve a
@@ -707,7 +707,6 @@ pub(crate) async fn run_tui(session: TuiSession) -> Result<()> {
                             }
                             KeyAction::NavigateFloor(target) => {
                                 renderer.navigate_floor(target, now);
-                                audio.one_shot(pixtuoid_scene::audio::OneShot::ElevatorDing);
                             }
                             KeyAction::ToggleAudioMute => {
                                 audio_muted = !audio_muted;
@@ -727,7 +726,6 @@ pub(crate) async fn run_tui(session: TuiSession) -> Result<()> {
                             KeyAction::DashboardJump => {
                                 if let Some(floor) = ui.dashboard_jump(&snapshot) {
                                     renderer.navigate_floor(floor, now);
-                                    audio.one_shot(pixtuoid_scene::audio::OneShot::ElevatorDing);
                                 }
                             }
                             KeyAction::DashboardFocus => {
