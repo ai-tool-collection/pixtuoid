@@ -144,15 +144,21 @@ pub(crate) struct AudioHandle {
     /// must still land, or the beds fade in unmuted against a footer that
     /// says muted (review MEDIUM).
     muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Master volume (f32 bits) — same state-not-event rationale as `muted`:
+    /// the +/- keys must land even while the synthesis window saturates the
+    /// frame channel. The audio thread folds it into the mixer each tick.
+    volume: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl AudioHandle {
-    /// The inert handle: `[audio] enabled = false` (the default) or no
-    /// usable output device. Every call is a no-op.
+    /// The inert handle: sound not requested yet (muted — the default —
+    /// with the lazy spawn untriggered) or no usable output device. Every
+    /// call is a no-op.
     pub(crate) fn disabled() -> Self {
         Self {
             tx: None,
             muted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            volume: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits())),
         }
     }
 
@@ -173,6 +179,27 @@ impl AudioHandle {
             .store(muted, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Live master-volume update (pre-clamped by the caller's key handler;
+    /// clamped again defensively here).
+    pub(crate) fn set_volume(&self, volume: f32) {
+        self.volume.store(
+            volume.clamp(0.0, 1.0).to_bits(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// The user's master volume — the footer's audibility check reads it
+    /// (0% is silence even when live and unmuted).
+    pub(crate) fn volume(&self) -> f32 {
+        f32::from_bits(self.volume.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The EFFECTIVE silence state (the m-toggle OR'd with pause — run_tui
+    /// stores the combined value), read by the footer's ♩ indicator.
+    pub(crate) fn is_muted(&self) -> bool {
+        self.muted.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Test seam: a live handle whose receiver the test drains — the ONE
     /// way to observe what the render path actually feeds the audio thread
     /// (the online-review HIGH: the floor-scoping wiring needs a pin).
@@ -183,6 +210,7 @@ impl AudioHandle {
             Self {
                 tx: Some(tx),
                 muted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                volume: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits())),
             },
             rx,
         )
@@ -220,13 +248,18 @@ pub(crate) fn spawn(volume: f32) -> AudioHandle {
         };
         let (tx, rx) = mpsc::sync_channel(64);
         let muted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let vol = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            volume.clamp(0.0, 1.0).to_bits(),
+        ));
         let muted_for_loop = std::sync::Arc::clone(&muted);
+        let vol_for_loop = std::sync::Arc::clone(&vol);
         std::thread::Builder::new()
             .name("pixtuoid-audio".into())
-            .spawn(move || run_loop(rx, Box::new(device), volume, muted_for_loop))
+            .spawn(move || run_loop(rx, Box::new(device), muted_for_loop, vol_for_loop))
             .map(|_| AudioHandle {
                 tx: Some(tx),
                 muted,
+                volume: vol,
             })
             .unwrap_or_else(|e| {
                 tracing::warn!("audio: thread spawn failed, running silent: {e}");
@@ -241,8 +274,8 @@ pub(crate) fn spawn(volume: f32) -> AudioHandle {
 fn run_loop(
     rx: mpsc::Receiver<AudioFrame>,
     mut device: Box<dyn AudioSink>,
-    volume: f32,
     muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    volume: std::sync::Arc<std::sync::atomic::AtomicU32>,
 ) {
     // the ~2s (release; >10s debug) synthesis window: frames try_sent
     // meanwhile drop harmlessly (levels are re-sent every render frame),
@@ -265,7 +298,9 @@ fn run_loop(
         "audio: assets synthesized and beds registered"
     );
 
-    let mut mixer = Mixer::new(volume);
+    let mut mixer = Mixer::new(f32::from_bits(
+        volume.load(std::sync::atomic::Ordering::Relaxed),
+    ));
     let mut typing = TypingScheduler::new(0xBEEF);
     let mut drops = DropScheduler::new(0xFACE);
     let mut pick = dsp::NoiseStream::new(0xDEAD);
@@ -277,6 +312,9 @@ fn run_loop(
     loop {
         let msg = rx.recv_timeout(std::time::Duration::from_millis(TICK_MS));
         mixer.set_muted(muted.load(std::sync::atomic::Ordering::Relaxed));
+        mixer.set_master(f32::from_bits(
+            volume.load(std::sync::atomic::Ordering::Relaxed),
+        ));
         match msg {
             Ok(frame) => {
                 typing_level = frame.stems.typing;
@@ -350,7 +388,8 @@ mod tests {
         let probe = Probe(Arc::clone(&recorder));
         let muted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let muted_ctl = std::sync::Arc::clone(&muted);
-        let join = std::thread::spawn(move || run_loop(rx, Box::new(probe), 1.0, muted));
+        let vol = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits()));
+        let join = std::thread::spawn(move || run_loop(rx, Box::new(probe), muted, vol));
 
         // rain stays 0 so no scheduler one-shot can race the count —
         // only the two frame events are audible

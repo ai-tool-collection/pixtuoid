@@ -247,7 +247,22 @@ src/
 │                       floor switch); rain stays global (weather, not agent activity). No elevator
 │                       ding (owner-cut). Floating feeds stems + the door cue only, scoped to its rendered
 │                       floor (FloorSession doesn't surface occupancy — deliberate Phase 1 cut).
-│                       [audio] config: enabled default FALSE (strictly opt-in), volume clamped [0,1].
+│                       [audio] config: ONE switch `muted` default TRUE (owner-cut the redundant enabled
+│                       knob; `m` = the whole opt-in, persisted via save_audio_muted) + volume clamped [0,1];
+│                       the system LAZY-SPAWNS on the first unmute (muted = zero cost: no device/thread/
+│                       buffers) — run_tui swaps the fresh handle into the renderer; floating boot-spawns
+│                       iff !muted (no runtime toggle yet, #633). Footer shows ♩ iff enabled && !effective-
+│                       muted (m OR pause); onboarding carries the one-line m hint. +/- nudge volume ±0.05
+│                       (an AtomicU32-bits sibling of the mute atomic; mixer folds it per tick; persisted;
+│                       footer flashes `♩ N%` ~1s — the lowfi volume-timer pattern; + from muted unmutes).
+│                       RodioSink::open silences stderr around device open on Unix (ALSA prints raw lines;
+│                       lazy spawn = mid-altscreen open, one line corrupts the TUI — lowfi issue #1).
+│                       Volume→amplitude is mixer::master_amp = user² × BUS_TRIM(0.35): a squared perceptual
+│                       curve under an ambient bus trim (dogfood: untrimmed linear was "too loud even at
+│                       5%") — the ONE mapping site; the footer keeps showing the user's linear percent.
+│                       Volume persist is DEBOUNCED to the ~1s flash expiry + the quit path (+/- is a
+│                       repeatable key — per-repeat ConfigLock rounds were the bot MEDIUM); the +/- arm
+│                       re-attempts the lazy spawn whenever unmuted-but-disabled ('+' is never a dead key).
 │                       An EMPTY office now plays the quiet pad+sparkle+texture "radio on" floor (the
 │                       ratified demo_1) — Phase 1's empty-silent behavior ended when the music landed.
 ├── fonts/              MonaspaceNeon-SemiBold.otf + OFL-Monaspace.txt (the ONE bundled face; vendored VERBATIM
