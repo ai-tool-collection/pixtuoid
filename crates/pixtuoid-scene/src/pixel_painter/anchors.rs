@@ -84,7 +84,7 @@ pub(super) fn with_breath(
 /// Anchor for a back-view sitter on a mirror_vertical'd couch. Couch back
 /// is now at the BOTTOM of the sprite, so the character's body sits
 /// ENTIRELY ABOVE the couch back (head 7 px above couch center, body
-/// ending right at the couch back row). Different from `couch_seat_anchor`
+/// ending right at the couch back row). Different from a normal front-view seat anchor
 /// because back_couch.sprite has no transparent head/face area — its hair
 /// extends across all top rows, so positioning it lower would put the
 /// character's "head" overlapping the couch back row.
@@ -182,7 +182,7 @@ pub fn character_anchor(
 /// How long the elevator's open/close transition takes. Used as both
 /// the opening ramp at the START of an agent's entry/exit window and
 /// the closing ramp at the END. 200 ms feels snappy without being
-/// abrupt — the half-open frame is visible for ~70 ms each way.
+/// abrupt — the half-open frame is visible for ~100 ms (DOOR_TRANSITION_MS/2) each way.
 const DOOR_TRANSITION_MS: u64 = 200;
 
 /// Compute the elevator door frame (0=closed, 1=half, 2=open) from
