@@ -367,6 +367,8 @@ mod tests {
                 pid: None,
                 model: None,
                 effort: None,
+                tokens_used: 0,
+                last_usage: None,
             }
         }
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);

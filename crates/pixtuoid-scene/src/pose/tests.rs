@@ -191,6 +191,8 @@ fn active_slot(state_started_at: SystemTime, created_at: SystemTime) -> AgentSlo
         pid: None,
         model: None,
         effort: None,
+        tokens_used: 0,
+        last_usage: None,
     }
 }
 
@@ -943,6 +945,8 @@ fn at_waypoint_pose_records_position_to_history() {
         pid: None,
         model: None,
         effort: None,
+        tokens_used: 0,
+        last_usage: None,
     };
     let mut history = PoseHistory::new();
     let overlay = pixtuoid_core::walkable::OccupancyOverlay::new();

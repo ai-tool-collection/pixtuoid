@@ -435,6 +435,8 @@ mod tests {
             pid: None,
             model: None,
             effort: None,
+            tokens_used: 0,
+            last_usage: None,
         };
         let mut scene = SceneState::uniform(16);
         scene.agents.insert(slot.agent_id, slot);
@@ -523,6 +525,8 @@ mod tests {
             pid: None,
             model: None,
             effort: None,
+            tokens_used: 0,
+            last_usage: None,
         };
         let mut scene = SceneState::uniform(16);
         scene.agents.insert(slot.agent_id, slot);
@@ -579,6 +583,8 @@ mod tests {
             pid: None,
             model: None,
             effort: None,
+            tokens_used: 0,
+            last_usage: None,
         };
         let mut scene = SceneState::uniform(16);
         scene.agents.insert(slot.agent_id, slot);

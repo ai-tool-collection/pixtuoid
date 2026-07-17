@@ -109,6 +109,10 @@ pub struct FurnitureColors {
     pub tank_fish: Rgb,
     pub tank_fish_alt: Rgb,
     pub tank_plant: Rgb,
+    /// Token-meter paper tower (#632): the sheet face + the every-other-row
+    /// ream shading that makes the block read as STACKED PAPER, not a slab.
+    pub paper: Rgb,
+    pub paper_shade: Rgb,
 }
 
 #[derive(Debug, Clone)]
@@ -348,6 +352,34 @@ mod tests {
     // Every theme's appliance palette must keep the appliances LEGIBLE — the
     // bug was a hardcoded normal-theme set on all themes, so this guards both
     // that each theme supplies its own AND that the supplied set reads right.
+    #[test]
+    fn token_paper_is_legible_on_the_desk_for_every_theme() {
+        // #632: the paper tower sits on the desk's wood wing — it must read
+        // bright against the wood AND its two ream tones must differ (the
+        // banding is what makes the block read as stacked paper). No code
+        // invariant guarded this before; the media baselines held only by
+        // hand-tuning (film-critic catch).
+        fn lum(c: Rgb) -> u32 {
+            c.r as u32 + c.g as u32 + c.b as u32
+        }
+        // Half the appliance guard's printer margin: the tower is 3px wide,
+        // so it needs real contrast, but themes like gruvbox run warm/low.
+        const MIN_PAPER_MARGIN: u32 = 120;
+        for t in ALL_THEMES {
+            let f = &t.furniture;
+            assert!(
+                lum(f.paper) >= lum(f.wood_top) + MIN_PAPER_MARGIN,
+                "{}: paper must read bright against the desk wood",
+                t.name
+            );
+            assert_ne!(
+                f.paper, f.paper_shade,
+                "{}: ream banding needs two distinct paper tones",
+                t.name
+            );
+        }
+    }
+
     #[test]
     fn appliance_palette_is_legible_for_every_theme() {
         fn lum(c: Rgb) -> u32 {

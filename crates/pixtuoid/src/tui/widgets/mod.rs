@@ -391,6 +391,8 @@ mod tests {
             pid: None,
             model: None,
             effort: None,
+            tokens_used: 0,
+            last_usage: None,
         }
     }
 
@@ -690,6 +692,8 @@ mod tests {
             pid: None,
             model: None,
             effort: None,
+            tokens_used: 0,
+            last_usage: None,
         }
     }
     fn active_with(detail: &str, label: &str) -> AgentSlot {

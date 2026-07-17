@@ -322,6 +322,8 @@ mod tests {
             pid,
             model: None,
             effort: None,
+            tokens_used: 0,
+            last_usage: None,
         }
     }
 
