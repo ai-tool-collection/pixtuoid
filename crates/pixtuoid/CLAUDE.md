@@ -217,18 +217,20 @@ src/
 │                       the only owner of rodio/cpal (behind the default-on `audio` cargo feature; Linux
 │                       PREBUILTS ship without it — ALSA can't link into musl/cross builds — so Linux audio
 │                       is from-source). mod.rs (AudioHandle: clone-cheap try_send gateway — disabled handle
-│                       is inert everywhere, so callers never cfg; AssetBank = the ONE-SHOT pools, LoopBeds =
-│                       the six loop buffers HANDED OFF at registration and dropped — RodioSink copies each
-│                       into its own SamplesBuffer, so retaining them would double the ~23MB bed RAM. Synthesis
+│                       is inert everywhere, so callers never cfg; AssetBank = the ONE-SHOT pools, TrackBeds =
+│                       the five TRACK-OWNED loop buffers (rain registers separately at spawn — weather is
+│                       track-independent) HANDED OFF at registration/swap and dropped — RodioSink copies each
+│                       into its own SamplesBuffer, so retaining them would double the bed RAM. Synthesis
 │                       at spawn on a fixed seed, MEASURED ~2s release / >10s debug on M-series: frames
 │                       try_sent in that window drop harmlessly (levels re-send every render frame) and MUTE
 │                       rides an AtomicBool on the handle — NOT the droppable frame channel — so an m/p press
-│                       mid-window can never be lost; run_loop = the device-agnostic thread body, registers
-│                       ALL six LoopStem beds),
+│                       mid-window can never be lost; run_loop = the device-agnostic thread body; rain at spawn,
+│                       track beds on the first frame),
 │                       dsp.rs (radix-2 FFT + brickwall bands + spectral-envelope noise shaping [circularly
 │                       seamless bed loops] + warp_resample [tape wow/flutter] + splitmix64 NoiseStream),
-│                       score.rs (the FROZEN 8-bar lofi composition — the ratified realization's events as
-│                       const tables; a regen via the spec's export_score is a NEW take → fresh LISTEN gate),
+│                       score.rs (the FROZEN lofi compositions — day (72 BPM) + night (68 BPM, at-seconds
+│                       humanized events); each ratified realization as const tables; a regen via the spec's
+│                       export scripts is a NEW take → fresh LISTEN gate),
 │                       synth.rs (the Phase 0 OWNER-RATIFIED recipes 1:1 — elevator ding + cooler glug were later owner-CUT (dogfood round), the spec keeps their recipes —
 │                       change docs/superpowers/specs/2026-07-16-ambient-sound-phase0/ first, re-audition,
 │                       then mirror; spectral-sanity tests pin the fingerprints AGAINST THE FLOAT CHAIN,
@@ -265,6 +267,17 @@ src/
 │                       re-attempts the lazy spawn whenever unmuted-but-disabled ('+' is never a dead key).
 │                       An EMPTY office now plays the quiet pad+sparkle+texture "radio on" floor (the
 │                       ratified demo_1) — Phase 1's empty-silent behavior ended when the music landed.
+│                       MOOD TRACKS (#644): TrackId rides AudioFrame (scene's select_track over the
+│                       lighting's OWN sun window + precipitation); run_loop's switch machine holds the
+│                       five TRACK_STEMS at 0, synthesizes the new track's TrackBeds under the silence
+│                       (~2s), swap_loop's them (RodioSink drops+recreates the Player at gain 0), ramps
+│                       back — LATCHED per cycle (boundary flapping can't thrash synths); rain is
+│                       weather, never swapped. Track beds register on the FIRST frame (it names the
+│                       right mood — booting Day at night would synth a track just to fade it away).
+│                       NIGHT = the Lofi Girl-anchored v4 take (LOFI-BIBLE.md; BPM 68, sub-bass floor
+│                       in the pad, at-seconds frozen humanization, duck-baked texture at the night
+│                       loop length = phase-locked); bus glue is deliberately NOT runtime (rodio has
+│                       no insert) — the listen gate renders the honest no-glue approximation.
 ├── fonts/              MonaspaceNeon-SemiBold.otf + OFL-Monaspace.txt (the ONE bundled face; vendored VERBATIM
 │                       from githubnext/monaspace v1.400 static — unmodified, so the OFL Reserved-Font-Name
 │                       clause is never triggered)
