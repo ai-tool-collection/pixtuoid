@@ -1437,21 +1437,57 @@ fn waypoint_rank_offset_x_decollision_table() {
     // rank 0 = first arrival, no offset, for every kind.
     assert_eq!(waypoint_rank_offset_x(WaypointKind::Couch, 0), 0);
     assert_eq!(waypoint_rank_offset_x(WaypointKind::Pantry, 0), 0);
-    // Couch decollision is ±6 (3 seats on a 20px sofa).
-    assert_eq!(waypoint_rank_offset_x(WaypointKind::Couch, 1), 6);
-    assert_eq!(waypoint_rank_offset_x(WaypointKind::Couch, 2), -6);
-    assert_eq!(
-        waypoint_rank_offset_x(WaypointKind::Couch, 3),
-        0,
-        "rank >2 collapses to 0"
-    );
-    // Generic kinds step aside ±9.
+    // Stand-beside kinds step aside ±9 — a genuine "queue at the counter"
+    // affordance for spots the agent approaches from a side.
     assert_eq!(waypoint_rank_offset_x(WaypointKind::Pantry, 1), 9);
     assert_eq!(waypoint_rank_offset_x(WaypointKind::Pantry, 2), -9);
     assert_eq!(
         waypoint_rank_offset_x(WaypointKind::Pantry, 5),
         0,
         "rank >2 collapses to 0"
+    );
+}
+
+/// An EXCLUSIVE spot is a discrete single-occupancy slot, so it must NEVER step
+/// aside — sliding an occupant off it renders them on thin air, and the generic
+/// ±9 is `MEETING_CHAIR_TABLE_DX`, which parked the extra sitter on the meeting
+/// table (the "two agents on one chair" report). Ranged over `WaypointKind::ALL`
+/// against the `exclusive` authority rather than a hand-listed set, so an
+/// exclusive kind added later inherits the guard instead of silently re-opening
+/// the bug. Also asserts the phone booth and standing desk — the stand-beside
+/// singles — are covered, and the shareable queue spots (pantry / vending /
+/// printer / snack shelf) DO still step aside.
+#[test]
+fn no_exclusive_waypoint_kind_ever_steps_aside() {
+    use super::anchors::waypoint_rank_offset_x;
+    use crate::layout::{furniture_def, WaypointKind};
+    let mut exclusive = 0;
+    let (mut saw_booth, mut saw_shareable_steps) = (false, false);
+    for &kind in WaypointKind::ALL {
+        if furniture_def(kind.furniture()).exclusive {
+            exclusive += 1;
+            if matches!(kind, WaypointKind::PhoneBooth) {
+                saw_booth = true;
+            }
+            for rank in 0..4 {
+                assert_eq!(
+                    waypoint_rank_offset_x(kind, rank),
+                    0,
+                    "{kind:?} is exclusive — rank {rank} must not slide it off the spot"
+                );
+            }
+        } else if waypoint_rank_offset_x(kind, 1) != 0 {
+            saw_shareable_steps = true; // a queue spot genuinely steps aside
+        }
+    }
+    assert!(
+        exclusive >= 6,
+        "expected couch/sofa/chair/island + booth + standing desk, got {exclusive}"
+    );
+    assert!(saw_booth, "phone booth must be an exclusive spot");
+    assert!(
+        saw_shareable_steps,
+        "a shareable queue spot (pantry/vending/printer/snack) must still step aside"
     );
 }
 
@@ -2915,6 +2951,135 @@ fn sim_reports_occupied_waypoints_and_enqueue_marks_them_busy() {
     );
 }
 
+/// THE spot-exclusivity invariant, end to end through the real sim: a full desk
+/// pool wandering for ~15 simulated minutes must never put two agents on one
+/// EXCLUSIVE waypoint (seat OR stand-beside single like the phone booth). Before
+/// `SpotClaims` this failed in seconds — the destination hash
+/// `waypoint_index_for_cycle(id, cycle_n, n)` is occupancy-blind, so N agents
+/// happily targeted one chair and the painter's rank offset slid the extras
+/// sideways onto the meeting table / thin air.
+///
+/// Ranged over the `exclusive` authority (not a hand-listed set) so an exclusive
+/// kind added later is covered by this test the day it lands. Shareable
+/// waypoints are deliberately NOT asserted on: sharing a pantry counter or
+/// queueing at a printer is the intended step-aside.
+#[test]
+fn no_two_agents_ever_occupy_the_same_exclusive_waypoint() {
+    use crate::layout::{furniture_def, TEST_DEFAULT_DESKS};
+    use crate::pose::Pose;
+    use std::time::Duration;
+
+    let pack = crate::embedded_pack::test_default_pack();
+    let layout = Layout::compute_with_seed(192, 160, Some(TEST_DEFAULT_DESKS), 0).expect("fits");
+    let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let mut scene = SceneState::uniform(64);
+    for i in 0..TEST_DEFAULT_DESKS {
+        let id = pixtuoid_core::AgentId::from_transcript_path(&format!("/p/seat{i}.jsonl"));
+        let mut slot = make_slot(id, ActivityState::Idle);
+        // Stagger the idle starts so wander cycles desync and the spots see a
+        // realistic mix of arrivals/departures rather than one lockstep wave.
+        let started = now0 - Duration::from_secs(5 + (i as u64 * 11) % 80);
+        slot.created_at = started;
+        slot.state_started_at = started;
+        slot.last_event_at = started;
+        slot.desk_index = GlobalDeskIndex(i);
+        scene.agents.insert(id, slot);
+    }
+
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let mut stores = owned.stores();
+    let mut seat_visits = 0usize;
+    for step in 0..3_600u64 {
+        let now = now0 + Duration::from_millis(250 * step);
+        let frame = sim_step(&mut stores, &scene, &layout, &pack, &coffee, 0, now);
+        let mut occupants: HashMap<usize, usize> = HashMap::new();
+        for pose in frame.poses.values().flatten() {
+            let Pose::AtWaypoint { wp, kind } = pose else {
+                continue;
+            };
+            if !furniture_def(kind.furniture()).exclusive {
+                continue;
+            }
+            seat_visits += 1;
+            let n = occupants.entry(*wp).or_insert(0);
+            *n += 1;
+            assert_eq!(
+                *n, 1,
+                "{kind:?} waypoint {wp} double-booked at step {step} — an exclusive spot is single-occupancy"
+            );
+        }
+    }
+    // Not vacuous: agents must actually have reached seats.
+    assert!(seat_visits > 100, "agents barely sat down ({seat_visits})");
+}
+
+/// The claim must be RELEASED when an agent leaves the wander machine mid-trip.
+/// `advance_wander` stops running once a slot goes Active, freezing its
+/// `wander.target` at the seat it was heading for — so without this release a
+/// typing agent holds a chair it snapped away from, and the seat stays empty
+/// but unusable for the whole (arbitrarily long) active burst.
+#[test]
+fn an_active_agent_releases_the_seat_it_snapped_back_from() {
+    use crate::layout::{furniture_def, TEST_DEFAULT_DESKS};
+    use crate::motion::WanderKind;
+    use crate::pose::Pose;
+    use std::time::Duration;
+
+    let pack = crate::embedded_pack::test_default_pack();
+    let layout = Layout::compute_with_seed(192, 160, Some(TEST_DEFAULT_DESKS), 0).expect("fits");
+    let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let id = pixtuoid_core::AgentId::from_transcript_path("/p/claim-release.jsonl");
+    let mut slot = make_slot(id, ActivityState::Idle);
+    slot.created_at = now0;
+    slot.state_started_at = now0;
+    slot.last_event_at = now0;
+    let mut scene = SceneState::uniform(16);
+    scene.agents.insert(id, slot);
+
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let mut stores = owned.stores();
+
+    // Walk the agent out until it is sitting at a seat (holding that claim).
+    let mut sat_at = None;
+    let mut now = now0;
+    for _ in 0..2_000 {
+        now += Duration::from_millis(250);
+        let frame = sim_step(&mut stores, &scene, &layout, &pack, &coffee, 0, now);
+        if let Some(Pose::AtWaypoint { wp, kind }) = frame.poses.get(&id).copied().flatten() {
+            if furniture_def(kind.furniture()).occupies_pos {
+                sat_at = Some(wp);
+                break;
+            }
+        }
+    }
+    let sat_at = sat_at.expect("agent never reached a seat");
+    assert!(
+        matches!(
+            owned.motion[&id].wander.target.kind,
+            WanderKind::Named { wp_idx, .. } if wp_idx == sat_at
+        ),
+        "the seated agent should hold its seat's claim"
+    );
+
+    // Now it starts working: the wander machine stops advancing for it.
+    scene.agents.get_mut(&id).expect("slot").state = ActivityState::Active {
+        tool_use_id: None,
+        detail: None,
+        kind: ToolKind::Other,
+    };
+    scene.agents.get_mut(&id).expect("slot").state_started_at = now;
+    let mut stores = owned.stores();
+    now += Duration::from_millis(250);
+    sim_step(&mut stores, &scene, &layout, &pack, &coffee, 0, now);
+
+    assert!(
+        matches!(owned.motion[&id].wander.target.kind, WanderKind::Aimless),
+        "an agent that left the wander machine must release its seat claim"
+    );
+}
+
 #[test]
 fn precipitation_level_maps_audible_rain_and_honors_the_override() {
     // The audio model's weather feed: storm=1.0, rain=in-between, everything
@@ -2943,4 +3108,88 @@ fn precipitation_level_maps_audible_rain_and_honors_the_override() {
     }
 
     force_weather(None).expect("restore");
+}
+
+/// Capacity guard: single-occupancy is PER-WAYPOINT, and a meeting sofa is
+/// THREE waypoints (`SEAT_DX = [-6, 0, 6]`), so the sofa must still seat 3
+/// agents at once — the exclusivity fix must not shrink a venue to one. The
+/// probe sends a would-be second occupant of one seat to the NEXT seat of the
+/// same sofa, so the sofa fills; this pins that the fill still reaches 3 (a
+/// future probe/claim refactor that keyed exclusivity on the whole sofa instead
+/// of the seat would regress it to 1 and fail here).
+#[test]
+fn one_meeting_sofa_still_seats_three_agents_at_once() {
+    use crate::layout::{furniture_def, WaypointKind, TEST_DEFAULT_DESKS};
+    use crate::pose::Pose;
+    use std::time::Duration;
+
+    let pack = crate::embedded_pack::test_default_pack();
+    let layout = Layout::compute_with_seed(192, 160, Some(TEST_DEFAULT_DESKS), 0).expect("fits");
+    // The three seat waypoints of the FIRST sofa: contiguous MeetingSofa
+    // waypoints sharing one (room_id, y). Each is `exclusive`, so this is a real
+    // 3-slot venue, not one shared bench.
+    let sofa: Vec<usize> = {
+        let mut out: Vec<usize> = vec![];
+        for (i, w) in layout.waypoints.iter().enumerate() {
+            if w.kind != WaypointKind::MeetingSofa {
+                continue;
+            }
+            match out.first() {
+                None => out.push(i),
+                Some(&f) => {
+                    if w.pos.y == layout.waypoints[f].pos.y
+                        && w.room_id == layout.waypoints[f].room_id
+                    {
+                        out.push(i);
+                    }
+                }
+            }
+            if out.len() == 3 {
+                break;
+            }
+        }
+        out
+    };
+    assert_eq!(sofa.len(), 3, "expected a 3-seat sofa, got {sofa:?}");
+    assert!(
+        sofa.iter()
+            .all(|&i| furniture_def(layout.waypoints[i].kind.furniture()).exclusive),
+        "each sofa seat must be an exclusive waypoint"
+    );
+
+    let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let mut scene = SceneState::uniform(64);
+    for i in 0..TEST_DEFAULT_DESKS {
+        let id = pixtuoid_core::AgentId::from_transcript_path(&format!("/p/sofa{i}.jsonl"));
+        let mut slot = make_slot(id, ActivityState::Idle);
+        let started = now0 - Duration::from_secs(5 + (i as u64 * 11) % 80);
+        slot.created_at = started;
+        slot.state_started_at = started;
+        slot.last_event_at = started;
+        slot.desk_index = GlobalDeskIndex(i);
+        scene.agents.insert(id, slot);
+    }
+
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let mut stores = owned.stores();
+    let mut max_on_sofa = 0usize;
+    for step in 0..6_000u64 {
+        let now = now0 + Duration::from_millis(250 * step);
+        let frame = sim_step(&mut stores, &scene, &layout, &pack, &coffee, 0, now);
+        let n = frame
+            .poses
+            .values()
+            .flatten()
+            .filter(|p| matches!(p, Pose::AtWaypoint { wp, .. } if sofa.contains(wp)))
+            .count();
+        max_on_sofa = max_on_sofa.max(n);
+        if max_on_sofa >= 3 {
+            break;
+        }
+    }
+    assert_eq!(
+        max_on_sofa, 3,
+        "one sofa must seat 3 agents at once; peaked at {max_on_sofa}"
+    );
 }

@@ -95,20 +95,39 @@ pub(super) fn back_couch_anchor(wp: Point, sprite_w: u16) -> Point {
     }
 }
 
+/// How far a later arrival steps aside along x so two agents at one
+/// stand-beside spot don't render on top of each other. Sized to clear a
+/// character sprite (8 px bundled) with a pixel of daylight.
+const STEP_ASIDE_DX: i16 = 9;
+
 /// X-offset applied to a waypoint anchor when multiple agents land at the
 /// SAME waypoint in the same cycle. rank 0 = first arrival (no offset); later
-/// arrivals step aside. The lounge couch is now 3 distinct seat waypoints
-/// (20px sofa), so agents normally spread across seats at rank 0; the ±6
-/// offsets only fire as decollision when two pick the same seat.
+/// arrivals step aside.
+///
+/// An EXCLUSIVE spot never steps aside. `exclusive` — the one authority for
+/// "single-occupancy destination" — is the gate, so this holds for every seat
+/// (couch / meeting sofa / meeting chair / island stand) AND the stand-beside
+/// singles (phone booth, standing desk) AND anything added later, without a
+/// second list to keep in sync. Sliding an occupant sideways off a discrete slot
+/// renders them on thin air — and the old fossil arm made that concrete: its
+/// generic +9 happened to equal `MEETING_CHAIR_TABLE_DX` (a chair's distance
+/// from the table centre — a coincidence of two unrelated 9s, NOT one value;
+/// `STEP_ASIDE_DX` is now shareable-only and never touches a chair), so a second
+/// chair-sitter was parked ON the meeting table. The offsets predate per-seat
+/// waypoints (one `Couch` waypoint used to spread 3 sitters over the sofa —
+/// hence the old ±6 == `SEAT_DX`); exclusive spots are now single-occupancy at
+/// SELECTION (`pose::SpotClaims`), so `rank` is always 0 here for them and the
+/// guard is belt-and-braces: an exact overlap reads as one sprite, the honest
+/// render of a bug, not a plausible wrong one. Shareable spots (pantry counter /
+/// vending / printer / snack shelf) still step aside — queueing is the intent.
 pub(super) fn waypoint_rank_offset_x(kind: WaypointKind, rank: usize) -> i16 {
-    match (kind, rank) {
-        (_, 0) => 0,
-        (WaypointKind::Couch, 1) => 6,
-        (WaypointKind::Couch, 2) => -6,
-        (WaypointKind::Couch, _) => 0,
-        (_, 1) => 9,
-        (_, 2) => -9,
-        (_, _) => 0,
+    if crate::layout::furniture_def(kind.furniture()).exclusive {
+        return 0;
+    }
+    match rank {
+        1 => STEP_ASIDE_DX,
+        2 => -STEP_ASIDE_DX,
+        _ => 0,
     }
 }
 
