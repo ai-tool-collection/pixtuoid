@@ -280,10 +280,48 @@ pub fn decode_copilot_line(
             agent_id: root,
             tool_use_id: None,
         }],
-        "session.shutdown" => vec![AgentEvent::SessionEnd {
-            agent_id: root,
-            as_child: false,
-        }],
+        // Token-meter usage (#645): copilot's ONLY usage wire is this
+        // shutdown summary — one final delta as the session ends.
+        // `tokenDetails.input` already EXCLUDES cache reads (the arithmetic
+        // is pinned by `real_session_shutdown_usage_summary_lands_one_final_
+        // delta`), so fresh = input + cache_write (inferred snake_case key
+        // from the sibling `cache_read`; unconfirmed — no fixture carries a
+        // nonzero bucket, and a differently-spelled key only UNDERcounts) +
+        // output. No walk-out flash: the painter suppresses the tower/sheet
+        // for any EXITING desk (the occupant filter's `exiting_at.is_none()`)
+        // — NOT the event order; the counter lands on the slot either way,
+        // since cascade_exit keeps the slot for the GC window. SessionEnd
+        // FIRST is defense-in-depth on top: the one theoretically observable
+        // intermediate state is then the already-exiting slot, which paints
+        // nothing. Payoff: an honest dossier Σ on the walk-out hover.
+        "session.shutdown" => {
+            let mut evs = vec![AgentEvent::SessionEnd {
+                agent_id: root,
+                as_child: false,
+            }];
+            if let Some(details) = data
+                .and_then(|d| d.get("tokenDetails"))
+                .and_then(|t| t.as_object())
+            {
+                let bucket = |k: &str| {
+                    details
+                        .get(k)
+                        .and_then(|b| b.get("tokenCount"))
+                        .and_then(|n| n.as_u64())
+                        .unwrap_or(0)
+                };
+                let fresh = bucket("input")
+                    .saturating_add(bucket("cache_write"))
+                    .saturating_add(bucket("output"));
+                if fresh > 0 {
+                    evs.push(AgentEvent::Usage {
+                        agent_id: root,
+                        fresh_tokens: fresh,
+                    });
+                }
+            }
+            evs
+        }
         // Everything else (ephemeral streaming, assistant.*, hook.*, user.message,
         // session.* metadata) is not a sprite-visible lifecycle change → ignore.
         _ => vec![],
@@ -727,6 +765,8 @@ mod tests {
 
     #[test]
     fn real_session_shutdown_ends_the_root() {
+        // A tokenDetails-less shutdown (older wire / crashy teardown) still
+        // ends the session — no Usage, no panic.
         let line = r#"{"type":"session.shutdown","data":{"shutdownType":"routine","totalPremiumRequests":1},"id":"220c4131","timestamp":"2026-05-22T06:17:01.077Z","parentId":"cd21bd01"}"#;
         match &decode(line)[..] {
             [AgentEvent::SessionEnd { agent_id, as_child }] => {
@@ -734,6 +774,31 @@ mod tests {
                 assert!(!*as_child, "a root shutdown is NOT a child end");
             }
             other => panic!("expected root SessionEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_session_shutdown_usage_summary_lands_one_final_delta() {
+        // #645: the fixture's real shutdown shape. tokenDetails.input already
+        // EXCLUDES cache reads (usage.inputTokens 12839 − cacheReadTokens 1664
+        // = 11175 — THE authoritative arithmetic pin), so fresh = 11175 + 0
+        // (no cache_write bucket) + 212, never 13_051 (summing cache_read in
+        // would break this). SessionEnd first — defense-in-depth, see the arm.
+        let line = r#"{"type":"session.shutdown","data":{"shutdownType":"routine","tokenDetails":{"input":{"tokenCount":11175},"cache_read":{"tokenCount":1664},"output":{"tokenCount":212}},"currentModel":"gpt-5-mini"},"id":"56992353","timestamp":"2026-06-14T21:38:47.162Z","parentId":"3079df1f"}"#;
+        match &decode(line)[..] {
+            [AgentEvent::SessionEnd { agent_id, as_child }, AgentEvent::Usage {
+                agent_id: u_id,
+                fresh_tokens,
+            }] => {
+                assert_eq!(*u_id, root());
+                assert_eq!(
+                    *fresh_tokens, 11_387,
+                    "fresh = input 11175 + output 212, cache_read excluded"
+                );
+                assert_eq!(*agent_id, root());
+                assert!(!*as_child);
+            }
+            other => panic!("expected [SessionEnd, Usage], got {other:?}"),
         }
     }
 
