@@ -1,9 +1,12 @@
 //! Grok Build source (`grok`, xai-org/grok-build) — TRANSCRIPT-BEARING with a
 //! hook install target (the CC/Codex class: both transports).
 //!
-//! Wire facts are repo-derived from the open-source sync of the grok monorepo
-//! (v0.1.220-alpha.4 @ c68e39f6, 2026-07-16) — `verified_version` stays
-//! `"unknown"` until a byte-real capture anchors it:
+//! Wire facts were repo-derived from the open-source sync of the grok
+//! monorepo (v0.1.220-alpha.4 @ c68e39f6), then BYTE-REAL anchored against a
+//! live `grok 0.2.102 (ab5ebf69acec)` capture (2026-07-16, #637 — envelope
+//! fields, both method namespaces, the toolUseId==toolCallId join, and the
+//! `subagent_end` finish spelling all held; see the registry row comment for
+//! the absorbed 0.2.x deltas):
 //!
 //! - **Transcript**: `{grok_home}/sessions/<enc-cwd>/<session-id>/updates.jsonl`
 //!   is append-ONLY for the session's whole life (even `/rewind` appends a
@@ -499,6 +502,13 @@ pub fn decode_grok_line(path: &str, source: &str, v: Value) -> Result<Vec<AgentE
                 effort,
             }])
         }
+        // Turn end — the transcript twin of the `stop` hook, settling a
+        // tool-less turn to idle for transcript-only setups. Drift-watched
+        // via the TurnCompleted arm of GROK_XAI_VARIANTS.
+        ("_x.ai/session/update", "turn_completed") => Ok(vec![AgentEvent::ActivityEnd {
+            agent_id,
+            tool_use_id: None,
+        }]),
         ("_x.ai/session/update", "hook_execution") => {
             if str_field("event_name") == Some("session_end") {
                 Ok(vec![AgentEvent::SessionEnd {
@@ -523,12 +533,14 @@ pub(crate) fn extract_grok_cwd(_v: &Value) -> Option<PathBuf> {
     None
 }
 
-/// Transcript tool detail: the ACP `tool_call` carries no tool NAME — `title`
-/// is grok's pre-composed human label ("Run cargo test"), so it IS the display
-/// (still routed through the `generic_tool_display` cap chokepoint, no `:
-/// target` suffix). Task detection reads `rawInput` (the tool's args object)
-/// with the SAME blocking-only rule as the hook side — see
-/// [`grok_tool_detail`] for the b1 WHY.
+/// Transcript tool detail: a FRESH `tool_call`'s `title` is the RAW tool name
+/// (`run_terminal_command` — capture-verified; the human label like
+/// "Execute `cat note.txt`" appears only on later `tool_call_update`s, which
+/// this fn never sees), so the title IS the display (still routed through the
+/// `generic_tool_display` cap chokepoint, no `: target` suffix). Task
+/// detection reads `rawInput` (the tool's args object) with the SAME
+/// blocking-only rule as the hook side — see [`grok_tool_detail`] for the b1
+/// WHY.
 fn grok_transcript_tool_detail(title: &str, raw_input: Option<&Value>) -> ToolDetail {
     if raw_input.is_some_and(|a| a.get("subagent_type").is_some()) && spawn_is_blocking(raw_input) {
         return ToolDetail::Task;
@@ -1158,12 +1170,14 @@ mod tests {
     fn fresh_tool_call_line_is_activity_start_keyed_by_path() {
         // A FRESH tool_call OMITS `status` (Pending is the serde skip-default,
         // agent-client-protocol schema) — absence must still decode as a Start.
+        // Shape per the 0.2.102 capture: a fresh tool_call's title is the RAW
+        // tool name (the human label appears only on later updates).
         let evs = decode_line(acp_line(json!({
             "sessionUpdate": "tool_call",
             "toolCallId": "call_42",
-            "title": "Run cargo test",
+            "title": "run_terminal_command",
             "kind": "execute",
-            "rawInput": {"command": "cargo test"}
+            "rawInput": {"command": "cat note.txt"}
         })));
         assert_eq!(evs.len(), 1);
         match &evs[0] {
@@ -1180,7 +1194,7 @@ mod tests {
                 assert_eq!(tool_use_id.as_deref(), Some("call_42"));
                 assert_eq!(
                     detail.as_ref().unwrap().display(),
-                    "Run cargo test",
+                    "run_terminal_command",
                     "title IS the display (ACP carries no tool name)"
                 );
             }
@@ -1214,28 +1228,44 @@ mod tests {
 
     #[test]
     fn transcript_blocking_spawn_is_task_background_is_not() {
-        // Same b1 rule as the hook side, read from rawInput — which is the
-        // parsed ToolInput RE-serialized (internally tagged `variant` +
-        // canonical field names, so the flag is `run_in_background` here,
-        // NOT the hook side's client-form `background`).
+        // Same b1 rule as the hook side, read from rawInput. Shape per the
+        // 0.2.102 live capture: `title` is the RAW tool name, rawInput carries
+        // the CLIENT-form keys (`background`, no enum tag) — the c68e39f6
+        // code-read predicted the canonical `run_in_background` re-serialization
+        // here, which the cross-spelling test still covers (both keys read).
         let blocking = decode_line(acp_line(json!({
-            "sessionUpdate": "tool_call", "toolCallId": "c1",
-            "title": "Spawn subagent",
-            "rawInput": {"variant": "Task", "subagent_type": "explore",
-                         "run_in_background": false, "prompt": "dig"}
+            "sessionUpdate": "tool_call", "toolCallId": "call-0b8fe95b-2070-4e76-a5c7-036d4ad88f12-0",
+            "title": "spawn_subagent",
+            "rawInput": {"subagent_type": "general-purpose", "background": false,
+                         "description": "Reply with single word", "prompt": "reply done"}
         })));
         assert!(
             matches!(&blocking[..], [AgentEvent::ActivityStart { detail: Some(d), .. }] if d.is_task())
         );
         let background = decode_line(acp_line(json!({
-            "sessionUpdate": "tool_call", "toolCallId": "c2",
-            "title": "Spawn subagent",
-            "rawInput": {"variant": "Task", "subagent_type": "explore", "prompt": "dig"}
+            "sessionUpdate": "tool_call", "toolCallId": "call-0b8fe95b-2070-4e76-a5c7-036d4ad88f12-1",
+            "title": "spawn_subagent",
+            "rawInput": {"subagent_type": "general-purpose", "background": true,
+                         "description": "Reply with single word", "prompt": "reply done"}
         })));
         assert!(
             matches!(&background[..], [AgentEvent::ActivityStart { detail: Some(d), .. }] if !d.is_task()),
             "default (background) spawn must NOT be Task — b1 would evict the live child"
         );
+    }
+
+    #[test]
+    fn turn_completed_settles_the_turn_to_idle() {
+        // 0.2.x addition (capture-verified): the transcript twin of the `stop`
+        // hook — a tool-less turn's only end signal for transcript-only setups.
+        let evs = decode_line(xai_line(json!({"sessionUpdate": "turn_completed"})));
+        assert!(matches!(
+            &evs[..],
+            [AgentEvent::ActivityEnd {
+                tool_use_id: None,
+                ..
+            }]
+        ));
     }
 
     #[test]
