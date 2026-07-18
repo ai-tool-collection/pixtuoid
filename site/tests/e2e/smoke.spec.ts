@@ -354,6 +354,63 @@ test('the hero ♩ sound toggle: muted by default, gesture-gated, no AudioContex
   expect(errors()).toEqual([]);
 });
 
+test('enabling ♩ sets navigator.audioSession = playback so iOS silent mode does not mute the opt-in', async ({
+  page,
+}) => {
+  // #664: a deliberate ♩ tap is explicit consent to hear sound. iOS Safari routes
+  // default WebAudio to the ambient channel (the hardware Ring/Silent switch mutes
+  // it), so the opt-in would produce silence → reads as broken. We set
+  // navigator.audioSession.type='playback' (media channel, ignores the switch).
+  // The API is Safari-only, so mock it here to verify the WIRING in Chromium; the
+  // real iOS silent-switch behavior is device-verified.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'audioSession', {
+      value: { type: 'auto' },
+      configurable: true,
+      writable: true,
+    });
+    // Capture the category AT AudioContext construction. The load-bearing order is
+    // that 'playback' is set BEFORE the context is built (a context inherits its
+    // routing at construction on real iOS; setting it after would leave it on the
+    // ambient channel = silent, yet still END as 'playback'). A bare end-state
+    // check would pass a broken reorder — this wrapper pins the ordering.
+    const w = window as unknown as { __acTypeAtCtor: string | null };
+    w.__acTypeAtCtor = null;
+    const Real =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Real) return;
+    const Wrapped = function (this: unknown, ...args: unknown[]) {
+      w.__acTypeAtCtor = (
+        navigator as unknown as { audioSession: { type: string } }
+      ).audioSession.type;
+      return new (Real as new (..._a: unknown[]) => AudioContext)(...args);
+    } as unknown as typeof AudioContext;
+    Wrapped.prototype = Real.prototype;
+    window.AudioContext = Wrapped;
+    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext = Wrapped;
+  });
+  const errors = watchErrors(page);
+  await gotoLive(page);
+  const btn = page.locator('#office-audio');
+  await expect(btn).toBeVisible({ timeout: 15_000 });
+  const atCtor = () =>
+    page.evaluate(() => (window as unknown as { __acTypeAtCtor: string | null }).__acTypeAtCtor);
+  // before any gesture: category untouched AND no AudioContext yet (muted-by-default)
+  expect(
+    await page.evaluate(
+      () => (navigator as unknown as { audioSession: { type: string } }).audioSession.type
+    )
+  ).toBe('auto');
+  expect(await atCtor()).toBeNull();
+  // the gesture spins up the audio path (audioStart), which sets the category
+  // BEFORE constructing the AudioContext — assert the value captured AT
+  // construction, the property that's load-bearing on real iOS.
+  await btn.click();
+  await expect.poll(atCtor).toBe('playback');
+  expect(errors()).toEqual([]);
+});
+
 test('a remembered ♩ choice never inverts a direct first click on the button', async ({ page }) => {
   // Review HIGH: the remembered-"on" restore installs capture-phase
   // pointerdown/keydown listeners; if the visitor's FIRST gesture is a direct
