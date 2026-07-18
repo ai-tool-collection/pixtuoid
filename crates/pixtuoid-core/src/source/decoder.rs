@@ -107,6 +107,22 @@ pub(crate) fn first_present_str<'a>(obj: &'a Value, keys: &[&str]) -> Option<&'a
     keys.iter().find_map(|k| m.get(*k).and_then(|v| v.as_str()))
 }
 
+/// Parse every COMPLETE line of a tail-scan window as JSON, yielding the
+/// parsed `Value`s and silently dropping empty, torn (the leading partial line
+/// of a byte window), and non-JSON lines. The ONE tail-parse scaffold the
+/// source-specific `*_session_ended` checkers share — each passes only its own
+/// STRUCTURAL end-marker predicate (the per-source vocabulary), never a
+/// substring scan (user-controllable content — a tool result QUOTING the marker
+/// — must not drive lifecycle, the CC sharp edge). The `first_present_str`
+/// centralization for the tail scan: the scaffold is shared, the vocabulary
+/// stays per-source (invariant #3).
+pub(crate) fn parsed_tail_lines(tail: &[u8]) -> impl Iterator<Item = Value> + '_ {
+    tail.split(|b| *b == b'\n').filter_map(|line| {
+        let s = std::str::from_utf8(line).ok()?;
+        serde_json::from_str::<Value>(s).ok()
+    })
+}
+
 /// Decode one hook payload into the event sequence the reducer applies.
 ///
 /// Tool/permission arms (PreToolUse / PostToolUse / Notification /
@@ -167,13 +183,19 @@ pub fn decode_hook_payload(v: Value) -> Result<Vec<AgentEvent>> {
     // requirements below — so an alien envelope (Reasonix: camelCase, `event`
     // discriminator, no `session_id` at all) or a subject-changing event
     // (CC's and Codex's SubagentStart/Stop, whose AgentId is the CHILD's)
-    // decodes in the source's module, not here. `Ok(None)` falls through to
-    // the shared CC-shaped arms; an alien-envelope source claims EVERY event
-    // instead.
-    if let Some(custom) = desc.and_then(|d| d.hook()).and_then(|h| h.custom) {
-        if let Some(evs) = custom(&v)? {
-            return Ok(evs);
+    // decodes in the source's module, not here. An `Extend` decoder that
+    // declines (`Ok(None)`) falls through to the shared CC-shaped arms; a
+    // `ClaimsAll` decoder handles EVERY event and CANNOT fall through (no
+    // `Option` to return) — the contract is the type, see `HookCustom`.
+    use crate::source::registry::HookCustom;
+    match desc.and_then(|d| d.hook()).and_then(|h| h.custom) {
+        Some(HookCustom::ClaimsAll(decode)) => return decode(&v),
+        Some(HookCustom::Extend(decode)) => {
+            if let Some(evs) = decode(&v)? {
+                return Ok(evs);
+            }
         }
+        None => {}
     }
 
     let event = obj
@@ -509,6 +531,34 @@ pub(crate) fn ellipsize(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_tail_lines_yields_only_complete_parseable_lines() {
+        // The shared session_ended tail-parse scaffold — pins the byte-level
+        // parity the #9 refactor rests on (grok moved from from_utf8_lossy +
+        // str::lines to split(b'\n') + from_utf8). A tail byte-window can begin
+        // mid-line (torn leading partial), carry CRLF terminators, and hold
+        // empty/torn segments; only the COMPLETE, JSON-parseable lines yield.
+        let tail = b"3,\"torn\":tru\n{\"type\":\"a\"}\n{\"type\":\"b\"}\r\n\n{\"type\":\"c\"";
+        let kinds: Vec<String> = parsed_tail_lines(tail)
+            .filter_map(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_owned))
+            .collect();
+        // "a" (plain) + "b" (CRLF → trailing \r is JSON whitespace) parse; the
+        // torn leading partial, the empty segment, and the torn trailing partial
+        // are all dropped — exactly what a session-end marker sweep needs so
+        // content never false-ends and a window edge never mis-parses.
+        assert_eq!(kinds, vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(
+            parsed_tail_lines(b"").count(),
+            0,
+            "empty tail yields nothing"
+        );
+        assert_eq!(
+            parsed_tail_lines(b"not json at all\n").count(),
+            0,
+            "non-JSON lines are skipped, never panic",
+        );
+    }
 
     // ---- burn-tier observations riding the shared hook arms ----
 
@@ -1314,61 +1364,55 @@ mod tests {
             (
                 reasonix::SOURCE_NAME,
                 Box::new(|| {
-                    reasonix::decode_rx_hook_custom(&json!({
+                    reasonix::decode_rx_hook_payload(&json!({
                         "event":"PreToolUse","cwd":"/r","toolName":name,"toolArgs":{"command":tgt}}))
                     .expect("reasonix decodes")
-                    .expect("reasonix claims the event")
                 }),
             ),
             (
                 codewhale::SOURCE_NAME,
                 Box::new(|| {
-                    codewhale::decode_cw_hook_custom(&json!({
+                    codewhale::decode_cw_hook_payload(&json!({
                         "event":"tool_call_before","cwd":"/r","tool":name,"tool_args":cw_args}))
                     .expect("codewhale decodes")
-                    .expect("codewhale claims the event")
                 }),
             ),
             (
                 opencode::SOURCE_NAME,
                 Box::new(|| {
-                    opencode::decode_oc_hook_custom(&json!({
+                    opencode::decode_oc_hook_payload(&json!({
                         "type":"message.part.updated","properties":{"sessionID":"ses-1","part":{
                             "type":"tool","callID":"c1","tool":name,
                             "state":{"status":"running","input":{"command":tgt}}}}}))
                     .expect("opencode decodes")
-                    .expect("opencode claims the event")
                 }),
             ),
             (
                 cursor::SOURCE_NAME,
                 Box::new(|| {
-                    cursor::decode_cursor_hook_custom(&json!({
+                    cursor::decode_cursor_hook_payload(&json!({
                         "hook_event_name":"preToolUse","session_id":"s",
                         "tool_name":name,"tool_input":{"command":tgt}}))
                     .expect("cursor decodes")
-                    .expect("cursor claims the event")
                 }),
             ),
             (
                 hermes::SOURCE_NAME,
                 Box::new(|| {
-                    hermes::decode_hermes_hook_custom(&json!({
+                    hermes::decode_hermes_hook_payload(&json!({
                         "hook_event_name":"pre_tool_call","session_id":"s","cwd":"/r",
                         "tool_name":name,"tool_input":{"command":tgt}}))
                     .expect("hermes decodes")
-                    .expect("hermes claims the event")
                 }),
             ),
             (
                 grok::SOURCE_NAME,
                 Box::new(|| {
-                    grok::decode_grok_hook_custom(&json!({
+                    grok::decode_grok_hook_payload(&json!({
                         "hookEventName":"pre_tool_use","sessionId":"s","cwd":"/r",
                         "workspaceRoot":"/r","toolName":name,"toolUseId":"c1",
                         "toolInput":{"command":tgt},"toolInputTruncated":false}))
                     .expect("grok decodes")
-                    .expect("grok claims the event")
                 }),
             ),
         ];

@@ -51,7 +51,9 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use crate::source::decoder::{ellipsize, generic_tool_display, MAX_DECODED_FIELD_CHARS};
+use crate::source::decoder::{
+    ellipsize, generic_tool_display, parsed_tail_lines, MAX_DECODED_FIELD_CHARS,
+};
 use crate::source::{AgentEvent, ToolDetail};
 use crate::AgentId;
 
@@ -305,13 +307,6 @@ pub fn decode_grok_hook_payload(v: &Value) -> Result<Vec<AgentEvent>> {
             bail!("unsupported grok hook event: {other}")
         }
     }
-}
-
-/// The registry's `hook.custom` entry point: grok's envelope is ALIEN to the
-/// shared CC-shaped arms (`hookEventName` vs `hook_event_name`), so it claims
-/// EVERY event reaching it — `.map(Some)`, never `Ok(None)`.
-pub(crate) fn decode_grok_hook_custom(v: &Value) -> Result<Option<Vec<AgentEvent>>> {
-    decode_grok_hook_payload(v).map(Some)
 }
 
 /// The child's `subagentId` — upstream sets `child_session_id = subagent_id`
@@ -578,17 +573,18 @@ fn spawn_is_blocking(args: Option<&Value>) -> bool {
 /// line's method/tag/field structure can't be forged from inside a string
 /// field. A torn first line in the tail window fails the parse and is skipped.
 pub fn grok_session_ended(tail: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(tail);
-    text.lines().any(|line| {
-        serde_json::from_str::<Value>(line).is_ok_and(|v| {
-            v.get("method").and_then(|m| m.as_str()) == Some("_x.ai/session/update")
-                && v.pointer("/params/update/sessionUpdate")
-                    .and_then(|t| t.as_str())
-                    == Some("hook_execution")
-                && v.pointer("/params/update/event_name")
-                    .and_then(|e| e.as_str())
-                    == Some("session_end")
-        })
+    // Structural per-line parse via the shared `parsed_tail_lines` scaffold. The
+    // xAI end marker is our OWN installed hook's best-effort `hook_execution`
+    // line — the vocabulary stays here; the parse (never a substring scan, which
+    // a tool result QUOTING this marker could forge) is shared.
+    parsed_tail_lines(tail).any(|v| {
+        v.get("method").and_then(|m| m.as_str()) == Some("_x.ai/session/update")
+            && v.pointer("/params/update/sessionUpdate")
+                .and_then(|t| t.as_str())
+                == Some("hook_execution")
+            && v.pointer("/params/update/event_name")
+                .and_then(|e| e.as_str())
+                == Some("session_end")
     })
 }
 

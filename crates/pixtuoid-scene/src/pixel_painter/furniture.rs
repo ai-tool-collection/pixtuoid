@@ -207,20 +207,24 @@ pub(super) fn paint_notice_board(buf: &mut RgbBuffer, mr: Bounds, theme: &crate:
 }
 
 /// Small doormat at the meeting-room entrance (4×5 bordered rug, cubicle side).
-pub(super) fn paint_doormat(buf: &mut RgbBuffer, mr: Bounds, theme: &crate::theme::Theme) {
-    if mr.width <= 10 {
+/// Placement + fit-gate come from [`MeetingRoom::doormat_rect`] — the ONE
+/// authority the hover hit-test shares (no drift across the crate boundary).
+pub(super) fn paint_doormat(
+    buf: &mut RgbBuffer,
+    room: &crate::layout::MeetingRoom,
+    theme: &crate::theme::Theme,
+) {
+    let Some(mat) = room.doormat_rect() else {
         return;
-    }
-    let mat_x = mr.x + mr.width;
-    let mat_y = mr.y + mr.height / 2 - 2;
+    };
     let mat_color = theme.furniture.rug_trim;
     let mat_accent = theme.furniture.rug_field;
-    for dy in 0..5u16 {
-        for dx in 0..4u16 {
-            let px = mat_x + dx + 1;
-            let py = mat_y + dy;
+    for dy in 0..mat.height {
+        for dx in 0..mat.width {
+            let px = mat.x + dx;
+            let py = mat.y + dy;
             if px < buf.width() && py < buf.height() {
-                let on_border = dx == 0 || dx == 3 || dy == 0 || dy == 4;
+                let on_border = dx == 0 || dx == mat.width - 1 || dy == 0 || dy == mat.height - 1;
                 buf.put(px, py, if on_border { mat_color } else { mat_accent });
             }
         }
@@ -237,21 +241,22 @@ pub(crate) const COOLER_WATER: Rgb = Rgb {
     b: 230,
 };
 
+/// Placement + fit-gate come from [`PantryRoom::water_cooler_rect`] — the ONE
+/// authority the hover hit-test shares (no drift across the crate boundary).
 pub(super) fn paint_water_cooler(
     buf: &mut RgbBuffer,
-    pr: Bounds,
+    room: &crate::layout::PantryRoom,
     now: std::time::SystemTime,
     theme: &crate::theme::Theme,
 ) {
-    if !(pr.height > 25 && pr.width > 12) {
+    let Some(cooler) = room.water_cooler_rect() else {
         return;
-    }
+    };
     let cooler_body = theme.office.building_light;
     let cooler_water = COOLER_WATER;
-    let wx = pr.x + pr.width - 6;
-    let wy = pr.y + 8;
-    for dy in 0..6u16 {
-        for dx in 0..3u16 {
+    let (wx, wy) = (cooler.x, cooler.y);
+    for dy in 0..cooler.height {
+        for dx in 0..cooler.width {
             let px = wx + dx;
             let py = wy + dy;
             if px < buf.width() && py < buf.height() {
@@ -278,12 +283,13 @@ pub(super) fn paint_water_cooler(
 /// Trash bin near the pantry counter (4×5 with a visible bag-liner peek). Its
 /// colours are intentionally un-themed neutral greys (a semantic object, like
 /// the water bottle's blue), so it takes no theme.
-pub(super) fn paint_trash_bin(buf: &mut RgbBuffer, pr: Bounds) {
-    if pr.height <= 20 {
+/// Placement + fit-gate come from [`PantryRoom::trash_bin_rect`] — the ONE
+/// authority the hover hit-test shares (no drift across the crate boundary).
+pub(super) fn paint_trash_bin(buf: &mut RgbBuffer, room: &crate::layout::PantryRoom) {
+    let Some(bin) = room.trash_bin_rect() else {
         return;
-    }
-    let tx = pr.x + 3;
-    let ty = pr.y + pr.height - 14;
+    };
+    let (tx, ty) = (bin.x, bin.y);
     let bin_outer = Rgb {
         r: 70,
         g: 70,
@@ -304,21 +310,25 @@ pub(super) fn paint_trash_bin(buf: &mut RgbBuffer, pr: Bounds) {
         g: 160,
         b: 170,
     };
-    for dy in 0..5u16 {
-        for dx in 0..4u16 {
+    // Loop bounds derive from the rect (like paint_doormat/paint_water_cooler),
+    // so the painted box is structurally coupled to trash_bin_rect and can't
+    // drift from the hover box. dy==0/1 are the fixed sprite-art top rows.
+    for dy in 0..bin.height {
+        for dx in 0..bin.width {
             let px = tx + dx;
             let py = ty + dy;
             if px < buf.width() && py < buf.height() {
+                let on_edge = dx == 0 || dx == bin.width - 1;
                 let color = if dy == 0 {
                     // Rim row — lighter metal rim with bag liner peek
-                    if dx == 0 || dx == 3 {
+                    if on_edge {
                         bin_rim
                     } else {
                         bag_liner
                     }
                 } else if dy == 1 {
                     // Bag liner visible
-                    if dx == 0 || dx == 3 {
+                    if on_edge {
                         bin_outer
                     } else {
                         bag_fill

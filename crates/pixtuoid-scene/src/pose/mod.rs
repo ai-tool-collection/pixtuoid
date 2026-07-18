@@ -125,19 +125,11 @@ const EXIT_BUDGET_MARGIN_MS: u64 = 300;
 /// approach cell sits directly off the seat and the settle glide is a short
 /// straight hop onto the chair.
 pub(crate) fn desk_approach_cell(desk: Point, layout: &Layout) -> Option<Point> {
-    use crate::layout::{approach_point, desk_walk_anchor, Facing, Furniture};
+    use crate::layout::{desk_walk_anchor, Facing, Furniture};
     let chair = desk_walk_anchor(desk);
-    let cell = approach_point(
-        Furniture::Desk,
-        chair,
-        // The desk sitter faces the camera (South); DESK_APPROACH then allows
-        // N/E/W (the south front is excluded — that is the bug-prone side).
-        Facing::South,
-        layout.pantry_counter_size(),
-        &layout.walkable,
-        chair,
-        &layout.reachable,
-    );
+    // The desk sitter faces the camera (South); DESK_APPROACH then allows
+    // N/E/W (the south front is excluded — that is the bug-prone side).
+    let cell = layout.approach_point(Furniture::Desk, chair, chair, Facing::South);
     // approach_point returns the scanned `pos` (== chair) as the "no valid
     // approach" sentinel when no allowed+reachable side exists.
     (cell != chair).then_some(cell)
@@ -417,15 +409,16 @@ pub fn derive_with_routing(
             return Some(Pose::SeatedThinking);
         }
 
-        let (wander_phase, t_phys) =
-            advance_wander(slot, now, layout, rctx.router, rctx.overlay, rctx.motion);
+        // Snapshot of the phase + trip facts for THIS frame — the arms read it
+        // instead of re-borrowing `rctx.motion` (which is what forced the
+        // WalkingBack "copy off `ms` before `&mut motion`" dance).
+        let wf = advance_wander(slot, now, layout, rctx.router, rctx.overlay, rctx.motion);
 
-        match wander_phase {
+        match wf.phase {
             WanderPhase::WalkingOut(_) => {
-                let ms = rctx.motion.get(&slot.agent_id)?;
                 let desk_point = layout.home_desk(slot.desk_index.single_floor_local())?;
-                let dest = ms.wander.target.dest;
-                let seat = ms.wander.target.kind.seat();
+                let dest = wf.dest;
+                let seat = wf.kind.seat();
                 // Leave the desk via the approach cell (a reachable N/E/W side),
                 // never straight through the south front: `from` is the approach
                 // cell and the chair is PREPENDED via Settle so the sprite first
@@ -435,7 +428,7 @@ pub fn derive_with_routing(
                 let (from, chair_settle) = desk_leg_endpoint(desk_point, layout);
                 // Rise off the desk chair (start), glide onto the waypoint seat (end).
                 let settle = settle_from_pair(chair_settle, seat);
-                let elapsed_phase = crate::anim::elapsed_ms(now, ms.wander.phase_started_at);
+                let elapsed_phase = crate::anim::elapsed_ms(now, wf.phase_started_at);
                 let frame = walking_frame(elapsed_phase);
                 return route_walking_pose(
                     slot,
@@ -445,7 +438,7 @@ pub fn derive_with_routing(
                     Pose::Walking {
                         from,
                         to: dest,
-                        t_x1000: t_phys,
+                        t_x1000: wf.t_x1000,
                         frame,
                         carrying_coffee: false,
                     },
@@ -453,12 +446,9 @@ pub fn derive_with_routing(
                 );
             }
             WanderPhase::AtWaypoint(_) => {
-                let ms = rctx.motion.get(&slot.agent_id)?;
-                let pose = match ms.wander.target.kind {
+                let pose = match wf.kind {
                     WanderKind::Named { wp_idx, kind, .. } => Pose::AtWaypoint { wp: wp_idx, kind },
-                    WanderKind::Aimless => Pose::AimlessAt {
-                        dest: ms.wander.target.dest,
-                    },
+                    WanderKind::Aimless => Pose::AimlessAt { dest: wf.dest },
                 };
                 // Record the RENDERED position so snap-back/exit (which read
                 // history.recent as their walk origin) start where the sprite
@@ -468,30 +458,23 @@ pub fn derive_with_routing(
                 // `dest` for a seat popped the sprite ~10px to the off-side
                 // approach cell on the first snap-back/exit frame — the one seated
                 // departure the WalkingBack Settle machinery didn't cover.
-                let pt = ms
-                    .wander
-                    .target
-                    .kind
-                    .seat()
-                    .unwrap_or(ms.wander.target.dest);
+                let pt = wf.kind.seat().unwrap_or(wf.dest);
                 rctx.history.record(slot.agent_id, pt, now);
                 return Some(pose);
             }
             WanderPhase::WalkingBack(_) => {
-                let ms = rctx.motion.get(&slot.agent_id)?;
                 let desk_point = layout.home_desk(slot.desk_index.single_floor_local())?;
-                // Copy the fields off `ms` so the immutable `motion` borrow ends
-                // before `route_walking_pose` takes `&mut motion`.
-                let wander_dest = ms.wander.target.dest;
-                let wander_phase_started_at = ms.wander.phase_started_at;
+                // The trip facts come from the `wf` snapshot, so no `motion`
+                // borrow is held here — `route_walking_pose` can take `&mut motion`
+                // freely (the old copy-off-`ms`-first borrow dance is gone).
                 let carrying_coffee = matches!(
-                    ms.wander.target.kind,
+                    wf.kind,
                     WanderKind::Named {
                         kind: WaypointKind::Pantry,
                         ..
                     }
                 );
-                let seat = ms.wander.target.kind.seat();
+                let seat = wf.kind.seat();
                 // Arrive at the desk via the approach cell (a reachable N/E/W
                 // side), never up through the south front: `to` is the approach
                 // cell and the chair is APPENDED via Settle so the sprite glides
@@ -501,7 +484,7 @@ pub fn derive_with_routing(
                 let (snap_target, chair_settle) = desk_leg_endpoint(desk_point, layout);
                 // Rise off the waypoint seat (start), glide onto the desk chair (end).
                 let settle = settle_from_pair(seat, chair_settle);
-                let elapsed_phase = crate::anim::elapsed_ms(now, wander_phase_started_at);
+                let elapsed_phase = crate::anim::elapsed_ms(now, wf.phase_started_at);
                 let frame = walking_frame(elapsed_phase);
                 return route_walking_pose(
                     slot,
@@ -509,9 +492,9 @@ pub fn derive_with_routing(
                     layout,
                     rctx,
                     Pose::Walking {
-                        from: wander_dest,
+                        from: wf.dest,
                         to: snap_target,
-                        t_x1000: t_phys,
+                        t_x1000: wf.t_x1000,
                         frame,
                         carrying_coffee,
                     },

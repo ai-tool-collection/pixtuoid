@@ -1900,6 +1900,15 @@ fn furniture_room_decor_too_small_bounds_are_noops() {
         width: 8,
         height: 8,
     };
+    let small_meeting = crate::layout::MeetingRoom {
+        bounds: small,
+        trio: None,
+    };
+    let small_pantry = crate::layout::PantryRoom {
+        bounds: small,
+        counter_size: crate::layout::Size { w: 20, h: 8 },
+        kitchen_island: None,
+    };
     let assert_noop = |f: &dyn Fn(&mut RgbBuffer)| {
         let mut buf = RgbBuffer::filled(60, 60, bg);
         f(&mut buf);
@@ -1910,9 +1919,11 @@ fn furniture_room_decor_too_small_bounds_are_noops() {
         }
     };
     assert_noop(&|b| paint_notice_board(b, small, theme));
-    assert_noop(&|b| paint_doormat(b, small, theme));
-    assert_noop(&|b| paint_water_cooler(b, small, std::time::SystemTime::UNIX_EPOCH, theme));
-    assert_noop(&|b| paint_trash_bin(b, small));
+    assert_noop(&|b| paint_doormat(b, &small_meeting, theme));
+    assert_noop(&|b| {
+        paint_water_cooler(b, &small_pantry, std::time::SystemTime::UNIX_EPOCH, theme)
+    });
+    assert_noop(&|b| paint_trash_bin(b, &small_pantry));
 }
 
 #[test]
@@ -1929,6 +1940,15 @@ fn furniture_room_decor_large_bounds_paint() {
         width: 40,
         height: 40,
     };
+    let big_meeting = crate::layout::MeetingRoom {
+        bounds: big,
+        trio: None,
+    };
+    let big_pantry = crate::layout::PantryRoom {
+        bounds: big,
+        counter_size: crate::layout::Size { w: 20, h: 8 },
+        kitchen_island: None,
+    };
     let assert_paints = |f: &dyn Fn(&mut RgbBuffer)| {
         let mut buf = RgbBuffer::filled(120, 80, bg);
         f(&mut buf);
@@ -1938,9 +1958,82 @@ fn furniture_room_decor_large_bounds_paint() {
         assert!(painted, "large bounds must paint the decor");
     };
     assert_paints(&|b| paint_notice_board(b, big, theme));
-    assert_paints(&|b| paint_doormat(b, big, theme));
-    assert_paints(&|b| paint_water_cooler(b, big, std::time::SystemTime::UNIX_EPOCH, theme));
-    assert_paints(&|b| paint_trash_bin(b, big));
+    assert_paints(&|b| paint_doormat(b, &big_meeting, theme));
+    assert_paints(&|b| {
+        paint_water_cooler(b, &big_pantry, std::time::SystemTime::UNIX_EPOCH, theme)
+    });
+    assert_paints(&|b| paint_trash_bin(b, &big_pantry));
+}
+
+#[test]
+fn furniture_painters_fill_exactly_their_rect_authority() {
+    // #1 drift-elimination pinned at the PIXEL level: each procedural-furniture
+    // painter's drawn bounding box must equal the box its rect-authority method
+    // returns (the hover hit-test reads the SAME method), so a painter loop-bound
+    // edit that diverges from the rect reddens HERE — not just a silent
+    // hit-box-vs-sprite drift. Backs the name of `layout::tests::
+    // pantry_and_meeting_procedural_rects_match_the_painted_geometry`.
+    use super::furniture::{paint_doormat, paint_trash_bin, paint_water_cooler};
+    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let bg = Rgb { r: 1, g: 2, b: 3 };
+    let big = crate::layout::Bounds {
+        x: 4,
+        y: 4,
+        width: 44,
+        height: 44,
+    };
+    let pantry = crate::layout::PantryRoom {
+        bounds: big,
+        counter_size: crate::layout::Size { w: 20, h: 8 },
+        kitchen_island: None,
+    };
+    let meeting = crate::layout::MeetingRoom {
+        bounds: big,
+        trio: None,
+    };
+    // The bounding box of the non-bg pixels a painter drew.
+    let painted_bbox = |f: &dyn Fn(&mut RgbBuffer)| -> Option<crate::layout::Bounds> {
+        let mut buf = RgbBuffer::filled(120, 80, bg);
+        f(&mut buf);
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (u16::MAX, u16::MAX, 0u16, 0u16);
+        let mut any = false;
+        for y in 0..buf.height() {
+            for x in 0..buf.width() {
+                if buf.get(x, y) != bg {
+                    any = true;
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        any.then(|| crate::layout::Bounds {
+            x: min_x,
+            y: min_y,
+            width: max_x - min_x + 1,
+            height: max_y - min_y + 1,
+        })
+    };
+    // Each painter fills its whole box (the water cooler's ambient glug bubble
+    // sits INSIDE the bottle box), so the painted bbox equals the rect exactly.
+    assert_eq!(
+        painted_bbox(&|b| paint_trash_bin(b, &pantry)),
+        pantry.trash_bin_rect(),
+        "trash bin paints exactly its rect",
+    );
+    assert_eq!(
+        painted_bbox(&|b| paint_doormat(b, &meeting, theme)),
+        meeting.doormat_rect(),
+        "doormat paints exactly its rect",
+    );
+    assert_eq!(
+        painted_bbox(&|b| {
+            paint_water_cooler(b, &pantry, std::time::SystemTime::UNIX_EPOCH, theme)
+        }),
+        pantry.water_cooler_rect(),
+        "water cooler paints exactly its rect (glug bubble stays inside)",
+    );
 }
 
 #[test]
@@ -2862,11 +2955,16 @@ fn water_cooler_glugs_a_rising_bubble() {
         width: 30,
         height: 40,
     };
+    let pantry = crate::layout::PantryRoom {
+        bounds: pr,
+        counter_size: crate::layout::Size { w: 20, h: 8 },
+        kitchen_island: None,
+    };
     let render = |ms: u64| {
         let mut buf = RgbBuffer::filled(60, 60, bg);
         furniture::paint_water_cooler(
             &mut buf,
-            pr,
+            &pantry,
             SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(ms),
             theme,
         );
