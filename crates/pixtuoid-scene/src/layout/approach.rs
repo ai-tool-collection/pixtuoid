@@ -68,9 +68,11 @@ pub(super) fn obstacle_footprint(kind: WaypointKind, pantry_counter_size: Size) 
 /// reachable allowed side nearest `origin`" scan. Falls back to `pos` (the "no
 /// valid approach" sentinel) exactly where `approach_point` does.
 ///
-/// Equality is now true BY CONSTRUCTION — the old parallel scan (kept equal only
-/// by `real_layout_obstacle_stand_matches_approach_point`, retained as a cheap
-/// guard) is gone.
+/// Equality is now true BY CONSTRUCTION — the old parallel scan is gone, so the
+/// stand-vs-approach equality a dedicated guard once asserted is a tautology now;
+/// that guard was repurposed to pin the obstacle branch's REAL invariants
+/// (walkable / reachable / allowed-side / off-visual) in
+/// `real_layout_obstacle_stand_is_a_reachable_allowed_off_visual_cell`.
 pub fn stand_point(
     kind: WaypointKind,
     pos: Point,
@@ -412,16 +414,16 @@ mod tests {
     }
 
     #[test]
-    fn real_layout_obstacle_stand_matches_approach_point() {
-        // The RENDER anchor (stand_point) and the WALK goal (approach_point) MUST
-        // agree for obstacle waypoints — else the AtWaypoint sprite pops from the
-        // side the agent walked to onto a different face on arrival. They diverged
-        // when stand_point lacked approach_point's reachability filter: on a real
-        // floor where the nearest-desk side's first walkable pixel sat in a coarse-
-        // unreachable OBSTACLE_PAD cell, stand kept the near (unreachable) side
-        // while approach picked a farther reachable one (~1 full sprite width pop).
-        // Assert equality across the sizes×seeds×desks that exhibited it.
-        use crate::layout::SceneLayout;
+    fn real_layout_obstacle_stand_is_a_reachable_allowed_off_visual_cell() {
+        // `stand_point ≡ approach_point` is now true BY CONSTRUCTION (stand_point
+        // delegates to approach_point for obstacles), so asserting their equality is
+        // a tautology — `f(X) == f(X)` can't fail whatever approach_point computes.
+        // Instead pin the real invariants of the obstacle branch on live layouts:
+        // the resolved stand cell is walkable, coarse-reachable, on a facing-allowed
+        // (non-back) side, and OUTSIDE the whole visual sprite (clearance derives
+        // from the visual, not the shallow footprint — else the agent stands inside
+        // the sprite). Each sub-assertion can genuinely fail under a regression.
+        use crate::layout::{furniture_def, SceneLayout};
         let obstacle = |k| {
             !matches!(
                 k,
@@ -444,7 +446,7 @@ mod tests {
                 };
                 for &desk in &l.home_desks {
                     for wp in l.waypoints.iter().filter(|w| obstacle(w.kind)) {
-                        let stand = stand_point(
+                        let s = stand_point(
                             wp.kind,
                             wp.pos,
                             l.pantry_counter_size(),
@@ -453,19 +455,57 @@ mod tests {
                             wp.facing,
                             &l.reachable,
                         );
-                        let approach = approach_point(
-                            wp.kind.furniture(),
-                            wp.pos,
-                            wp.facing,
-                            l.pantry_counter_size(),
-                            &l.walkable,
-                            desk,
-                            &l.reachable,
+                        if s == wp.pos {
+                            continue; // "no valid approach" sentinel — nothing to stand on
+                        }
+                        assert!(
+                            l.walkable.is_walkable(s.x, s.y),
+                            "{bw}x{bh} seed {seed}: {:?} stand {s:?} not walkable",
+                            wp.kind
                         );
-                        assert_eq!(
-                            stand, approach,
-                            "{bw}x{bh} seed {seed} desk {desk:?}: {:?} render anchor {stand:?} != walk goal {approach:?}",
-                            wp.kind,
+                        assert!(
+                            l.reachable.reaches(s),
+                            "{bw}x{bh} seed {seed}: {:?} stand {s:?} not coarse-reachable",
+                            wp.kind
+                        );
+                        // A pure single-axis offset from pos → its direction MUST be
+                        // an allowed (non-back) side.
+                        let dx = s.x as i32 - wp.pos.x as i32;
+                        let dy = s.y as i32 - wp.pos.y as i32;
+                        let dir = if dx.abs() >= dy.abs() {
+                            (dx.signum(), 0)
+                        } else {
+                            (0, dy.signum())
+                        };
+                        let def = furniture_def(wp.kind.furniture());
+                        assert!(
+                            def.approach.allows(wp.facing, dir),
+                            "{bw}x{bh} seed {seed}: {:?} stand {s:?} on a FORBIDDEN side {dir:?}",
+                            wp.kind
+                        );
+                        // Clear of the WHOLE visual, not the shallow footprint: the
+                        // offset along the stand axis is ≥ visual/2 + STAND_CLEARANCE.
+                        // Read the visual from an INDEPENDENT authority (furniture_def /
+                        // the pantry counter size) — NOT `approach_clearance_extent`, the
+                        // fn `approach_point` itself uses to place the cell — so a
+                        // visual→footprint regression there fails HERE (off < visual/2 +
+                        // clearance) instead of shifting both the placement AND this
+                        // oracle together (which would leave it toothless).
+                        let visual = if wp.kind == WaypointKind::Pantry {
+                            l.pantry_counter_size()
+                        } else {
+                            def.visual
+                        };
+                        let (half, off) = if dx != 0 {
+                            (visual.w as i32 / 2, dx.abs())
+                        } else {
+                            (visual.h as i32 / 2, dy.abs())
+                        };
+                        assert!(
+                            off >= half + STAND_CLEARANCE as i32,
+                            "{bw}x{bh} seed {seed}: {:?} stand {s:?} sits INSIDE its visual \
+                             (off {off} < half {half} + clearance {STAND_CLEARANCE})",
+                            wp.kind
                         );
                     }
                 }
@@ -694,10 +734,11 @@ mod tests {
     }
 
     #[test]
-    fn approach_point_for_obstacle_matches_stand_point_when_reachable() {
-        // For an obstacle on an open-enough field, the approach point is exactly
-        // the stand cell (the reachability filter drops nothing). This pins the
-        // obstacle render (stand_point) ≡ obstacle walk-end (approach_point).
+    fn obstacle_stand_point_resolves_to_a_reachable_walkable_off_center_cell() {
+        // On an open field an obstacle's stand cell must be a walkable, coarse-
+        // reachable cell OFF the blocked center. (stand_point ≡ approach_point is
+        // now true BY CONSTRUCTION — stand_point delegates — so an equality assert
+        // would be a tautology; pin the real properties instead.)
         let pos = Point { x: 50, y: 50 };
         let m = mask_with_obstacle(100, 100, pos, 32, 10);
         let reach = ReachSet::from_mask(&m, Point { x: 5, y: 5 });
@@ -711,22 +752,11 @@ mod tests {
             Facing::South,
             &reach,
         );
+        assert_ne!(sp, pos, "must resolve off the blocked center");
+        assert!(m.is_walkable(sp.x, sp.y), "the stand cell must be walkable");
         assert!(
             reach.reaches(sp),
             "the stand cell must be coarse-reachable here"
-        );
-        assert_eq!(
-            approach_point(
-                Furniture::Pantry,
-                pos,
-                Facing::South,
-                Size { w: 32, h: 10 },
-                &m,
-                origin,
-                &reach,
-            ),
-            sp,
-            "obstacle approach_point must equal stand_point when reachable",
         );
     }
 
