@@ -344,7 +344,21 @@ impl Office {
             let cx = el.anchor_px.x as i32 + CHARACTER_SPRITE_W as i32 / 2;
             out.push_str(&format!("{{\"x\":{cx},\"y\":{},\"text\":", el.anchor_px.y));
             push_json_string(&mut out, &format!("\u{25cf}{}", el.text));
-            out.push_str(&format!(",\"color\":\"{}\"}}", label_hex(theme, el.tone)));
+            out.push_str(&format!(",\"color\":\"{}\"", label_hex(theme, el.tone)));
+            // The CLI-identity half (#657, owner-ratified design): the
+            // registry prefix before the first '·' resolves to the source's
+            // badge hue — the SAME SourceColors::by_prefix the dashboard/
+            // Sources/tooltip badges ride. The site paints the WHOLE name in
+            // it while the ● marker stays the activity tone (the status-dot
+            // idiom: dot = busy/idle, text = identity — all three painters
+            // share this split). An unregistered prefix emits no badge and
+            // the whole label stays tone-colored.
+            if let Some((prefix, _)) = el.text.split_once('\u{b7}') {
+                if let Some(rgb) = theme.source.by_prefix(prefix) {
+                    out.push_str(&format!(",\"badge\":\"{}\"", hex(rgb)));
+                }
+            }
+            out.push('}');
         }
         out.push_str(&format!(
             "],\"board\":{{\"rect\":{{\"x\":{NEON_PANEL_INNER_X},\"y\":{NEON_PANEL_INNER_Y},\"w\":{NEON_PANEL_INNER_W},\"h\":{NEON_PANEL_INNER_H}}},"
@@ -705,6 +719,31 @@ mod tests {
     const T0_MS: f64 = 1_000_000_000.0;
 
     #[test]
+    fn overlay_json_carries_the_cli_badge_hue_for_registered_prefixes() {
+        let mut o = office();
+        o.step(T0_MS, 320, 180);
+        o.step(T0_MS + 10_000.0, 320, 180);
+        let json = o.overlay_json();
+        // cc·api resolves the SAME SourceColors::by_prefix hue the dashboard
+        // badges ride; the site paints the whole name in it (● stays tone).
+        let cc = pixtuoid_scene::theme::ALL_THEMES[0].source.claude_code;
+        let expect = format!("\"badge\":\"#{:02x}{:02x}{:02x}\"", cc.r, cc.g, cc.b);
+        assert!(
+            json.contains(&expect),
+            "labels carry the cc badge hue: {json}"
+        );
+        // Every label of the scripted cast has a REGISTERED prefix, so every
+        // label carries a badge — none silently falls back to tone-only.
+        // (Scope the count to the labels array: board segments also emit
+        // "text" keys.)
+        let labels_json = json.split("],\"board\"").next().unwrap();
+        let labels = labels_json.split("\"text\":").count() - 1;
+        let badges = labels_json.split("\"badge\":").count() - 1;
+        assert!(labels > 0, "the seated cast produced labels");
+        assert_eq!(labels, badges, "every cast label resolves a badge hue");
+    }
+
+    #[test]
     fn step_renders_a_frame_of_the_advertised_shape() {
         let mut o = office();
         let (w, h) = (160u32, 96u32);
@@ -749,7 +788,7 @@ mod tests {
             t += step_ms;
         }
         assert!(
-            (5..=8).contains(&o.scene.agents.len()),
+            (8..=11).contains(&o.scene.agents.len()),
             "cast bounded across the wrap, got {}",
             o.scene.agents.len()
         );
@@ -871,7 +910,7 @@ mod tests {
         assert_eq!(advanced % LOOP_MS, 0, "re-anchor keeps the loop phase");
         assert!(gap - advanced < 2 * LOOP_MS, "at most one wrap replays");
         assert!(
-            (5..=8).contains(&o.scene.agents.len()),
+            (8..=11).contains(&o.scene.agents.len()),
             "office coherent after the gap, got {}",
             o.scene.agents.len()
         );
@@ -974,7 +1013,7 @@ mod tests {
             .scene
             .agents
             .keys()
-            .filter(|id| !(0..8).map(cast_id).any(|c| c == **id))
+            .filter(|id| !(0..crate::script::CAST_LEN).map(cast_id).any(|c| c == **id))
             .count();
         assert_eq!(hired_alive, 0, "the hire left and never replays");
     }
@@ -992,15 +1031,15 @@ mod tests {
     #[test]
     fn capacity_tracks_the_canvas_layout_so_no_agent_is_stranded_unpainted() {
         use pixtuoid_scene::layout::Layout;
-        // A portrait-phone hero buffer (the site renders BUF_H=130 at a
-        // narrow bufW). The reducer's capacity must derive from THAT layout,
-        // so an admitted agent always has a paintable desk anchor — an agent
-        // whose desk index falls off the canvas layout renders NOWHERE
-        // (character_anchor returns None) while staying alive in the scene.
-        // Free-desk count is DERIVED (capacity − cast), not a size literal —
-        // the density pass re-tunes desk-per-buffer out from under any
-        // hardcoded count.
-        let (w, h) = (96u32, 130u32);
+        // A modest hero buffer (the site renders BUF_H=130; this width seats
+        // the full 11-cast plus at least one spare). The reducer's capacity
+        // must derive from THAT layout, so an admitted agent always has a
+        // paintable desk anchor — an agent whose desk index falls off the
+        // canvas layout renders NOWHERE (character_anchor returns None) while
+        // staying alive in the scene. Free-desk count is DERIVED (capacity −
+        // cast), not a size literal — the density pass re-tunes
+        // desk-per-buffer out from under any hardcoded count.
+        let (w, h) = (192u32, 130u32);
         let mut o = office();
         let mut t = 0u64;
         while t <= 30_000 {
@@ -1047,6 +1086,31 @@ mod tests {
     }
 
     #[test]
+    fn a_phone_narrow_office_the_cast_fills_refuses_hires_outright() {
+        // The 64-96px bufW floor lays out fewer desks than the 11-cast — the
+        // cast that fits seats, the rest stay unadmitted, and a hire click is
+        // politely refused (the documented narrow-phone easter-egg behavior,
+        // now reachable by cast overflow too, not just exact-fit).
+        let (w, h) = (96u32, 130u32);
+        let mut o = office();
+        let mut t = 0u64;
+        while t <= 30_000 {
+            o.step(T0_MS + t as f64, w, h);
+            t += 1_000;
+        }
+        assert!(
+            o.scene.total_capacity() <= crate::script::CAST_LEN,
+            "premise: this width seats no more than the cast"
+        );
+        assert_eq!(
+            o.scene.agents.len(),
+            o.scene.total_capacity(),
+            "the cast fills every desk the narrow canvas lays out"
+        );
+        assert!(!o.hire(), "no free desk: the hire click is refused");
+    }
+
+    #[test]
     fn hire_cap_holds_under_click_spam() {
         // 320×180 (a roomy 16:9 canvas) lays out 32 desks — ample room, so
         // this exercises the MAX_LIVE cap, not desk exhaustion (the
@@ -1065,7 +1129,7 @@ mod tests {
             o.scene
                 .agents
                 .keys()
-                .filter(|id| !(0..8).map(cast_id).any(|c| c == **id))
+                .filter(|id| !(0..crate::script::CAST_LEN).map(cast_id).any(|c| c == **id))
                 .count()
         };
         assert_eq!(
@@ -1110,7 +1174,7 @@ mod tests {
             o.scene
                 .agents
                 .keys()
-                .filter(|id| !(0..8).map(cast_id).any(|c| c == **id))
+                .filter(|id| !(0..crate::script::CAST_LEN).map(cast_id).any(|c| c == **id))
                 .count()
         };
         assert_eq!(count_hires(&o), VisitorHires::MAX_LIVE);
