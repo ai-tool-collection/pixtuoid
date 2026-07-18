@@ -8,19 +8,12 @@
 //! its own thread behind a bounded channel — the render loop only ever
 //! `try_send`s (drop-on-backpressure, never blocks).
 
-// Everything below the handle/spawn seam is feature-gated WITH the rodio
-// dep (lens-2 MEDIUM: an ungated pure half is ~40 dead_code warnings in
-// every --no-default-features build — the shipped Linux artifacts).
-#[cfg(feature = "audio")]
-pub(crate) mod dsp;
-#[cfg(feature = "audio")]
-pub(crate) mod mixer;
-#[cfg(feature = "audio")]
-mod score;
+// The PURE synth stack (dsp/mixer/score/synth) MOVED to `pixtuoid_scene::audio`
+// (#633 web-audio) so the native device gateway here AND the wasm WebAudio
+// painter build the SAME buffers. Only the DEVICE half stays here (sink +
+// spawn + run_loop), still behind the `audio` feature with the rodio dep.
 #[cfg(feature = "audio")]
 pub(crate) mod sink;
-#[cfg(feature = "audio")]
-pub(crate) mod synth;
 
 use std::sync::mpsc;
 #[cfg(feature = "audio")]
@@ -29,129 +22,26 @@ use std::sync::Arc;
 use std::time::Instant;
 
 #[cfg(feature = "audio")]
-use mixer::{DropScheduler, LoopStem, Mixer, TypingScheduler};
+use pixtuoid_scene::audio::mixer::{DropScheduler, LoopStem, Mixer, TypingScheduler};
 use pixtuoid_scene::audio::AudioFrame;
 #[cfg(feature = "audio")]
+use pixtuoid_scene::audio::{dsp, synth};
+// OneShot + TrackId are named only in the test fixtures now (run_loop infers
+// both — `frame.events` / `switch.init(frame.track)`), so import them test-side
+// to keep the prod build warning-free.
+#[cfg(all(feature = "audio", test))]
 use pixtuoid_scene::audio::{OneShot, TrackId};
 #[cfg(feature = "audio")]
 use sink::AudioSink;
 
-/// Per-key / per-drop pre-rendered variant pools: playback picks randomly so
-/// typing/rain never sound repeated, while runtime stays synthesis-free.
+// AssetBank / TrackBeds / TRACK_STEMS + the pool/gain consts MOVED to
+// `pixtuoid_scene::audio::bank` (web-audio #633): pure builders, so the wasm
+// WebAudio painter builds byte-identical banks from the SAME source. run_loop
+// imports them below.
 #[cfg(feature = "audio")]
-const KEYSTROKE_POOL: usize = 16;
-#[cfg(feature = "audio")]
-const DROP_POOL: usize = 12;
-
-/// One-shot playback gains relative to master — the loudness-matched Phase 0
-/// unit levels (±2.2dB across the set), with typing under the beds.
-#[cfg(feature = "audio")]
-const KEYSTROKE_GAIN: f32 = 0.35;
-#[cfg(feature = "audio")]
-const ONE_SHOT_GAIN: f32 = 0.5;
-/// Foreground raindrops sit 12-14dB ABOVE the wash per the reference — the
-/// bed peaks well under 1.0, so drops ride at the rain level itself.
-#[cfg(feature = "audio")]
-const DROP_GAIN: f32 = 0.9;
-
-/// The ONE-SHOT pools the audio thread keeps for its whole life,
-/// synthesized once at spawn. The loop beds live in [`TrackBeds`] instead —
-/// they are handed to the sink at registration and NOT retained.
-#[cfg(feature = "audio")]
-struct AssetBank {
-    keystrokes: Vec<Arc<Vec<f32>>>,
-    drops: Vec<Arc<Vec<f32>>>,
-    door_chime: Arc<Vec<f32>>,
-    printer_whir: Arc<Vec<f32>>,
-    vending_drop: Arc<Vec<f32>>,
-}
-
-#[cfg(feature = "audio")]
-impl AssetBank {
-    /// `rng` is the ONE asset stream — rain then `TrackBeds::build` continue it, so
-    /// the draw order (and thus every buffer) is byte-identical to the
-    /// LISTEN-ratified renders. Don't reorder the synth calls.
-    fn build(rng: &mut dsp::NoiseStream) -> Self {
-        Self {
-            keystrokes: (0..KEYSTROKE_POOL)
-                .map(|_| Arc::new(synth::keystroke(rng)))
-                .collect(),
-            drops: (0..DROP_POOL)
-                .map(|_| Arc::new(synth::rain_drop(rng)))
-                .collect(),
-            door_chime: Arc::new(synth::door_chime()),
-            printer_whir: Arc::new(synth::printer_whir(rng)),
-            vending_drop: Arc::new(synth::vending_drop(rng)),
-        }
-    }
-
-    fn one_shot(&self, event: OneShot) -> Arc<Vec<f32>> {
-        match event {
-            OneShot::DoorChime => Arc::clone(&self.door_chime),
-            OneShot::PrinterWhir => Arc::clone(&self.printer_whir),
-            OneShot::VendingDrop => Arc::clone(&self.vending_drop),
-        }
-    }
-}
-
-/// The five TRACK-OWNED loop stems, in registration order. Rain is not
-/// here — it is weather, shared by every mood track (#644).
-#[cfg(feature = "audio")]
-const TRACK_STEMS: [LoopStem; 5] = [
-    LoopStem::Pad,
-    LoopStem::Sparkle,
-    LoopStem::Keys,
-    LoopStem::Drums,
-    LoopStem::Texture,
-];
-
-/// One mood track's loop beds — built per [`TrackId`], registered (or
-/// swapped in) with the sink, then DROPPED: `RodioSink` copies each bed
-/// into its own `SamplesBuffer`, so retaining the Arcs would double the
-/// bed RAM (review finding). Within a track the four musical beds share
-/// ONE sample count and register together (phase-locked); the NIGHT
-/// texture shares it too (its kick-duck is baked at frozen kick times);
-/// the DAY texture keeps its free-running power-of-two length.
-#[cfg(feature = "audio")]
-struct TrackBeds {
-    beds: [Arc<Vec<f32>>; TRACK_STEMS.len()],
-}
-
-#[cfg(feature = "audio")]
-impl TrackBeds {
-    /// DAY continues the boot rng stream in the ratified order (drums,
-    /// then texture — the pure musical stems draw nothing), keeping every
-    /// day buffer byte-identical to the #642/#643 renders. NIGHT draws
-    /// from wherever the stream stands — its identity is the frozen score
-    /// plus spectral pins, not byte equality.
-    fn build(rng: &mut dsp::NoiseStream, track: TrackId) -> Self {
-        let beds = match track {
-            TrackId::Day => [
-                Arc::new(synth::stem_pad()),
-                Arc::new(synth::stem_sparkle()),
-                Arc::new(synth::stem_keys()),
-                Arc::new(synth::stem_drums(rng)),
-                Arc::new(synth::texture_bed(rng)),
-            ],
-            TrackId::Night => [
-                Arc::new(synth::night_pad()),
-                Arc::new(synth::night_sparkle()),
-                Arc::new(synth::night_keys()),
-                Arc::new(synth::night_drums(rng)),
-                Arc::new(synth::night_texture(rng)),
-            ],
-        };
-        Self { beds }
-    }
-
-    fn bed(&self, stem: LoopStem) -> Arc<Vec<f32>> {
-        let i = TRACK_STEMS
-            .iter()
-            .position(|s| *s == stem)
-            .expect("every track stem has a bed");
-        Arc::clone(&self.beds[i])
-    }
-}
+use pixtuoid_scene::audio::bank::{
+    AssetBank, TrackBeds, DROP_GAIN, KEYSTROKE_GAIN, ONE_SHOT_GAIN, TRACK_STEMS,
+};
 
 /// The +/- keys' volume increment — ONE definition for BOTH painters' key
 /// handlers (`tui/mod.rs` dispatch + `floating::input`), so the two surfaces
@@ -568,14 +458,13 @@ fn run_loop(
     let mut rain_level = 0.0f32;
     let started = Instant::now();
     let mut last_step = started;
-    // The mood-track machine (#644): `current` = the registered beds
-    // (None until the first frame); `pending` = a requested switch,
-    // LATCHED until its cycle completes (hour/weather flapping at a
-    // boundary must not thrash 2s synths). The cycle: hold the five track
-    // stems at target 0 → when their gains reach silence, synthesize +
-    // swap (the silence covers the ~2s) → release the hold.
-    let mut current: Option<TrackId> = None;
-    let mut pending: Option<TrackId> = None;
+    // The mood-track machine (#644) — the state half is the SHARED
+    // `pixtuoid_scene::audio::TrackSwitch` (native + wasm run the same
+    // latch/hold/silent-gate); only the BUILD (blocking synth here) is
+    // caller-side. The cycle: hold the five track stems at target 0 → when
+    // their gains reach silence, synthesize + swap (the silence covers the
+    // ~2s) → release the hold.
+    let mut switch = pixtuoid_scene::audio::TrackSwitch::new();
     let mut wanted_stems = pixtuoid_scene::audio::StemLevels::default();
 
     loop {
@@ -589,29 +478,24 @@ fn run_loop(
                 typing_level = frame.stems.typing;
                 rain_level = frame.stems.rain;
                 wanted_stems = frame.stems;
-                match current {
-                    None => {
-                        // first frame: build + register the RIGHT track
-                        let beds = TrackBeds::build(&mut rng, frame.track);
-                        for stem in TRACK_STEMS {
-                            device.start_loop(stem, beds.bed(stem));
-                        }
-                        current = Some(frame.track);
-                        resync_after_stall(
-                            &rx,
-                            started,
-                            &mut last_step,
-                            &mut typing,
-                            &mut drops,
-                            &mut typing_level,
-                            &mut rain_level,
-                            &mut wanted_stems,
-                        );
+                if let Some(track) = switch.init(frame.track) {
+                    // first frame: build + register the RIGHT track
+                    let beds = TrackBeds::build(&mut rng, track);
+                    for stem in TRACK_STEMS {
+                        device.start_loop(stem, beds.bed(stem));
                     }
-                    Some(cur) if frame.track != cur && pending.is_none() => {
-                        pending = Some(frame.track);
-                    }
-                    _ => {}
+                    resync_after_stall(
+                        &rx,
+                        started,
+                        &mut last_step,
+                        &mut typing,
+                        &mut drops,
+                        &mut typing_level,
+                        &mut rain_level,
+                        &mut wanted_stems,
+                    );
+                } else {
+                    switch.request(frame.track);
                 }
                 for event in frame.events {
                     device.play_once(bank.one_shot(event), ONE_SHOT_GAIN * mixer.one_shot_gain());
@@ -624,12 +508,8 @@ fn run_loop(
         // while a switch is pending, hold the track stems silent (rain and
         // typing keep following the scene — weather is not the track's)
         let mut target = wanted_stems;
-        if pending.is_some() {
-            target.pad = 0.0;
-            target.sparkle = 0.0;
-            target.keys = 0.0;
-            target.drums = 0.0;
-            target.texture = 0.0;
+        if switch.is_holding() {
+            target.silence_track_stems();
         }
         mixer.set_target(target);
 
@@ -641,31 +521,23 @@ fn run_loop(
             device.set_loop_gain(stem, gain);
         }
 
-        if let Some(to) = pending {
-            let track_silent = gains
-                .iter()
-                .filter(|(s, _)| TRACK_STEMS.contains(s))
-                .all(|(_, g)| *g == 0.0);
-            if track_silent {
-                // ~2s of synthesis under silence; the ramp back in is the
-                // same crossfade every tier change rides
-                let beds = TrackBeds::build(&mut rng, to);
-                for stem in TRACK_STEMS {
-                    device.swap_loop(stem, beds.bed(stem));
-                }
-                current = Some(to);
-                pending = None;
-                resync_after_stall(
-                    &rx,
-                    started,
-                    &mut last_step,
-                    &mut typing,
-                    &mut drops,
-                    &mut typing_level,
-                    &mut rain_level,
-                    &mut wanted_stems,
-                );
+        if let Some(to) = switch.try_swap(pixtuoid_scene::audio::bank::track_stems_silent(&gains)) {
+            // ~2s of synthesis under silence; the ramp back in is the
+            // same crossfade every tier change rides
+            let beds = TrackBeds::build(&mut rng, to);
+            for stem in TRACK_STEMS {
+                device.swap_loop(stem, beds.bed(stem));
             }
+            resync_after_stall(
+                &rx,
+                started,
+                &mut last_step,
+                &mut typing,
+                &mut drops,
+                &mut typing_level,
+                &mut rain_level,
+                &mut wanted_stems,
+            );
         }
 
         let now_s = now.duration_since(started).as_secs_f64();
