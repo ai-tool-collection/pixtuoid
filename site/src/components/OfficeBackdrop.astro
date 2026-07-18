@@ -1038,13 +1038,40 @@ import { asset, DIM_RESTING } from '../consts';
       // Office built against the losing instance reading the wrong linear
       // memory forever. Memoize ONE shared init promise on `window` so every
       // consumer awaits the same instantiation (site/CLAUDE.md VIBING entry).
+      // A transient drop on the ~874KB wasm-binary fetch (a flaky link) used to
+      // strand the office on the poster until a manual reload — the rejected
+      // init promise was memoized on window and never retried. Retry
+      // import+instantiate a bounded number of times with backoff so a
+      // recoverable blip self-heals; on exhaustion the promise rejects → poster
+      // (the deliberate no-wasm fallback). Scope: this re-fetches the binary; a
+      // first-load GLUE-import() failure is import-map-cached and not covered.
+      // The retry MUST stay INSIDE this one shared promise — a per-consumer
+      // retry would reintroduce the double-instantiate race __pixWasm closes
+      // (site/CLAUDE.md, VIBING entry). Retry consts mirror Showcase.astro's
+      // bootCanvas(), pinned by config/wasm-init-consts.test.mjs.
       window.__pixWasm =
         window.__pixWasm ||
-        import(wasmJsUrl).then(function (m) {
-          return m.default().then(function () {
-            return m;
-          });
-        });
+        (function initSharedWasm() {
+          const WASM_INIT_RETRIES = 2; // extra attempts after the first
+          const WASM_INIT_BACKOFF_MS = 400;
+          function attempt(left) {
+            return import(wasmJsUrl)
+              .then(function (m) {
+                return m.default().then(function () {
+                  return m;
+                });
+              })
+              .catch(function (err) {
+                if (left <= 0) throw err;
+                return new Promise(function (res) {
+                  setTimeout(res, WASM_INIT_BACKOFF_MS);
+                }).then(function () {
+                  return attempt(left - 1);
+                });
+              });
+          }
+          return attempt(WASM_INIT_RETRIES);
+        })();
       window.__pixWasm
         .then(function (mod) {
           // __wbg_init is idempotent once resolved, so this just hands back
@@ -1077,7 +1104,7 @@ import { asset, DIM_RESTING } from '../consts';
           markEngineResolved();
         });
     }
-    // Defer the ~740KB wasm fetch OUT of the render-critical window: kick it
+    // Defer the ~874KB wasm fetch OUT of the render-critical window: kick it
     // after `load`, at idle, so it stops competing with the above-fold poster /
     // fonts / CSS (LCP is the H1 text). The bg-tone cover holds until the first
     // frame lands (~0.5–1s later on fast links), then the office FLOOR-ROLLS in
