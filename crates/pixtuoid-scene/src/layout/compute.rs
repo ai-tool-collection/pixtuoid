@@ -479,7 +479,7 @@ pub(super) fn compute_with_seed(
         top_margin,
         usable_h,
         mid_x,
-        meeting_room,
+        meeting_rooms.first(),
         door,
         has_meeting || has_pantry,
         &home_desks,
@@ -675,7 +675,7 @@ fn place_wall_decor(
     top_margin: u16,
     usable_h: u16,
     mid_x: u16,
-    meeting_room: Option<Bounds>,
+    meeting_room: Option<&MeetingRoom>,
     door: Option<Point>,
     has_side_rooms: bool,
     home_desks: &[Point],
@@ -687,12 +687,9 @@ fn place_wall_decor(
     // — drop it entirely, the same degradation pattern as the bare meeting
     // room and the bookshelf.
     let meeting_screen_x = meeting_room.and_then(|mr| {
-        let sx = mr.x + 1;
-        (sx + screen_w < mr.x + mr.width).then_some(sx)
+        let sx = mr.bounds.x + 1;
+        (sx + screen_w < mr.bounds.x + mr.bounds.width).then_some(sx)
     });
-    let sofa_fp_w = furniture_def(Furniture::MeetingSofaBody)
-        .footprint
-        .map_or(0, |s| s.w);
     let bookshelf_x = {
         let x = pct(buf_w, 18);
         match (meeting_screen_x, meeting_room) {
@@ -709,20 +706,16 @@ fn place_wall_decor(
                 // band, where the first desk pod's pad seals the apron gap
                 // against it instead (sweep sealed-pocket catch at 48×60 —
                 // a bare doll-house room).
-                if room_fits_furniture(&mr) {
-                    // Mirrors MeetingRoom::place_trio's cx + the mask's Center-anchored
-                    // sofa ground east edge (fp/2 + OBSTACLE_PAD_PX) — pinned
-                    // behaviorally by the sweep's connectivity invariant: if
-                    // either side drifts, the drain channel seals and the
-                    // sweep reds.
-                    let sofa_pad_east =
-                        mr.x + mr.width / 2 + sofa_fp_w / 2 + super::OBSTACLE_PAD_PX;
-                    // Past the sofa's shadow by the shelf's OWN 1-px ground
-                    // pad (mask.rs wall-decor stamp uses pad=1, not
-                    // OBSTACLE_PAD_PX) + a ≥2-px walkable channel + slack.
+                if let Some(sofa_pad_east) = mr.sofa_east_drain_edge() {
+                    // Past the sofa's shadow (the room's own placed-sofa drain
+                    // edge) by the shelf's OWN 1-px ground pad (mask.rs
+                    // wall-decor stamp uses pad=1, not OBSTACLE_PAD_PX) + a ≥2-px
+                    // walkable channel + slack. Pinned behaviorally by the
+                    // sweep's connectivity invariant: if the drain edge drifts,
+                    // the channel seals and the sweep reds.
                     const BOOKSHELF_DRAIN_GAP: u16 = 5;
                     let spread = x.max(flush_east).max(sofa_pad_east + BOOKSHELF_DRAIN_GAP);
-                    if spread + bookshelf_w < mr.x + mr.width {
+                    if spread + bookshelf_w < mr.bounds.x + mr.bounds.width {
                         spread
                     } else {
                         // Narrow trio room: the spread slot would pierce the
@@ -754,7 +747,7 @@ fn place_wall_decor(
     // Standard — the shelf visually pierced the glass). Dropping it there
     // reopens the apron channel, same degradation as the exit-sign limit.
     let bookshelf_east_limit = meeting_room
-        .map_or(u16::MAX, |mr| mr.x + mr.width)
+        .map_or(u16::MAX, |mr| mr.bounds.x + mr.bounds.width)
         .min(wall_east_limit);
     let mut wall_decor = Vec::new();
     if bookshelf_x + bookshelf_w < bookshelf_east_limit {
@@ -784,17 +777,9 @@ fn place_wall_decor(
         // 10px wheel strip at the sprite base; skip the board when that
         // strip would collide with any desk's ground.
         let wb_def = furniture_def(WallDecor::Whiteboard.furniture());
-        let collides_a_desk = wb_def.footprint.is_some_and(|fp| {
-            let wb_r = mask::ground_rect(
-                Anchor::TopLeft,
-                pos,
-                fp,
-                wb_def.visual,
-                wb_def.ground_x,
-                wb_def.ground_y,
-            );
-            overlaps_a_desk_ground(wb_r, home_desks)
-        });
+        let collides_a_desk = wb_def
+            .ground_rect(Anchor::TopLeft, pos)
+            .is_some_and(|wb_r| overlaps_a_desk_ground(wb_r, home_desks));
         if !collides_a_desk {
             wall_decor.push(WallDecorItem {
                 kind: WallDecor::Whiteboard,
@@ -979,18 +964,11 @@ fn plant_spot_clear(
     singletons: &[(Point, Size)],
 ) -> bool {
     let def = furniture_def(kind.furniture());
-    if let Some(fp) = def.footprint {
-        let r = mask::ground_rect(
-            Anchor::Center,
-            pos,
-            fp,
-            def.visual,
-            def.ground_x,
-            def.ground_y,
-        );
-        if overlaps_a_desk_ground(r, home_desks) {
-            return false;
-        }
+    if def
+        .ground_rect(Anchor::Center, pos)
+        .is_some_and(|r| overlaps_a_desk_ground(r, home_desks))
+    {
+        return false;
     }
     // Fixed singletons get the same inflated-clearance rule as waypoints.
     let pv = def.visual;
@@ -1017,18 +995,9 @@ fn plant_spot_clear(
 /// with.
 fn overlaps_a_desk_ground(r: (Point, Size), home_desks: &[Point]) -> bool {
     let desk = super::decor::desk_furniture_def();
-    desk.footprint.is_some_and(|fp| {
-        home_desks.iter().any(|&d| {
-            let desk_ground = mask::ground_rect(
-                Anchor::TopLeft,
-                d,
-                fp,
-                desk.visual,
-                desk.ground_x,
-                desk.ground_y,
-            );
-            super::placement::rects_overlap(r, desk_ground)
-        })
+    home_desks.iter().any(|&d| {
+        desk.ground_rect(Anchor::TopLeft, d)
+            .is_some_and(|desk_ground| super::placement::rects_overlap(r, desk_ground))
     })
 }
 
@@ -1072,17 +1041,9 @@ pub(super) fn unreachable_walkable_cells(mask: &WalkableMask, seed: Point) -> Ve
 /// causer selector for the #566 connectivity guard.
 fn plant_ground_in_bounds(p: &PlantItem, b: &Bounds) -> bool {
     let def = furniture_def(p.kind.furniture());
-    let Some(fp) = def.footprint else {
+    let Some(ground) = def.ground_rect(Anchor::Center, p.pos) else {
         return false;
     };
-    let ground = mask::ground_rect(
-        Anchor::Center,
-        p.pos,
-        fp,
-        def.visual,
-        def.ground_x,
-        def.ground_y,
-    );
     super::placement::rects_overlap(
         ground,
         (
