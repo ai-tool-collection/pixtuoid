@@ -23,15 +23,17 @@ rename/move of any of them FAILS the build:
   released version between a mid-cycle bump and its tag, and the site must
   advertise what users can actually install). Both CI workflows checkout
   with `fetch-depth: 0` so the tag path is the one real deploys take;
-  unit-tested in `config/released-version.test.mjs`.
+  unit-tested in `config/released-version.test.mjs`. Note: `pages.yml` deploys on
+  push to `main` (+ path filter), NOT on a release-tag push — so a fresh tag's
+  version shows only after the next `main` commit (or a manual `workflow_dispatch`).
 - `docs/{CONFIGURATION, ARCHITECTURE, CONTRIBUTING,
   KNOWLEDGE-ENGINEERING, PARALLEL-DELIVERY}.md` → rendered as `/config`,
   `/architecture`, `/contributing`, `/knowledge-base`,
   `/parallel-delivery` respectively, via a `glob` loader in
   `src/content.config.ts` + a `src/pages/*.astro` per route. **Adding a rendered
   doc is the inverse of a rename — a new `glob` collection, a `src/pages/*.astro`,
-  a `DOCS` entry + `current` union arm in `layouts/Docs.astro` (sidebar + pager),
-  a `Nav.astro` link, and both path filters.**
+  a `DOCS` entry in `consts.ts` (the `DocId` union + `Docs.astro`'s `current`
+  type auto-derive; sidebar + pager), a `Nav.astro` link, and both path filters.**
 
 All six are in the `site.yml` / `pages.yml` **path filters**, so editing one
 re-runs the site CI + redeploys. **Renaming a rendered doc is a multi-point
@@ -273,7 +275,9 @@ display-line authority (`starText`), unit-tested on its null-stars arm since
   that shared init for transient wasm-fetch resilience, but stays INSIDE the one
   `__pixWasm` promise — a per-consumer retry would reintroduce the very
   double-instantiate race above (the retry consts are pinned equal across the two
-  boot scripts by `config/wasm-init-consts.test.mjs`). Schema: `kind:"live"`
+  boot scripts by `config/wasm-init-consts.test.mjs`). On FINAL exhaustion the
+  promise is NULLED so a later-booting consumer re-attempts — safe because it only
+  clears a SETTLED (rejected) promise, never an in-flight one (#671). Schema: `kind:"live"`
   + `variantGroups` (per-group `retint`) + `poster` + `timeSlider` in `showcase.json`,
   resolved by `showcaseGroups` in `consts.ts`, validated by the `astro.config.mjs`
   showcase guard's live branch. Fallback (no-JS / no-wasm / reduced-motion): the
