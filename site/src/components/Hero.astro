@@ -104,11 +104,15 @@ const badges = sources.filter((s) => s.status === 'supported');
     color: var(--fg);
     text-decoration: none;
     text-shadow: var(--chrome-halo);
+    transition: color 0.18s ease;
   }
   .hero__ghost:hover {
-    /* underline, not a --coral recolor: over the office the halo-carried --fg
-       stays legible but raw --coral dips below AA (HowItWorks' nudge-don't-recolor). */
-    text-decoration: underline;
+    /* brighten to --coral on hover — the shared link idiom (see Nav's coffee).
+       Over the office --coral dips below AA, but ONLY in this transient hover
+       state — the resting colour is the full --fg, kept legible over the office
+       by the chrome-halo (rest is the AA case, hover is the exception). Deliberate
+       trade-off (was #678's A3 underline); don't "re-fix" it back without that history. */
+    color: var(--coral);
   }
   .hero__badges {
     display: flex;
