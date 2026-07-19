@@ -32,11 +32,17 @@ const badges = sources.filter((s) => s.status === 'supported');
       <ul class="hero__badges" aria-label={`Works with ${badges.length} coding CLIs`}>
         {
           badges.map((s) => (
-            <li class="hero__badge" style={`--badge:${s.badge_color}`}>
-              <span class="hero__badge-code">{s.badge.replace('·', '')}</span> {s.name}
+            <li class="hero__badge" style={`--badge:${s.badge_color}`} aria-label={s.name}>
+              <span class="hero__badge-code">{s.badge.replace('·', '')}</span>
+              <span class="hero__badge-name" aria-hidden="true">
+                <span>{s.name}</span>
+              </span>
             </li>
           ))
         }
+        <li class="hero__badge hero__badge--more">
+          <a href="#tools">{badges.length} CLIs <span aria-hidden="true">→</span></a>
+        </li>
       </ul>
       <div class="hero__cta">
         <a class="btn btn-primary" href="#install">[ install <span aria-hidden="true">→</span> ]</a>
@@ -121,11 +127,26 @@ const badges = sources.filter((s) => s.status === 'supported');
     margin: 1.15rem 0 0;
     padding: 0;
     list-style: none;
+    /* Permanent compositing layer: Safari promotes/demotes elements around
+       hover transitions, and the raster snap on that boundary can read as a
+       sub-pixel text wiggle even when geometry probes measure 0.00 (the
+       Safari-only jitter report). Pinning the layer removes the boundary. */
+    transform: translateZ(0);
   }
   .hero__badge {
     display: inline-flex;
     align-items: baseline;
-    gap: 0.4em;
+    /* Label chips, not copy text: without these the pointer flips arrow ↔
+       I-beam per glyph while sweeping the strip — frame-extracted from the
+       user's screen recording as a "vertical shimmer" at the cursor (the
+       row itself is frame-stable) — and a drag would blue-select the codes.
+       The count-link <a> keeps its pointer cursor. */
+    cursor: default;
+    user-select: none;
+    /* gap moved INTO .hero__badge-name's inner padding so a collapsed name
+       leaves no trailing space after the code */
+    gap: 0;
+    white-space: nowrap;
     font-family: var(--font-mono);
     font-size: 0.8rem;
     letter-spacing: 0.02em;
@@ -135,34 +156,132 @@ const badges = sources.filter((s) => s.status === 'supported');
        day office, user-caught). NIGHT below switches to the --screen /
        --chip-line hardware family instead (the mock's look, matching the
        app's own dark Sources panel). */
-    background: var(--surface);
-    border: 1px solid var(--border-strong);
+    /* Each cell is FILLED with its agent's brand hue, gently — a low-mix tint
+       over the surface so the strip reads as a colorful spectrum row without
+       shouting (user-directed: whole-cell fill, transparent-ish, gentle). */
+    background: color-mix(in srgb, var(--badge) 14%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--badge) 40%, var(--border-strong));
     color: var(--fg);
+  }
+  /* The one non-source cell: a quiet count-link to the full #tools matrix —
+     the breadth signal (the number) + the path to full names for touch users,
+     who get no hover-expand. Its --badge is the NEUTRAL border tone so the
+     shared tint formulas above apply unchanged (a per-chip background override
+     here would go invalid-at-computed-value on the formulas' var(--badge) and
+     fall to transparent — text straight on office pixels); the gray tint reads
+     as chrome, not a 14th CLI. One knowing wrinkle: --border-strong is itself
+     a TRANSLUCENT token, so unlike the opaque-hex source cells this cell's mix
+     keeps some alpha (~a quarter of the office bleeds through at night) —
+     accepted, the chrome-halo/raw-contrast posture covers it and the e2e gates
+     the nominal ink pair. */
+  .hero__badge--more {
+    --badge: var(--border-strong);
+  }
+  .hero__badge--more a {
+    color: var(--fg);
+    text-decoration: none;
+    /* EXPLICIT pointer: the ancestor chips force cursor: default (inherited),
+       and only a UA-stylesheet special case (a:any-link) restores pointer —
+       measured present in Chromium, but not spec-guaranteed across engines.
+       State the intent instead of leaning on the UA rule; pinned by the
+       bridge e2e's cursor assertions. */
+    cursor: pointer;
+    transition: color 0.18s ease;
+  }
+  .hero__badge--more a:hover {
+    color: var(--coral); /* the shared link idiom (see .hero__ghost) */
   }
   .hero__badge-code {
     font-weight: 700;
     /* the app's real per-CLI hue (sources.json badge_color, pinned to
        theme::NORMAL.source by crates/pixtuoid-scene/tests/site_badge_colors.rs),
-       darkened toward black so it clears WCAG AA (4.5:1) on the light day
-       chip — measured worst case (OpenClaw #ffaa30) 5.37:1 at 45% black; the
-       e2e badge-hue sweep (smoke.spec.ts) pins every hue in both themes. */
-    color: color-mix(in srgb, var(--badge) 55%, black);
+       darkened toward black so it clears WCAG AA (4.5:1) on the TINTED day
+       cell (same-hue text on same-hue tint eats contrast, so 50% black vs the
+       old 45%) — computed worst case (Grok #30d0e8) 5.57:1; the e2e badge-hue
+       sweep (smoke.spec.ts) pins every hue in both themes. */
+    color: color-mix(in srgb, var(--badge) 50%, black);
   }
+  /* Collapsed-by-default name: a 0fr grid track animates open to auto width on
+     hover (interaction-triggered, so no WCAG 2.2.2 pause obligation). The chip
+     grows RIGHTWARD — its own left edge never moves, so the pointer stays
+     inside and the HOVERED chip can't jitter (empirically swept 760–1440px:
+     0 wrap-jumps of the hovered chip itself; a last-on-line chip overflows
+     right rather than re-wrapping, bounded by .hero's overflow:hidden). "Left
+     edge never moves" ≠ "nothing below moves": at line-wrap-boundary widths
+     the expansion can push a TRAILING sibling to a new line (+1 strip row,
+     the CTA shifts ~35px, self-correcting on un-hover) — accepted as LOW over
+     the costlier reserve-height/overlay alternatives. Deliberately hover-only: chips carry no
+     tabindex (13 tab stops before the CTA is hostile keyboard UX) — names stay
+     available to AT via aria-label and to everyone at the #tools matrix the
+     trailing count-link points at. */
+  .hero__badge-name {
+    display: inline-grid;
+    grid-template-columns: 0fr;
+    opacity: 0;
+    /* steps(), not ease: the track opens in discrete increments, so the clip
+       reveals the name glyph-chunk by glyph-chunk — a terminal TYPING her
+       name, not a drawer sliding (the hero h1's block cursor sets the idiom).
+       Opacity snaps fast so revealed glyphs are already solid. */
+    transition:
+      grid-template-columns 0.3s steps(12, end),
+      opacity 0.06s linear;
+  }
+  .hero__badge-name > span {
+    min-width: 0;
+    overflow: hidden;
+    padding-left: 0.4em;
+  }
+  .hero__badge:hover .hero__badge-name {
+    grid-template-columns: 1fr;
+    opacity: 1;
+  }
+  /* The typed name ends on a blinking block caret. Its ENTIRE definition
+     lives in global.css's shared caret idiom (`.cursor, .hero__badge-name >
+     span::after`) — one declaration block for both the h1 cursor and this
+     caret, so their metrics/color/blink can't drift apart (review-caught: the
+     first cut copy-pasted the five properties here). Nothing to declare
+     locally; the RM freeze rides the same global arm. */
+  /* Pressed-key feedback: the hovered cell's tint + border deepen a notch —
+     the hardware "this key is down" read, no geometry change (no translate:
+     the strip must never move vertically — see the cursor-shimmer WHY above).
+     Hover-state contrast audited on rendered pixels across all 13 hues: day
+     26% worst 5.18:1 (grok code), night 42% worst 4.72:1 (grok name) — 46%
+     was rejected (grok code fell to 4.52). The e2e sweep gates REST state;
+     these deepened pairs sit above the same 4.5 floor by audit. */
+  .hero__badge:hover {
+    background: color-mix(in srgb, var(--badge) 26%, var(--surface));
+    border-color: color-mix(in srgb, var(--badge) 62%, var(--border-strong));
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease;
+  }
+  /* No per-component reduced-motion arm for the name track: global.css's
+     universal RM clamp (`* { transition-duration: 0.001ms !important }`)
+     already zeroes it — a local `transition: none` here would be dead code
+     under that !important (pinned by the reduced-motion badge e2e). */
   :root[data-theme='night'] .hero__badge,
   :root[data-theme='dracula'] .hero__badge {
     /* dracula's --bg is dark too (same direction as night — see
        --office-ink's dracula arm in global.css); it piggybacks on night's
        already-measured formula rather than a third dedicated sweep. */
-    background: var(--screen);
-    border-color: var(--chip-line);
+    background: color-mix(in srgb, var(--badge) 34%, var(--screen));
+    border-color: color-mix(in srgb, var(--badge) 60%, var(--chip-line));
     color: var(--chip-ink);
+  }
+  :root[data-theme='night'] .hero__badge:hover,
+  :root[data-theme='dracula'] .hero__badge:hover {
+    /* the pressed-key deepen, night flavor (the higher-specificity night base
+       would otherwise pin hover at the resting 34%) */
+    background: color-mix(in srgb, var(--badge) 42%, var(--screen));
+    border-color: color-mix(in srgb, var(--badge) 74%, var(--chip-line));
   }
   :root[data-theme='night'] .hero__badge-code,
   :root[data-theme='dracula'] .hero__badge-code {
-    /* lightened toward white so the hue clears 4.5:1 on the dark --screen
-       chip — measured worst case (DeepSeek-Reasonix #9c3cc0) 5.09:1 at 20%
-       white. */
-    color: color-mix(in srgb, var(--badge) 80%, white);
+    /* lightened toward white so the hue clears 4.5:1 — measured against the
+       TINTED night cell (same-hue bg eats same-hue text, so 45% white vs the
+       old 20%) — computed worst case (opencode #d83a3a) 5.86:1 at the
+       34% cell tint; the e2e sweep pins every hue. */
+    color: color-mix(in srgb, var(--badge) 55%, white);
   }
   .hero__avail {
     margin-top: 1.1rem;
