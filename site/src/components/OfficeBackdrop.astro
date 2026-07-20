@@ -634,7 +634,11 @@ import { asset, DIM_RESTING } from '../consts';
       // Hold on the bg-tone cover until the boot splash has lifted, so the roll is
       // never played hidden behind the overlay (the office keeps stepping meanwhile).
       if (!splashCleared) return;
-      if (!live) {
+      // Under reduced motion the office is a poster-still: NO paint caller
+      // may re-live it (the mq listener de-lives; a stray repaint — a
+      // resize, a background tick — must not undo that). The un-reduce
+      // path re-lives through boot()/start() as before.
+      if (!live && !mq.matches) {
         live = true;
         revealStartSim = nowMs; // sim-clock t0 → pause freezes the roll too
         wrap.classList.add('is-live');
@@ -896,8 +900,16 @@ import { asset, DIM_RESTING } from '../consts';
         audioBtn.hidden = true;
       }
     }
+    // #705 idle pre-warm was REVERTED: even one-bed chunks run seconds on
+    // slow hardware, and a main-thread pump at page idle starves clicks +
+    // transient UI (the CI mobile chip-flash test caught it living and
+    // dying entirely inside blocked windows). The real fix is synthesis in
+    // a Web Worker — tracked in #705; until then the warmup starts at the
+    // ♩ click as before, now in per-bed chunks so the UI stays responsive
+    // through it.
     // Pump the chunked synthesis off setTimeout(0) so the main thread never
-    // blocks on the multi-second bank/rain/beds build in one go.
+    // blocks on the multi-second bank/rain/beds build in one go (one bed
+    // per step since #705).
     function audioPumpWarmup() {
       try {
         if (office.audio_warmup_step() > 0) {
@@ -1148,13 +1160,44 @@ import { asset, DIM_RESTING } from '../consts';
         if (paused && live) paint(pausedAt - pauseOffset);
       });
     });
+    // Background PLAYBACK (owner decision, #707): the office is a radio
+    // first — switching tabs must not stop the music. The SYNC MODEL:
+    // audio and picture already share one pause-shifted wall clock and
+    // one code path (frame() = paint → audioTick), so the background
+    // mode is simply that SAME full tick at 1 Hz instead of 60 — the sim
+    // keeps advancing (script beats fire on time, busy-ness stays live,
+    // the cue tracker sees real edges instead of a return-burst volley),
+    // and coming back to the tab is seamless by construction: the next
+    // rAF frame reads the same clock the background ticks did. Chrome
+    // exempts audibly-playing tabs from intensive timer throttling; the
+    // driver's dt clamp absorbs any coarser cadence. The explicit PAUSE
+    // button still silences everything — that intent is the user's.
+    let bgTimer = 0;
+    function stopBgTicks() {
+      if (bgTimer) clearInterval(bgTimer);
+      bgTimer = 0;
+    }
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) stop();
-      else start();
-      // Suspend the audio graph while hidden (the rAF loop stops, so the loops
-      // would otherwise drone unfed); resume only if the ♩ is on and not paused.
+      if (document.hidden) {
+        stop();
+        if (audioCtx && audioPlaying && !paused && !bgTimer) {
+          bgTimer = setInterval(function () {
+            // reduced-motion may engage while hidden: paint() would re-live
+            // the poster-still office (the review-caught invariant break)
+            if (paused || !audioPlaying || mq.matches) return;
+            const nowMs = Date.now() - pauseOffset;
+            paint(nowMs); // the full frame body at 1 Hz: sim + blit…
+            audioTick(nowMs); // …then sound, same order as frame()
+          }, 1000);
+        }
+      } else {
+        stopBgTicks();
+        start();
+      }
+      // Paused stays silent whatever the visibility; otherwise the graph
+      // keeps running in the background by design.
       if (audioCtx && audioPlaying) {
-        if (document.hidden || paused) audioCtx.suspend();
+        if (paused) audioCtx.suspend();
         else audioCtx.resume();
       }
     });
@@ -1162,6 +1205,7 @@ import { asset, DIM_RESTING } from '../consts';
       mq.addEventListener('change', function () {
         if (mq.matches) {
           stop();
+          stopBgTicks(); // hidden-tab playback must not re-animate a poster-still office
           // Reduced motion IS the poster-still design: nothing auto-animates, so
           // reset the pause flag (syncPauseBtn hides the control below).
           paused = false;
