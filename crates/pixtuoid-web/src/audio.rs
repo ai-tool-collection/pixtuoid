@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use pixtuoid_scene::audio::bank::{AssetBank, TrackBeds, DROP_POOL, KEYSTROKE_POOL, TRACK_STEMS};
-use pixtuoid_scene::audio::compose::{compose, GeneratedScore, Mood};
+use pixtuoid_scene::audio::compose::GeneratedScore;
 use pixtuoid_scene::audio::dsp::NoiseStream;
 use pixtuoid_scene::audio::mixer::LoopStem;
 use pixtuoid_scene::audio::{
@@ -236,19 +236,6 @@ impl WebAudioDriver {
     }
 }
 
-/// The inverse of [`OneShotPool::wire`] — decode the JS-side pool index (the
-/// `audio_oneshot_ptr`/`_len` getters take it). `None` for an unknown wire.
-pub(crate) fn pool_from_wire(wire: u8) -> Option<OneShotPool> {
-    Some(match wire {
-        0 => OneShotPool::Keystroke,
-        1 => OneShotPool::Drop,
-        2 => OneShotPool::DoorChime,
-        3 => OneShotPool::PrinterWhir,
-        4 => OneShotPool::VendingDrop,
-        _ => return None,
-    })
-}
-
 /// Serialize a tick's commands as the compact JSON the site's WebAudio glue
 /// parses: `{"gains":[g0..g5],"plays":[[poolWire,idx,gain],…],"swapped":bool}`.
 /// Hand-built (no serde in the wasm artifact — the `overlay_json` precedent).
@@ -267,12 +254,8 @@ struct LaneBuild {
 
 impl LaneBuild {
     fn new(track: TrackId) -> Self {
-        let (mood, seed) = match track {
-            TrackId::GenDay(seed) => (Mood::Day, seed),
-            TrackId::GenNight(seed) => (Mood::Night, seed),
-        };
         Self {
-            score: compose(mood, seed),
+            score: pixtuoid_scene::audio::compose_track(track),
             beds: Vec::new(),
         }
     }
@@ -495,17 +478,12 @@ mod tests {
         assert_eq!(v["plays"][0][1], 7, "keystroke index");
         assert_eq!(v["plays"][1][0], 3, "printer wire = 3");
         assert_eq!(v["swapped"], true);
-        // every pool wire decodes back to itself
-        for p in [
-            OneShotPool::Keystroke,
-            OneShotPool::Drop,
-            OneShotPool::DoorChime,
-            OneShotPool::PrinterWhir,
-            OneShotPool::VendingDrop,
-        ] {
-            assert_eq!(pool_from_wire(p.wire()), Some(p));
+        // every pool wire decodes back to itself — driven off ALL, so a new
+        // pool is covered automatically (the bijection now lives in scene::bank)
+        for p in OneShotPool::ALL {
+            assert_eq!(OneShotPool::from_wire(p.wire()), Some(p));
         }
-        assert_eq!(pool_from_wire(9), None);
+        assert_eq!(OneShotPool::from_wire(9), None);
     }
 
     #[test]

@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use super::mixer::LoopStem;
-use super::{compose, dsp, synth, OneShot, TrackId};
+use super::{dsp, synth, OneShot, TrackId};
 
 /// Per-key / per-drop pre-rendered variant pool sizes: playback picks randomly
 /// so typing/rain never sound repeated, while runtime stays synthesis-free.
@@ -68,6 +68,27 @@ impl OneShotPool {
             OneShotPool::PrinterWhir => 3,
             OneShotPool::VendingDrop => 4,
         }
+    }
+
+    /// Every pool in wire order — the one-shot mirror of [`LoopStem::ALL`].
+    /// [`OneShotPool::from_wire`] and the wasm round-trip test both derive from
+    /// it, so a new pool is declared in exactly one place.
+    pub const ALL: [OneShotPool; 5] = [
+        OneShotPool::Keystroke,
+        OneShotPool::Drop,
+        OneShotPool::DoorChime,
+        OneShotPool::PrinterWhir,
+        OneShotPool::VendingDrop,
+    ];
+
+    /// The inverse of [`OneShotPool::wire`] — decode a wasm-wire pool index back
+    /// to the pool (`None` for an unknown wire). Derived from [`OneShotPool::ALL`]
+    /// and [`OneShotPool::wire`], so the whole `u8`↔pool bijection lives beside
+    /// the enum and can't drift across the crate seam (was a hand-synced
+    /// `pool_from_wire` in the wasm crate whose `_ => None` let a new pool decode
+    /// to silence with no structural failure).
+    pub fn from_wire(wire: u8) -> Option<Self> {
+        OneShotPool::ALL.into_iter().find(|p| p.wire() == wire)
     }
 }
 
@@ -144,11 +165,7 @@ impl TrackBeds {
     /// noise content draws from wherever `rng` stands, like every
     /// non-boot build always did.
     pub fn build(rng: &mut dsp::NoiseStream, track: TrackId) -> Self {
-        let (mood, seed) = match track {
-            TrackId::GenDay(seed) => (compose::Mood::Day, seed),
-            TrackId::GenNight(seed) => (compose::Mood::Night, seed),
-        };
-        let score = compose::compose(mood, seed);
+        let score = super::compose_track(track);
         Self {
             beds: synth::gen_beds(&score, rng).map(Arc::new),
         }
