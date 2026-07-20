@@ -119,7 +119,7 @@ async fn watcher_registers_stale_file_when_probe_says_live() {
 #[tokio::test]
 async fn codex_watcher_registers_stale_rollout_when_probe_says_live() {
     fast_watch();
-    use pixtuoid_core::source::codex::{codex_id_from_path, decode_codex_line, derive_codex_label};
+    use pixtuoid_core::source::codex::{codex_id_from_path, decode_codex_line};
 
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
@@ -139,13 +139,9 @@ async fn codex_watcher_registers_stale_rollout_when_probe_says_live() {
     set_file_mtime(&rollout, backdated).unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(
-        root.clone(),
-        "codex".to_string(),
-        decode_codex_line,
-        derive_codex_label,
-        |_t| false,
-    )
+    let watcher = JsonlWatcher::new(root.clone(), "codex".to_string(), decode_codex_line, |_t| {
+        false
+    })
     .with_id_deriver(codex_id_from_path)
     .with_initial_window(Duration::from_secs(60))
     .with_liveness_probe(std::sync::Arc::new(move || vouch_snapshot(&[uuid])));
@@ -180,7 +176,7 @@ async fn codex_watcher_registers_stale_rollout_when_probe_says_live() {
 #[tokio::test]
 async fn codex_first_sight_session_start_carries_bare_uuid_session_id() {
     fast_watch();
-    use pixtuoid_core::source::codex::{codex_id_from_path, decode_codex_line, derive_codex_label};
+    use pixtuoid_core::source::codex::{codex_id_from_path, decode_codex_line};
 
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
@@ -197,13 +193,9 @@ async fn codex_first_sight_session_start_carries_bare_uuid_session_id() {
         .unwrap();
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(
-        root.clone(),
-        "codex".to_string(),
-        decode_codex_line,
-        derive_codex_label,
-        |_t| false,
-    )
+    let watcher = JsonlWatcher::new(root.clone(), "codex".to_string(), decode_codex_line, |_t| {
+        false
+    })
     .with_id_deriver(codex_id_from_path);
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
@@ -540,9 +532,9 @@ async fn watcher_custom_label_deriver() {
         projects_root.clone(),
         "claude-code".to_string(),
         decode_cc_line,
-        custom_label,
         cc_session_ended,
-    );
+    )
+    .with_label_deriver(custom_label);
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -589,7 +581,7 @@ async fn watcher_custom_label_deriver() {
 #[tokio::test]
 async fn codex_rollout_yields_uuid_keyed_session_start() {
     fast_watch();
-    use pixtuoid_core::source::codex::{codex_id_from_path, decode_codex_line, derive_codex_label};
+    use pixtuoid_core::source::codex::{codex_id_from_path, decode_codex_line};
 
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
@@ -597,13 +589,9 @@ async fn codex_rollout_yields_uuid_keyed_session_start() {
     let transcript = root.join(format!("rollout-2026-05-29T22-36-52-{uuid}.jsonl"));
 
     let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
-    let watcher = JsonlWatcher::new(
-        root.clone(),
-        "codex".to_string(),
-        decode_codex_line,
-        derive_codex_label,
-        |_t| false,
-    )
+    let watcher = JsonlWatcher::new(root.clone(), "codex".to_string(), decode_codex_line, |_t| {
+        false
+    })
     .with_id_deriver(codex_id_from_path);
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
@@ -632,19 +620,32 @@ async fn codex_rollout_yields_uuid_keyed_session_start() {
 
     let expected = AgentId::from_parts("codex", uuid);
     let mut saw_session_start = false;
+    // This watcher has NO `.with_label_deriver` override, so it exercises the
+    // DEFAULT LabelDeriver wired in `JsonlWatcher::new` (#5) — assert the
+    // derived Rename label too, the only watcher-level cover that the default
+    // path is live (every OTHER label assertion rides CC's/custom override).
+    let mut default_label = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
             Ok(Some((_t, AgentEvent::SessionStart { agent_id, .. }))) => {
                 assert_eq!(agent_id, expected, "Codex SessionStart must be UUID-keyed");
                 saw_session_start = true;
-                break;
             }
+            Ok(Some((_t, AgentEvent::Rename { label, .. }))) => default_label = Some(label),
             Ok(Some(_)) => {}
             Ok(None) | Err(_) => {}
         }
+        if saw_session_start && default_label.is_some() {
+            break;
+        }
     }
     assert!(saw_session_start, "expected a SessionStart event");
+    assert_eq!(
+        default_label.as_deref(),
+        Some("cx·dotfiles"),
+        "the default LabelDeriver must emit the source-prefixed cwd basename"
+    );
     handle.abort();
 }
 
@@ -667,9 +668,9 @@ async fn default_id_deriver_stays_path_keyed() {
         root.clone(),
         "antigravity".to_string(),
         decode_cc_line,
-        cc_derive_label,
         cc_session_ended,
-    );
+    )
+    .with_label_deriver(cc_derive_label);
     let handle = tokio::spawn(async move { watcher.run(tx).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
