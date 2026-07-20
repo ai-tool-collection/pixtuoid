@@ -53,10 +53,17 @@ src/                (the pixtuoid-scene crate root; default pack at ../sprites/d
 │                   build the SAME buffers: dsp.rs (radix-2 FFT + bands + spectral-envelope noise shaping +
 │                   warp_resample + splitmix64 NoiseStream + centroid_hz), score.rs (the FROZEN day/night
 │                   lofi const tables + checksums), synth.rs (the ratified per-voice recipes + fingerprint
-│                   pins), mixer.rs (LoopStem + Mixer gain ramps + typing/drop schedulers + master_amp). NO
-│                   audio-device deps (pure math; the rodio/cpal ban still holds — `just arch`). All four are
+│                   pins), mixer.rs (LoopStem + Mixer gain ramps + typing/drop schedulers + master_amp),
+│                   engine.rs (THE shared per-tick authority `AudioEngine::tick(dt, frame: Option<AudioFrame>)
+│                   -> TickCommands {gains, plays, swap}` — mixer + schedulers + pick + TrackSwitch behind ONE
+│                   seam, so the native run_loop AND the wasm WebAudioDriver::tick are thin device/JSON shells
+│                   over the SAME mixing/crossfade/scheduling, not two hand-synced copies; the BUILD stays
+│                   caller-side [`swap` SIGNALS it, per the TrackSwitch sharp edge], dt is a clamped PARAMETER
+│                   [MAX_DT_S] so both shells are gap-immune; OneShotPool + AssetBank::sample live in bank.rs). NO
+│                   audio-device deps (pure math; the rodio/cpal ban still holds — `just arch`). All five are
 │                   `#[doc(hidden)] pub` (workspace-internal, overlay/board pattern). The binary keeps only
-│                   the DEVICE half (sink/spawn/run_loop). mod.rs MODEL — the sound twin of overlay/board: StemLevels
+│                   the DEVICE shell (sink/spawn/run_loop — the clock, mute/volume atomics, bed BUILD,
+│                   sink forwarding). mod.rs MODEL — the sound twin of overlay/board: StemLevels
 │                   (owner-ratified tier gains: empty/moderate/busy × pad/sparkle/keys/drums/texture/rain/typing;
 │                   rain scales on pixel_painter::precipitation_level) + OneShot events + AudioCueTracker
 │                   (cross-frame edge emitter: door chime capped 1/frame, printer/vending off the SAME
@@ -66,9 +73,15 @@ src/                (the pixtuoid-scene crate root; default pack at ../sprites/d
 │                   the binary's audio/ gateway is the consumer, WebAudio can ride the same model later.
 │                   Since Phase 2 (musical stems) every StemLevels lane is AUDIBLE — the binary
 │                   synthesizes the frozen lofi compositions at startup and loops all six beds.
-│                   MOOD TRACKS (#644): TrackId {Day, Night} + pure select_track(is_day, precip)
-│                   ride AudioFrame — night hours (the SAME pixel_painter::hour_is_day sun window
-│                   the lighting renders) or any rain pick the Night take; the binary's switch
+│                   MOOD TRACKS (#644; day pool 2026-07-19): TrackId {Day, Day2, Day3, Night} +
+│                   pure select_track(is_day, precip, epoch_hours) ride AudioFrame — night hours
+│                   (the SAME pixel_painter::hour_is_day sun window the lighting renders) or any
+│                   rain pick the Night take; day hours ROTATE the DAY_TAKES pool hourly via
+│                   splitmix64(epoch_hours) (hashed, NOT %3 — 24 divides by 3, a modulo pins each
+│                   hour-of-day to one take forever; audio::epoch_hours is the shared derivation).
+│                   The day takes are score::DayTake table-driven (synth::day_take_* — same
+│                   production chain, different frozen songs; the Lofi Girl model): Day2 "morning"
+│                   royal-road 76 BPM, Day3 "golden hour" I-vi-ii-V 74 BPM. The binary's switch
 │                   machine crossfades between the tracks (see the pixtuoid audio/ entry)
 ├── layout/             zone-based office geometry (terminal-agnostic; moved from pixtuoid-core —
 │                       the engine owns its geometry; `Layout` = compat alias for SceneLayout;
