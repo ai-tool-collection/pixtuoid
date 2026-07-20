@@ -73,16 +73,35 @@ src/                (the pixtuoid-scene crate root; default pack at ../sprites/d
 │                   the binary's audio/ gateway is the consumer, WebAudio can ride the same model later.
 │                   Since Phase 2 (musical stems) every StemLevels lane is AUDIBLE — the binary
 │                   synthesizes the frozen lofi compositions at startup and loops all six beds.
-│                   MOOD TRACKS (#644; day pool 2026-07-19): TrackId {Day, Day2, Day3, Night} +
-│                   pure select_track(is_day, precip, epoch_hours) ride AudioFrame — night hours
-│                   (the SAME pixel_painter::hour_is_day sun window the lighting renders) or any
-│                   rain pick the Night take; day hours ROTATE the DAY_TAKES pool hourly via
-│                   splitmix64(epoch_hours) (hashed, NOT %3 — 24 divides by 3, a modulo pins each
-│                   hour-of-day to one take forever; audio::epoch_hours is the shared derivation).
-│                   The day takes are score::DayTake table-driven (synth::day_take_* — same
-│                   production chain, different frozen songs; the Lofi Girl model): Day2 "morning"
-│                   royal-road 76 BPM, Day3 "golden hour" I-vi-ii-V 74 BPM. The binary's switch
-│                   machine crossfades between the tracks (see the pixtuoid audio/ entry)
+│                   ALL-GENERATIVE SOUNDTRACK (owner decision 2026-07-20 — "所有的音乐都自动
+│                   生成"): TrackId {GenDay(seed), GenNight(seed)} + pure select_track(is_day,
+│                   precip, track_epoch) ride AudioFrame — night hours (the SAME
+│                   pixel_painter::hour_is_day sun window the lighting renders) or any rain pick
+│                   the night MOOD; the compose seed is the audio::track_epoch block
+│                   (TRACK_EPOCH_SECS = 600 — 10-min song cadence, owner-tuned for short
+│                   agent sessions), so every block is a new song, deterministic on
+│                   native/wasm/tests, and the block id change drives the engine's crossfade
+│                   with no new state. TrackBeds::build composes + renders via gen_beds. The
+│                   FROZEN takes (Day/Day2/Day3/Night tables + synth recipes) left the runtime
+│                   and are #[cfg(test)] TEST ANCHORS: their fingerprint pins guard the shared
+│                   cores the generator renders through — don't delete them as dead code.
+│                   compose.rs — the theory-constrained COMPOSER (generative lofi): pure
+│                   compose(mood, seed) -> GeneratedScore over a vetted progression grammar
+│                   (8 day templates — 6 diatonic + 2 owner-adopted chromatic (V7/vi, borrowed
+│                   iv) — + 4 night, ×transpose), melody rules (strong-beat chord
+│                   tones / diatonic passing / bounded resolved leaps / two-phrase form with
+│                   peak + loop-closing resolution), humanized groove templates; synth::gen_beds
+│                   renders it through the SAME cores the frozen takes use (day_pad_core/
+│                   night_pad_core/events_stem_core/drums_core/night_texture_core — the frozen
+│                   fns are thin delegations, pins prove byte-fidelity). Quality gate is
+│                   STATISTICAL: examples/lofi_audition renders N seeds for a blind owner
+│                   batch (--solo <lane> isolates a stem); the seed-sweep property suite
+│                   (compose/tests.rs) pins the rules. compose::LeadVoice is the
+│                   INSTRUMENT registry (EpVel + Pluck): lanes are busy-ness roles,
+│                   instruments are timbres within a lane — synth::lead_voice_fn is the
+│                   one dispatch; the voice draw sits LAST in the seed stream so adding
+│                   voices never redraws a blessed seed's notes. The add-an-instrument
+│                   checklist lives in .claude/skills/procedural-lofi (the generator loop)
 ├── layout/             zone-based office geometry (terminal-agnostic; moved from pixtuoid-core —
 │                       the engine owns its geometry; `Layout` = compat alias for SceneLayout;
 │                       the WalkableMask VOCABULARY it stamps stays in core, coherence-bound to Grid):

@@ -18,6 +18,8 @@
 #[doc(hidden)]
 pub mod bank;
 #[doc(hidden)]
+pub mod compose;
+#[doc(hidden)]
 pub mod dsp;
 #[doc(hidden)]
 pub mod engine;
@@ -64,7 +66,11 @@ const PAD_GAIN: [f32; 3] = [0.75, 0.70, 0.65];
 const SPARKLE_GAIN: [f32; 3] = [0.70, 0.0, 0.0];
 const KEYS_GAIN: [f32; 3] = [0.0, 0.60, 0.70];
 const DRUMS_GAIN: [f32; 3] = [0.0, 0.35, 0.60];
-const TEXTURE_GAIN: [f32; 3] = [0.28, 0.30, 0.28];
+// ×2.8 vs the Phase-0 ratification (owner-adopted "air bed audible"
+// finding, 2026-07-20): the hiss+crackle layer measured 15-40dB under
+// the bible's spec and was inaudible. Rate stays CRACKLE_POPS_PER_SEC;
+// a mix knob, one-line revert.
+const TEXTURE_GAIN: [f32; 3] = [0.78, 0.84, 0.78];
 const TYPING_GAIN: [f32; 3] = [0.0, 0.50, 0.80];
 
 /// Target mix levels (0..=1) for every stem, derived once per frame. A VALUE
@@ -102,46 +108,57 @@ pub struct AudioFrame {
     pub track: TrackId,
 }
 
-/// The mood-track registry ids (#644, day pool widened 2026-07-19). The
-/// day mood is a POOL of takes (the Lofi Girl model — one production
-/// chain, many songs): `Day` = the original ratified composition, `Day2`
-/// "morning" (royal-road IV-V-iii-vi, 76 BPM), `Day3` "golden hour"
-/// (I-vi-ii-V turnaround, 74 BPM). Night = the Lofi Girl-anchored slow
-/// take, also chosen whenever it rains (the office's rainy mood).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// The soundtrack ids — ALL-GENERATIVE by owner decision (2026-07-20,
+/// "所有的音乐都自动生成"): every [`TRACK_EPOCH_SECS`] block COMPOSES a
+/// fresh take through the ratified production chain. The payload is the
+/// compose seed (= the [`track_epoch`] block), so the id changing IS the
+/// song change and the [`TrackSwitch`] crossfade machinery needs no new
+/// state. Deterministic everywhere: the same block renders the same
+/// song on native, wasm, and in tests. (The frozen owner-blessed takes — Day/Day2/Day3/Night —
+/// left the runtime with this decision; their tables + synth recipes
+/// stay as the TEST ANCHORS whose fingerprint pins guard the shared
+/// cores the generator renders through.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrackId {
-    #[default]
-    Day,
-    Day2,
-    Day3,
-    Night,
+    /// The block's generated day-mood take.
+    GenDay(u64),
+    /// The block's generated night-mood take (also the rainy mood).
+    GenNight(u64),
 }
 
-/// The day-mood take pool `select_track` rotates through, hour by hour.
-pub const DAY_TAKES: [TrackId; 3] = [TrackId::Day, TrackId::Day2, TrackId::Day3];
+impl Default for TrackId {
+    fn default() -> Self {
+        TrackId::GenDay(0)
+    }
+}
 
-/// Wall-clock hours since the UNIX epoch — the day-take rotation input,
-/// derived ONCE here so the native observer and the wasm painter can't
-/// drift on the derivation. (Pre-epoch clocks read as hour 0.)
-pub fn epoch_hours(now: std::time::SystemTime) -> u64 {
+/// One song per this many wall-clock seconds. 10 minutes, owner-tuned
+/// (2026-07-20): agent sessions are usually SHORT — an hourly rotation
+/// meant most sessions never heard the song change. Coincidentally the
+/// weather's own re-roll cadence (its 600 lives in `sky.rs`, a separate
+/// domain — deliberately not shared).
+pub const TRACK_EPOCH_SECS: u64 = 600;
+
+/// The soundtrack epoch (10-minute blocks since UNIX epoch) — the
+/// compose-seed input, derived ONCE here so the native observer and the
+/// wasm painter can't drift on the derivation. (Pre-epoch clocks read
+/// as block 0.)
+pub fn track_epoch(now: std::time::SystemTime) -> u64 {
     now.duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() / 3600)
+        .map_or(0, |d| d.as_secs() / TRACK_EPOCH_SECS)
 }
 
 /// Pure track selection: night hours (the painter's OWN sun window via
 /// `pixel_painter::hour_is_day`/`is_day_at`) or any precipitation pick
-/// the night take; day hours rotate the [`DAY_TAKES`] pool per
-/// `epoch_hours` — hashed (splitmix64), not `% 3`, because 24 divides by
-/// 3: a modulo would pin each hour-of-day to ONE take forever. Pure in
-/// its inputs so wasm can feed its parametric hour and tests need no
-/// clock; within an hour the pick is stable, so the mood-track crossfade
-/// fires at most once an hour (the radio "next song" moment).
-pub fn select_track(is_day: bool, precipitation: f32, epoch_hours: u64) -> TrackId {
+/// the night MOOD; the [`track_epoch`] block is the compose seed. Pure
+/// in its inputs so wasm can feed its parametric clock and tests need
+/// none; within a block the pick is stable, so the crossfade fires at
+/// most once per [`TRACK_EPOCH_SECS`] (the radio "next song" moment).
+pub fn select_track(is_day: bool, precipitation: f32, track_epoch: u64) -> TrackId {
     if !is_day || precipitation > 0.0 {
-        TrackId::Night
+        TrackId::GenNight(track_epoch)
     } else {
-        let n = pixtuoid_core::id::splitmix64(epoch_hours) % DAY_TAKES.len() as u64;
-        DAY_TAKES[n as usize]
+        TrackId::GenDay(track_epoch)
     }
 }
 
@@ -328,64 +345,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn select_track_truth_table() {
-        // day + dry = a day take; night hours OR any rain = Night,
-        // whatever the hour
+    fn select_track_composes_the_hour_by_mood() {
+        // day + dry = the hour's generated day take; night hours OR any
+        // rain = the hour's generated night take — every id carries its
+        // compose seed, so the hourly id change IS the song change
         for h in 0..48 {
-            assert!(DAY_TAKES.contains(&select_track(true, 0.0, h)));
-            assert_eq!(select_track(false, 0.0, h), TrackId::Night);
-            assert_eq!(select_track(true, 0.6, h), TrackId::Night);
-            assert_eq!(select_track(false, 1.0, h), TrackId::Night);
-            assert_eq!(select_track(true, f32::MIN_POSITIVE, h), TrackId::Night);
-        }
-    }
-
-    #[test]
-    fn day_take_rotation_is_stable_within_an_hour_and_varied_across_hours() {
-        // stable per hour END-TO-END through the epoch_hours flooring
-        // (the crossfade fires at most once an hour): two instants inside
-        // the same hour must select the same take
-        use std::time::{Duration, UNIX_EPOCH};
-        for h in 0..24u64 {
-            let early = UNIX_EPOCH + Duration::from_secs(h * 3600 + 1);
-            let late = UNIX_EPOCH + Duration::from_secs(h * 3600 + 3599);
+            assert_eq!(select_track(true, 0.0, h), TrackId::GenDay(h));
+            assert_eq!(select_track(false, 0.0, h), TrackId::GenNight(h));
+            assert_eq!(select_track(true, 0.6, h), TrackId::GenNight(h));
+            assert_eq!(select_track(false, 1.0, h), TrackId::GenNight(h));
             assert_eq!(
-                select_track(true, 0.0, epoch_hours(early)),
-                select_track(true, 0.0, epoch_hours(late)),
-                "take must hold steady within hour {h}"
+                select_track(true, f32::MIN_POSITIVE, h),
+                TrackId::GenNight(h)
             );
         }
-        // ... every take actually plays over a work-week of day hours ...
-        let mut seen = [false; DAY_TAKES.len()];
-        for h in 0..24 * 7 {
-            let t = select_track(true, 0.0, h);
-            seen[DAY_TAKES.iter().position(|&x| x == t).expect("a day take")] = true;
-        }
-        assert!(seen.iter().all(|&s| s), "all day takes rotate in: {seen:?}");
-        // ... and the hash breaks the 24 % 3 == 0 trap: the same
-        // hour-of-day does NOT map to one take forever
-        let mut nine_am = std::collections::HashSet::new();
-        for day in 0..14 {
-            nine_am.insert(select_track(true, 0.0, day * 24 + 9));
-        }
-        assert!(
-            nine_am.len() > 1,
-            "9am must not pin to a single take across days: {nine_am:?}"
-        );
     }
 
     #[test]
-    fn epoch_hours_derivation() {
+    fn track_is_stable_within_a_block_and_changes_across_blocks() {
         use std::time::{Duration, UNIX_EPOCH};
-        assert_eq!(epoch_hours(UNIX_EPOCH), 0);
-        assert_eq!(epoch_hours(UNIX_EPOCH + Duration::from_secs(3599)), 0);
-        assert_eq!(epoch_hours(UNIX_EPOCH + Duration::from_secs(3600)), 1);
+        for b in 0..24u64 {
+            let early = UNIX_EPOCH + Duration::from_secs(b * TRACK_EPOCH_SECS + 1);
+            let late = UNIX_EPOCH + Duration::from_secs((b + 1) * TRACK_EPOCH_SECS - 1);
+            assert_eq!(
+                select_track(true, 0.0, track_epoch(early)),
+                select_track(true, 0.0, track_epoch(late)),
+                "take must hold steady within block {b}"
+            );
+            assert_ne!(
+                select_track(true, 0.0, b),
+                select_track(true, 0.0, b + 1),
+                "the crossfade must fire at the block boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn track_epoch_derivation() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(track_epoch(UNIX_EPOCH), 0);
         assert_eq!(
-            epoch_hours(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
-            1_700_000_000 / 3600
+            track_epoch(UNIX_EPOCH + Duration::from_secs(TRACK_EPOCH_SECS - 1)),
+            0
         );
-        // pre-epoch clocks fail safe to hour 0, not a panic
-        assert_eq!(epoch_hours(UNIX_EPOCH - Duration::from_secs(10)), 0);
+        assert_eq!(
+            track_epoch(UNIX_EPOCH + Duration::from_secs(TRACK_EPOCH_SECS)),
+            1
+        );
+        assert_eq!(
+            track_epoch(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
+            1_700_000_000 / TRACK_EPOCH_SECS
+        );
+        // pre-epoch clocks fail safe to block 0, not a panic
+        assert_eq!(track_epoch(UNIX_EPOCH - Duration::from_secs(10)), 0);
     }
 
     #[test]
@@ -393,25 +405,29 @@ mod tests {
         let mut sw = TrackSwitch::new();
         assert_eq!(sw.current(), None);
         // first frame builds+registers, does NOT request
-        assert_eq!(sw.init(TrackId::Day), Some(TrackId::Day));
-        assert_eq!(sw.current(), Some(TrackId::Day));
-        assert_eq!(sw.init(TrackId::Night), None, "init is first-frame only");
+        assert_eq!(sw.init(TrackId::GenDay(0)), Some(TrackId::GenDay(0)));
+        assert_eq!(sw.current(), Some(TrackId::GenDay(0)));
+        assert_eq!(
+            sw.init(TrackId::GenNight(0)),
+            None,
+            "init is first-frame only"
+        );
         assert!(!sw.is_holding());
 
         // an unchanged request is a no-op; a real change latches the hold
-        sw.request(TrackId::Day);
+        sw.request(TrackId::GenDay(0));
         assert!(!sw.is_holding());
-        sw.request(TrackId::Night);
+        sw.request(TrackId::GenNight(0));
         assert!(sw.is_holding(), "a changed track holds the stems silent");
 
         // a SECOND change mid-flight is ignored (the settling latch)
-        sw.request(TrackId::Day);
+        sw.request(TrackId::GenDay(0));
         // not silent yet → no swap
         assert_eq!(sw.try_swap(false), None);
         assert!(sw.is_holding());
         // silence reached → swap to the FIRST-latched target, release the hold
-        assert_eq!(sw.try_swap(true), Some(TrackId::Night));
-        assert_eq!(sw.current(), Some(TrackId::Night));
+        assert_eq!(sw.try_swap(true), Some(TrackId::GenNight(0)));
+        assert_eq!(sw.current(), Some(TrackId::GenNight(0)));
         assert!(!sw.is_holding());
         assert_eq!(sw.try_swap(true), None, "nothing pending after the swap");
     }
